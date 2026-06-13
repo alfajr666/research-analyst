@@ -1,0 +1,10 @@
+polars==1.41.2
+duckdb==1.5.3
+httpx==0.28.1
+python-telegram-bot[job-queue]==22.7
+python-dotenv==1.2.2
+pytz==2026.2
+pyarrow==24.0.0
+APScheduler==3.11.2
+tzlocal==5.3.1
+anyio==4.13.0

@@ -1,0 +1,32 @@
+module.exports = {
+  apps: [
+    {
+      name: "orchestrator",
+      interpreter: "./venv/bin/python",
+      script: "orchestrator.py",
+      args: "--once",
+      cron_restart: "*/15 * * * *",
+      cwd: "/home/gilang/Documents/Project/options-research-analyst",
+      log_file: "./logs/orchestrator.log",
+      error_file: "./logs/orchestrator-error.log",
+      out_file: "./logs/orchestrator-out.log",
+      merge_logs: true,
+      autorestart: false,
+      max_restarts: 10,
+      restart_delay: 5000,
+    },
+    {
+      name: "telegram-bot",
+      interpreter: "./venv/bin/python",
+      script: "telegram_bot.py",
+      cwd: "/home/gilang/Documents/Project/options-research-analyst",
+      log_file: "./logs/telegram_bot.log",
+      error_file: "./logs/telegram_bot-error.log",
+      out_file: "./logs/telegram_bot-out.log",
+      merge_logs: true,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+    },
+  ],
+};

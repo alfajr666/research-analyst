@@ -1,0 +1,19 @@
+# Python Environment
+venv/
+.env
+.env.local
+__pycache__/
+*.pyc
+
+# Database and Data
+data/
+*.db
+
+# Logs and Process Manager
+logs/
+*.log
+orchestrator.log
+telegram_bot.log
+
+# System files
+.DS_Store
