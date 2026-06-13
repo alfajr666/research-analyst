@@ -27,10 +27,14 @@ def prune_db(conn, retention_days: int = 30):
         conn.commit()
         print(f"  Pruned: {res_opt} option chains, {res_fut} futures rows, {res_brain} brain outputs.")
         
-        # Vacuum database to reclaim disk space
-        print("  Running DuckDB VACUUM to reclaim space...")
-        conn.execute("VACUUM;")
-        print("  Database vacuum completed.")
+        # Vacuum database to reclaim disk space (only once a day between 00:00 and 01:00 UTC)
+        now_utc = datetime.now(timezone.utc)
+        if now_utc.hour == 0:
+            print("  Running daily DuckDB VACUUM to reclaim space...")
+            conn.execute("VACUUM;")
+            print("  Database vacuum completed.")
+        else:
+            print("  Skipping DuckDB VACUUM (runs daily at 00:00 UTC).")
     except Exception as e:
         print(f"Error during database pruning: {e}", file=sys.stderr)
 

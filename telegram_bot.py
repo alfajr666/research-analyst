@@ -3,9 +3,8 @@ from datetime import time, datetime, timezone
 import pytz
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.request import HTTPXRequest
 import config
-from analyze import generate_market_brief, get_futures_summary, get_options_summary, get_profile_summary, generate_ascii_profile
-from brain import generate_brain_brief
 
 # Enable logging
 logging.basicConfig(
@@ -30,6 +29,8 @@ async def brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Sends the latest comprehensive market brief with brain one-liner appended."""
     await update.message.reply_chat_action(action="typing")
     try:
+        from analyze import generate_market_brief
+        from brain import generate_brain_brief
         brief_text = generate_market_brief()
         try:
             brain_text = generate_brain_brief()
@@ -45,6 +46,7 @@ async def futures_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Sends the futures-only report."""
     await update.message.reply_chat_action(action="typing")
     try:
+        from analyze import get_futures_summary
         conn = config.get_db_connection(read_only=True)
         try:
             reports = []
@@ -86,6 +88,7 @@ async def options_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Sends the options-only report."""
     await update.message.reply_chat_action(action="typing")
     try:
+        from analyze import get_options_summary
         conn = config.get_db_connection(read_only=True)
         try:
             reports = []
@@ -125,6 +128,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         requested_symbols = ["BTC", "ETH", "SOL"]
         
     try:
+        from analyze import get_profile_summary
         conn = config.get_db_connection(read_only=True)
         try:
             reports = []
@@ -215,6 +219,8 @@ async def scheduled_brief_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         
     logger.info("Triggering scheduled daily brief...")
     try:
+        from analyze import generate_market_brief
+        from brain import generate_brain_brief
         brief_text = generate_market_brief()
         try:
             brain_text = generate_brain_brief()
@@ -233,7 +239,20 @@ def main() -> None:
         print("Error: TELEGRAM_BOT_TOKEN is not configured in .env. Bot cannot start.", file=sys.stderr)
         sys.exit(1)
         
-    app = ApplicationBuilder().token(token).build()
+    custom_request = HTTPXRequest(
+        connection_pool_size=5,
+        pool_timeout=10.0,
+        read_timeout=20.0,
+        write_timeout=20.0,
+        connect_timeout=10.0
+    )
+    app = (
+        ApplicationBuilder()
+        .token(token)
+        .request(custom_request)
+        .concurrent_updates(1)
+        .build()
+    )
 
     # Register commands
     app.add_handler(CommandHandler("start", start))

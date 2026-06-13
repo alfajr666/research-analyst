@@ -38,7 +38,7 @@ def load_symbols() -> list:
             
     return symbols
 
-SYMBOLS = load_symbols()
+
 
 def fetch_coinalyze_data(endpoint: str, params: dict = None, client: httpx.Client = None) -> list:
     """Fetches data from a CoinAnalyze endpoint with rate-limit and error handling."""
@@ -129,7 +129,8 @@ def get_latest_history_value(history_list: list, key: str, default=0.0) -> float
 def ingest_coinalyze():
     """Ingests current futures/perps market data from CoinAnalyze and stores it in DuckDB."""
     print("Starting CoinAnalyze ingestion...")
-    symbols_str = ",".join(SYMBOLS)
+    symbols = load_symbols()
+    symbols_str = ",".join(symbols)
     
     with httpx.Client() as client:
         # 1. Fetch current Open Interest
@@ -140,7 +141,8 @@ def ingest_coinalyze():
             val = item.get("openInterest", item.get("value", 0.0))
             oi_map[sym] = float(val)
             
-        # 2. Fetch current Funding Rate
+        # 2. Fetch current Funding Rate (sleep 2.0s first to avoid rate limit)
+        time.sleep(2.0)
         funding_data = fetch_coinalyze_data_batched("funding-rate", {"symbols": symbols_str}, client=client)
         funding_map = {}
         for item in funding_data:
@@ -148,7 +150,8 @@ def ingest_coinalyze():
             val = item.get("value", 0.0)
             funding_map[sym] = float(val)
             
-        # 3. Fetch current Predicted Funding Rate
+        # 3. Fetch current Predicted Funding Rate (sleep 2.0s first)
+        time.sleep(2.0)
         pred_funding_data = fetch_coinalyze_data_batched("predicted-funding-rate", {"symbols": symbols_str}, client=client)
         pred_funding_map = {}
         for item in pred_funding_data:
@@ -156,7 +159,8 @@ def ingest_coinalyze():
             val = item.get("value", 0.0)
             pred_funding_map[sym] = float(val)
     
-        # 4. Fetch OHLCV History (to get latest candle close and volume)
+        # 4. Fetch OHLCV History (sleep 2.0s first)
+        time.sleep(2.0)
         now_epoch = int(time.time())
         from_epoch = now_epoch - 3600 * 2  # last 2 hours
         ohlcv_data = fetch_coinalyze_data_batched("ohlcv-history", {
@@ -180,7 +184,8 @@ def ingest_coinalyze():
                     "volume": float(last_candle.get("v", 0.0))
                 }
     
-        # 5. Fetch Liquidation History (to get latest candle's long and short liquidations)
+        # 5. Fetch Liquidation History (sleep 2.0s first)
+        time.sleep(2.0)
         liq_data = fetch_coinalyze_data_batched("liquidation-history", {
             "symbols": symbols_str,
             "interval": "15min",
@@ -199,7 +204,8 @@ def ingest_coinalyze():
                     "short": float(last_liq.get("s", 0.0))
                 }
     
-        # 6. Fetch Long/Short Ratio History (latest value)
+        # 6. Fetch Long/Short Ratio History (sleep 2.0s first)
+        time.sleep(2.0)
         ls_data = fetch_coinalyze_data_batched("long-short-ratio-history", {
             "symbols": symbols_str,
             "interval": "15min",
@@ -220,7 +226,7 @@ def ingest_coinalyze():
         inserted_count = 0
         current_time = datetime.now(timezone.utc)
         
-        for sym in SYMBOLS:
+        for sym in symbols:
             # Parse underlying asset name (e.g. BTCUSDT_PERP.A -> BTC)
             base_sym = sym.split("_")[0]
             if base_sym.endswith("USDT"):
