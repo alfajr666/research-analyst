@@ -8,6 +8,10 @@ from ingest_coinalyze import ingest_coinalyze
 from ingest_deribit import ingest_deribit
 from analyze import update_daily_summary, get_profile_summary
 
+# Startup tracking for grace period
+STARTUP_TIME = time.time()
+DAEMON_MODE = False
+
 def prune_db(conn, retention_days: int = 30):
     """Removes historical data older than retention_days to keep the database size bounded."""
     limit_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
@@ -32,6 +36,13 @@ def prune_db(conn, retention_days: int = 30):
 
 def check_and_alert_confluences(conn):
     """Checks all active assets for High Confluence Entry alerts and sends notifications to Telegram with 1h cooldown."""
+    global DAEMON_MODE, STARTUP_TIME
+    if DAEMON_MODE:
+        elapsed = time.time() - STARTUP_TIME
+        if elapsed < 1800: # 30 minutes grace period
+            print(f"Skipping alerts during startup grace period (elapsed: {elapsed/60:.1f}/30.0 mins).")
+            return
+            
     print("Checking for High Confluence Entry alerts...")
     # Fetch distinct underlyings from the database
     underlyings_rows = conn.execute("SELECT DISTINCT underlying FROM futures_data").fetchall()
@@ -177,6 +188,8 @@ def main():
     if args.once:
         run_pipeline()
     else:
+        global DAEMON_MODE
+        DAEMON_MODE = True
         interval_secs = config.INGEST_INTERVAL_MINS * 60
         print(f"Starting orchestrator daemon. Loop interval: {config.INGEST_INTERVAL_MINS} minutes ({interval_secs}s)...")
         while True:
