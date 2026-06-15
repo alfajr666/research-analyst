@@ -32,7 +32,7 @@ class RateLimiter:
             self.blocked_until = block_until
 
 
-_rl = RateLimiter(min_interval=6.0)
+_rl = RateLimiter(min_interval=12.0)
 
 def load_symbols() -> list:
     """Loads symbols from symbols-for-dual-zone.md and formats them for CoinAnalyze."""
