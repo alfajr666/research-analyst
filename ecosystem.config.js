@@ -5,7 +5,7 @@ module.exports = {
       interpreter: "./venv/bin/python",
       script: "orchestrator.py",
       args: "--once",
-      cron_restart: "*/15 * * * *",
+      cron_restart: "*/30 * * * *",
       cwd: "/home/ubuntu/research-analyst",
       error_file: "./logs/orchestrator-error.log",
       out_file: "./logs/orchestrator-out.log",
