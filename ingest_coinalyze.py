@@ -1,8 +1,26 @@
+import random
 import time
 import httpx
 import duckdb
 from datetime import datetime, timezone
 import config
+
+
+class RateLimiter:
+    """Token-bucket rate limiter enforcing a minimum interval between every API call."""
+    def __init__(self, min_interval: float):
+        self.min_interval = min_interval
+        self.last_call = 0.0
+
+    def wait(self):
+        now = time.time()
+        elapsed = now - self.last_call
+        if elapsed < self.min_interval:
+            time.sleep(self.min_interval - elapsed)
+        self.last_call = time.time()
+
+
+_rl = RateLimiter(min_interval=3.0)
 
 def load_symbols() -> list:
     """Loads symbols from symbols-for-dual-zone.md and formats them for CoinAnalyze."""
@@ -46,6 +64,8 @@ def fetch_coinalyze_data(endpoint: str, params: dict = None, client: httpx.Clien
         print("Warning: COINANALYZE_API_KEY is not configured in .env. Skipping CoinAnalyze ingestion.")
         return []
     
+    _rl.wait()
+    
     url = f"{config.COINANALYZE_BASE_URL}/{endpoint}"
     query_params = params.copy() if params else {}
     query_params["api_key"] = config.COINANALYZE_API_KEY
@@ -66,8 +86,9 @@ def fetch_coinalyze_data(endpoint: str, params: dict = None, client: httpx.Clien
                 return response.json()
             elif response.status_code == 429:
                 retry_after = int(float(response.headers.get("Retry-After", 5)))
-                print(f"CoinAnalyze Rate limit (429) hit on {endpoint}. Sleeping for {retry_after} seconds...")
-                time.sleep(retry_after)
+                delay = retry_after * (2 ** attempt) + random.uniform(0, 5.0)
+                print(f"CoinAnalyze Rate limit (429) hit on {endpoint}. Sleeping for {delay:.1f}s (attempt {attempt + 1})...")
+                time.sleep(delay)
             else:
                 print(f"Error fetching from CoinAnalyze {endpoint}: {response.status_code} - {response.text}")
                 return []
@@ -105,10 +126,6 @@ def fetch_coinalyze_data_batched(endpoint: str, params: dict = None, client: htt
                 combined_result.extend(res)
             else:
                 print(f"Warning: expected list from {endpoint}, got {type(res)}")
-                
-        # Sleep 1.5 seconds between batches to stay within rate limits
-        if i + batch_size < len(symbols_list):
-            time.sleep(1.5)
             
     return combined_result
 
