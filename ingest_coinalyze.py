@@ -172,7 +172,16 @@ def ingest_coinalyze():
             history = item.get("history", [])
             if history:
                 last_candle = history[-1]
+                raw_ts = last_candle.get("t")
+                if raw_ts is not None:
+                    try:
+                        candle_ts = datetime.fromtimestamp(float(raw_ts) / 1000.0, tz=timezone.utc)
+                    except (ValueError, TypeError, OSError):
+                        candle_ts = datetime.now(timezone.utc)
+                else:
+                    candle_ts = datetime.now(timezone.utc)
                 ohlcv_map[sym] = {
+                    "timestamp": candle_ts,
                     "open": float(last_candle.get("o", 0.0)),
                     "high": float(last_candle.get("h", 0.0)),
                     "low": float(last_candle.get("l", 0.0)),
@@ -218,7 +227,6 @@ def ingest_coinalyze():
     db_conn = config.get_db_connection(read_only=False)
     try:
         inserted_count = 0
-        current_time = datetime.now(timezone.utc)
         
         for sym in SYMBOLS:
             # Parse underlying asset name (e.g. BTCUSDT_PERP.A -> BTC)
@@ -242,6 +250,14 @@ def ingest_coinalyze():
             liq = liq_map.get(sym, {"long": 0.0, "short": 0.0})
             ls_ratio = ls_map.get(sym, 1.0)
             
+            row_ts = ohlcv.get("timestamp", datetime.now(timezone.utc))
+            
+            # Dedup: remove any existing row for same symbol + timestamp before insert
+            db_conn.execute(
+                "DELETE FROM futures_data WHERE timestamp = ? AND symbol = ?",
+                (row_ts, sym)
+            )
+            
             db_conn.execute("""
                 INSERT INTO futures_data (
                     timestamp, underlying, symbol, open_interest, funding_rate, predicted_funding,
@@ -249,7 +265,7 @@ def ingest_coinalyze():
                     open, high, low, close, volume
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                current_time, underlying, sym, oi, fr, pfr,
+                row_ts, underlying, sym, oi, fr, pfr,
                 liq["long"], liq["short"], ls_ratio,
                 ohlcv["open"], ohlcv["high"], ohlcv["low"], ohlcv["close"], ohlcv["volume"]
             ))
