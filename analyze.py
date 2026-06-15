@@ -383,6 +383,11 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
     cutoff_ts = latest_ts - timedelta(days=lookback_days)
     df_profile = df.filter(pl.col("timestamp") >= cutoff_ts)
     
+    # Capture data range for anchoring info
+    data_start = df_profile["timestamp"].min()
+    data_end = df_profile["timestamp"].max()
+    candle_count = len(df_profile)
+
     # Require a minimum candle count (at least 30% of expected lookback window, and at least 48 candles to prevent mathematical collapse)
     min_required = max(48, int(lookback_days * 24 * 4 * 0.3))
     if len(df_profile) < min_required:
@@ -620,7 +625,10 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         "profile_shape": shape_dict["shape"],
         "profile_shape_desc": shape_dict["desc"],
         "ta_signal": ta_signal,
-        "ta_desc": ta_desc
+        "ta_desc": ta_desc,
+        "data_start": data_start,
+        "data_end": data_end,
+        "candle_count": candle_count
     }
 
 def generate_ascii_profile(profile_df, poc, val, vah, num_bars=12) -> str:
