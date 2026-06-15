@@ -7,20 +7,32 @@ import config
 
 
 class RateLimiter:
-    """Token-bucket rate limiter enforcing a minimum interval between every API call."""
+    """Adaptive rate limiter with global penalty window on 429 responses."""
     def __init__(self, min_interval: float):
         self.min_interval = min_interval
         self.last_call = 0.0
+        self.blocked_until = 0.0
 
     def wait(self):
+        now = time.time()
+        # Respect any active rate-limit penalty window first
+        if now < self.blocked_until:
+            time.sleep(self.blocked_until - now)
+        # Then enforce minimum inter-request spacing
         now = time.time()
         elapsed = now - self.last_call
         if elapsed < self.min_interval:
             time.sleep(self.min_interval - elapsed)
         self.last_call = time.time()
 
+    def on_rate_limited(self, retry_after: float):
+        """Extend the global penalty window so subsequent calls also back off."""
+        block_until = time.time() + retry_after
+        if block_until > self.blocked_until:
+            self.blocked_until = block_until
 
-_rl = RateLimiter(min_interval=3.0)
+
+_rl = RateLimiter(min_interval=6.0)
 
 def load_symbols() -> list:
     """Loads symbols from symbols-for-dual-zone.md and formats them for CoinAnalyze."""
@@ -86,6 +98,7 @@ def fetch_coinalyze_data(endpoint: str, params: dict = None, client: httpx.Clien
                 return response.json()
             elif response.status_code == 429:
                 retry_after = int(float(response.headers.get("Retry-After", 5)))
+                _rl.on_rate_limited(retry_after)
                 delay = retry_after * (2 ** attempt) + random.uniform(0, 5.0)
                 print(f"CoinAnalyze Rate limit (429) hit on {endpoint}. Sleeping for {delay:.1f}s (attempt {attempt + 1})...")
                 time.sleep(delay)
