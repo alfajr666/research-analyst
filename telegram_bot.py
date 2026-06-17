@@ -20,7 +20,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/brief - Generate and send the latest comprehensive market brief\n"
         "/futures - Show futures metrics (OI change, funding, liquidations)\n"
         "/options - Show options metrics (ATM IV, IV Rank, skew, term structure)\n"
-        "/profile - Show 7d volume & market profiles with POC, VA, and LVN levels\n\n"
+        "/profile - Show 7d volume & market profiles with POC, VA, and LVN levels\n"
+        "/scanner - Show latest results of the hourly volume/OI scanner & alerts\n\n"
         "Daily briefs are scheduled to send at *08:00 WITA*."
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
@@ -210,6 +211,27 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(f"Error generating profile report: {e}")
         await update.message.reply_text("❌ Error fetching profile data.")
 
+async def scanner_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sends the latest results of the hourly volume/OI scanner."""
+    await update.message.reply_chat_action(action="typing")
+    try:
+        import json
+        json_path = config.DEFAULT_DB_DIR / "scanned_pairs.json"
+        if not json_path.exists():
+            await update.message.reply_text("⏳ Scanner has not run yet. Data will populate on the next hourly cycle.")
+            return
+            
+        with open(json_path, "r") as f:
+            json_data = json.load(f)
+            
+        from scanner import format_telegram_scanner_message
+        accumulating_all = json_data.get("accumulation_alerts", [])
+        msg = format_telegram_scanner_message(json_data, accumulating_all)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error in scanner command: {e}")
+        await update.message.reply_text("❌ Error reading scanner data.")
+
 async def scheduled_brief_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Job callback to send the daily brief to the configured channel/chat."""
     chat_id = config.TELEGRAM_CHAT_ID
@@ -260,6 +282,7 @@ def main() -> None:
     app.add_handler(CommandHandler("futures", futures_command))
     app.add_handler(CommandHandler("options", options_command))
     app.add_handler(CommandHandler("profile", profile_command))
+    app.add_handler(CommandHandler("scanner", scanner_command))
 
     # Schedule the daily brief in Asia/Makassar timezone (WITA)
     tz = pytz.timezone("Asia/Makassar")

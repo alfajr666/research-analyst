@@ -9,9 +9,10 @@ from ingest_coinalyze import ingest_coinalyze
 from ingest_deribit import ingest_deribit
 from analyze import update_daily_summary, get_profile_summary
 
-# Startup tracking for grace period
+# Startup tracking for grace period & hourly scanner
 STARTUP_TIME = time.time()
 DAEMON_MODE = False
+LAST_SCAN_TIME = 0.0
 
 def prune_db(conn, retention_days: int = 30):
     """Removes historical data older than retention_days to keep the database size bounded."""
@@ -155,8 +156,9 @@ def check_and_alert_confluences(conn):
         except Exception as e:
             print(f"  Error checking alert for {underlying}: {e}")
 
-def run_pipeline():
-    """Runs the full sequential ingestion and summarization pipeline."""
+def run_pipeline(force_scan=False):
+    """Runs the full sequential ingestion, scanning, and alerts pipeline."""
+    global LAST_SCAN_TIME
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==========================================")
     print(f"PIPELINE RUN: {now_str} UTC")
@@ -165,7 +167,38 @@ def run_pipeline():
     # 1. Ensure DB schemas are initialized
     config.init_db()
     
-    # 2. Ingest futures data
+    # 2. Run hourly scanner if 1 hour has elapsed or forced
+    current_time = time.time()
+    if force_scan or (current_time - LAST_SCAN_TIME >= 3600):
+        print("Running hourly market scanner...")
+        try:
+            from scanner import run_scanner, format_telegram_scanner_message
+            json_data, accumulating_all = run_scanner()
+            LAST_SCAN_TIME = current_time
+            
+            # Send Telegram alert for the hourly rotation
+            if json_data:
+                msg = format_telegram_scanner_message(json_data, accumulating_all)
+                token = config.TELEGRAM_BOT_TOKEN
+                chat_id = config.TELEGRAM_CHAT_ID
+                if token and chat_id:
+                    url = f"https://api.telegram.org/bot{token}/sendMessage"
+                    payload = {
+                        "chat_id": chat_id,
+                        "text": msg,
+                        "parse_mode": "Markdown"
+                    }
+                    resp = httpx.post(url, json=payload, timeout=15)
+                    if resp.status_code == 200:
+                        print("Scanner Telegram alert sent successfully.")
+                    else:
+                        print(f"Failed to send scanner Telegram alert: {resp.text}")
+                else:
+                    print("Telegram credentials not configured; scanner alert skipped.")
+        except Exception as e:
+            print(f"Error during hourly scan: {e}", file=sys.stderr)
+            
+    # 3. Ingest futures data (this now dynamically loads scanned symbols)
     try:
         ingest_coinalyze()
     except Exception as e:

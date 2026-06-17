@@ -126,11 +126,29 @@ def init_db():
         for col in ["val DOUBLE", "vah DOUBLE", "hvns VARCHAR", "lvns VARCHAR"]:
             conn.execute(f"ALTER TABLE confluence_alerts ADD COLUMN IF NOT EXISTS {col};")
 
+        # Create scanner_history table for hourly rotating volume/OI scanner
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scanner_history (
+                timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                rank INTEGER,
+                underlying VARCHAR,
+                symbol VARCHAR,
+                volume_7d_usd DOUBLE,
+                open_interest_usd DOUBLE,
+                vol_to_oi_ratio DOUBLE,
+                volume_spike_multiple DOUBLE,
+                price_change_24h DOUBLE,
+                is_accumulating BOOLEAN,
+                PRIMARY KEY (timestamp, symbol)
+            );
+        """)
+
         # Create an index on timestamp/underlying for fast analysis
         conn.execute("CREATE INDEX IF NOT EXISTS idx_futures_ts ON futures_data (timestamp, underlying);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_options_ts ON option_chains (timestamp, underlying);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_ts ON brain_outputs (timestamp, underlying);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON confluence_alerts (alert_time, underlying);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scanner_ts ON scanner_history (timestamp, symbol);")
         
         conn.commit()
     finally:

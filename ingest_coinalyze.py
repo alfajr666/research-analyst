@@ -35,32 +35,58 @@ class RateLimiter:
 _rl = RateLimiter(min_interval=12.0)
 
 def load_symbols() -> list:
-    """Loads symbols from symbols-for-dual-zone.md and formats them for CoinAnalyze."""
+    """Loads symbols from symbols-for-dual-zone.md, merges with scanned pairs, and formats for CoinAnalyze."""
+    import json
     symbols_path = config.BASE_DIR / "symbols-for-dual-zone.md"
-    if not symbols_path.exists():
-        return ["BTCUSDT_PERP.A", "ETHUSDT_PERP.A"]
-        
     symbols = []
-    with open(symbols_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
+    
+    # 1. Load static symbols from file
+    if symbols_path.exists():
+        with open(symbols_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                
+                # Manual mapping for symbols with different names on CoinAnalyze
+                if line == "SHIB1000USDT":
+                    symbols.append("1000SHIBUSDT_PERP.A")
+                    continue
+                if line == "1000FLOKIUSDT":
+                    symbols.append("FLOKIUSDT_PERP.3")  # Binance FLOKI perp
+                    continue
+                    
+                # CoinAnalyze expects SYMBOL_PERP.A for aggregated perps
+                if "_" in line:
+                    symbols.append(line)
+                else:
+                    symbols.append(f"{line}_PERP.A")
+                    
+    # 2. Merge dynamic scanned symbols from data/scanned_pairs.json (if enabled/exists)
+    json_path = config.DEFAULT_DB_DIR / "scanned_pairs.json"
+    if json_path.exists():
+        try:
+            with open(json_path, "r") as f:
+                scan_data = json.load(f)
+                scanned_symbols = []
+                # Add accumulation alerts first (watchlist priorities)
+                for item in scan_data.get("accumulation_alerts", []):
+                    scanned_symbols.append(item["symbol"])
+                # Add top 10 rankings
+                for item in scan_data.get("rankings", []):
+                    scanned_symbols.append(item["symbol"])
+                
+                # Merge into watchlist (avoid duplicates)
+                merged_count = 0
+                for s in scanned_symbols:
+                    if s not in symbols:
+                        symbols.append(s)
+                        merged_count += 1
+                if merged_count > 0:
+                    print(f"Watchlist: Dynamically injected {merged_count} hot symbols from hourly scan.")
+        except Exception as e:
+            print(f"Error loading scanned pairs: {e}")
             
-            # Manual mapping for symbols with different names on CoinAnalyze
-            if line == "SHIB1000USDT":
-                symbols.append("1000SHIBUSDT_PERP.A")
-                continue
-            if line == "1000FLOKIUSDT":
-                symbols.append("FLOKIUSDT_PERP.3")  # Binance FLOKI perp
-                continue
-                
-            # CoinAnalyze expects SYMBOL_PERP.A for aggregated perps
-            if "_" in line:
-                symbols.append(line)
-            else:
-                symbols.append(f"{line}_PERP.A")
-                
     # Always ensure BTC, ETH, and SOL are in the list
     for default in ["BTCUSDT_PERP.A", "ETHUSDT_PERP.A", "SOLUSDT_PERP.A"]:
         if default not in symbols:
