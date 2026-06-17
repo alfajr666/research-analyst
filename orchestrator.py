@@ -1,3 +1,4 @@
+import json
 import time
 import sys
 import argparse
@@ -89,15 +90,37 @@ def check_and_alert_confluences(conn):
                 vwap_str = fmt_price(prof.get('vwap'))
                 ema26_str = fmt_price(prof['ema26'])
                 ema99_str = fmt_price(prof['ema99'])
-                
+
+                val_str = fmt_price(prof.get('val'))
+                vah_str = fmt_price(prof.get('vah'))
+
+                hvn_list = [prof['volume_poc']] + prof.get('hvns', [])
+                hvns_str = ", ".join([fmt_price(x) for x in hvn_list[:3]])
+                lvns_list = prof.get('lvns', [])
+                lvns_str = ", ".join([fmt_price(x) for x in lvns_list[:2]]) if lvns_list else "N/A"
+
+                data_start = prof.get('data_start')
+                data_end = prof.get('data_end')
+                candle_count = prof.get('candle_count', 0)
+                if data_start and data_end:
+                    anchor_str = (
+                        f"• *Anchored from:* {data_start.strftime('%Y-%m-%d %H:%M')} → {data_end.strftime('%Y-%m-%d %H:%M')} UTC\n"
+                        f"  ({candle_count} × 15m candles — CoinAnalyze perps)"
+                    )
+                else:
+                    anchor_str = "• *Anchored from:* N/A"
+
                 alert_msg = (
                     f"🔔 *HIGH CONFLUENCE ENTRY ALERT* 🔔\n\n"
                     f"• *Asset:* #{underlying}\n"
                     f"• *Current Price:* {price_str}\n"
                     f"• *Volume POC:* {poc_str} | *VWAP:* {vwap_str}\n"
-                    f"• *EMA26:* {ema26_str} | *EMA99:* {ema99_str}\n\n"
+                    f"• *Value Area:* {val_str} – {vah_str}\n"
+                    f"• *EMA26:* {ema26_str} | *EMA99:* {ema99_str}\n"
+                    f"• *HVNs:* {hvns_str} | *LVNs:* {lvns_str}\n\n"
                     f"• *Profile Shape:* *{prof.get('profile_shape')}*\n"
                     f"  _{prof.get('profile_shape_desc')}_\n\n"
+                    f"{anchor_str}\n\n"
                     f"• *Signal Details:*\n"
                     f"  _{prof.get('ta_desc')}_\n\n"
                     f"_Timestamp: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC_"
@@ -118,8 +141,11 @@ def check_and_alert_confluences(conn):
                         print(f"  Alert sent successfully for {underlying}")
                         # Record alert to database
                         conn.execute(
-                            "INSERT INTO confluence_alerts (underlying, price, poc, ema26, ema99) VALUES (?, ?, ?, ?, ?)",
-                            (underlying, prof['close'], prof['volume_poc'], prof['ema26'], prof['ema99'])
+                            "INSERT INTO confluence_alerts (underlying, price, poc, ema26, ema99, val, vah, hvns, lvns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (underlying, prof['close'], prof['volume_poc'], prof['ema26'], prof['ema99'],
+                             prof.get('val'), prof.get('vah'),
+                             json.dumps(prof.get('hvns', [])),
+                             json.dumps(prof.get('lvns', [])))
                         )
                         conn.commit()
                     else:

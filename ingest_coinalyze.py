@@ -1,8 +1,38 @@
+import random
 import time
 import httpx
 import duckdb
 from datetime import datetime, timezone
 import config
+
+
+class RateLimiter:
+    """Adaptive rate limiter with global penalty window on 429 responses."""
+    def __init__(self, min_interval: float):
+        self.min_interval = min_interval
+        self.last_call = 0.0
+        self.blocked_until = 0.0
+
+    def wait(self):
+        now = time.time()
+        # Respect any active rate-limit penalty window first
+        if now < self.blocked_until:
+            time.sleep(self.blocked_until - now)
+        # Then enforce minimum inter-request spacing
+        now = time.time()
+        elapsed = now - self.last_call
+        if elapsed < self.min_interval:
+            time.sleep(self.min_interval - elapsed)
+        self.last_call = time.time()
+
+    def on_rate_limited(self, retry_after: float):
+        """Extend the global penalty window so subsequent calls also back off."""
+        block_until = time.time() + retry_after
+        if block_until > self.blocked_until:
+            self.blocked_until = block_until
+
+
+_rl = RateLimiter(min_interval=12.0)
 
 def load_symbols() -> list:
     """Loads symbols from symbols-for-dual-zone.md and formats them for CoinAnalyze."""
@@ -46,6 +76,8 @@ def fetch_coinalyze_data(endpoint: str, params: dict = None, client: httpx.Clien
         print("Warning: COINANALYZE_API_KEY is not configured in .env. Skipping CoinAnalyze ingestion.")
         return []
     
+    _rl.wait()
+    
     url = f"{config.COINANALYZE_BASE_URL}/{endpoint}"
     query_params = params.copy() if params else {}
     query_params["api_key"] = config.COINANALYZE_API_KEY
@@ -66,8 +98,10 @@ def fetch_coinalyze_data(endpoint: str, params: dict = None, client: httpx.Clien
                 return response.json()
             elif response.status_code == 429:
                 retry_after = int(float(response.headers.get("Retry-After", 5)))
-                print(f"CoinAnalyze Rate limit (429) hit on {endpoint}. Sleeping for {retry_after} seconds...")
-                time.sleep(retry_after)
+                _rl.on_rate_limited(retry_after)
+                delay = retry_after * (2 ** attempt) + random.uniform(0, 5.0)
+                print(f"CoinAnalyze Rate limit (429) hit on {endpoint}. Sleeping for {delay:.1f}s (attempt {attempt + 1})...")
+                time.sleep(delay)
             else:
                 print(f"Error fetching from CoinAnalyze {endpoint}: {response.status_code} - {response.text}")
                 return []
@@ -105,10 +139,6 @@ def fetch_coinalyze_data_batched(endpoint: str, params: dict = None, client: htt
                 combined_result.extend(res)
             else:
                 print(f"Warning: expected list from {endpoint}, got {type(res)}")
-                
-        # Sleep 1.5 seconds between batches to stay within rate limits
-        if i + batch_size < len(symbols_list):
-            time.sleep(1.5)
             
     return combined_result
 
@@ -176,7 +206,16 @@ def ingest_coinalyze():
             history = item.get("history", [])
             if history:
                 last_candle = history[-1]
+                raw_ts = last_candle.get("t")
+                if raw_ts is not None:
+                    try:
+                        candle_ts = datetime.fromtimestamp(float(raw_ts) / 1000.0, tz=timezone.utc)
+                    except (ValueError, TypeError, OSError):
+                        candle_ts = datetime.now(timezone.utc)
+                else:
+                    candle_ts = datetime.now(timezone.utc)
                 ohlcv_map[sym] = {
+                    "timestamp": candle_ts,
                     "open": float(last_candle.get("o", 0.0)),
                     "high": float(last_candle.get("h", 0.0)),
                     "low": float(last_candle.get("l", 0.0)),
@@ -224,7 +263,6 @@ def ingest_coinalyze():
     db_conn = config.get_db_connection(read_only=False)
     try:
         inserted_count = 0
-        current_time = datetime.now(timezone.utc)
         
         for sym in symbols:
             # Parse underlying asset name (e.g. BTCUSDT_PERP.A -> BTC)
@@ -248,6 +286,14 @@ def ingest_coinalyze():
             liq = liq_map.get(sym, {"long": 0.0, "short": 0.0})
             ls_ratio = ls_map.get(sym, 1.0)
             
+            row_ts = ohlcv.get("timestamp", datetime.now(timezone.utc))
+            
+            # Dedup: remove any existing row for same symbol + timestamp before insert
+            db_conn.execute(
+                "DELETE FROM futures_data WHERE timestamp = ? AND symbol = ?",
+                (row_ts, sym)
+            )
+            
             db_conn.execute("""
                 INSERT INTO futures_data (
                     timestamp, underlying, symbol, open_interest, funding_rate, predicted_funding,
@@ -255,7 +301,7 @@ def ingest_coinalyze():
                     open, high, low, close, volume
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                current_time, underlying, sym, oi, fr, pfr,
+                row_ts, underlying, sym, oi, fr, pfr,
                 liq["long"], liq["short"], ls_ratio,
                 ohlcv["open"], ohlcv["high"], ohlcv["low"], ohlcv["close"], ohlcv["volume"]
             ))

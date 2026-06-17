@@ -114,9 +114,17 @@ def init_db():
                 poc DOUBLE,
                 ema26 DOUBLE,
                 ema99 DOUBLE,
+                val DOUBLE,
+                vah DOUBLE,
+                hvns VARCHAR,
+                lvns VARCHAR,
                 PRIMARY KEY (underlying, alert_time)
             );
         """)
+
+        # Migration: add columns if upgrading from old schema
+        for col in ["val DOUBLE", "vah DOUBLE", "hvns VARCHAR", "lvns VARCHAR"]:
+            conn.execute(f"ALTER TABLE confluence_alerts ADD COLUMN IF NOT EXISTS {col};")
 
         # Create an index on timestamp/underlying for fast analysis
         conn.execute("CREATE INDEX IF NOT EXISTS idx_futures_ts ON futures_data (timestamp, underlying);")

@@ -24,6 +24,16 @@ options-research-analyst/
 
 ---
 
+## 💾 Data Ingestion
+
+### CoinAnalyze (Futures/Perpetuals)
+Fetches 15-minute OHLCV candles for all configured symbols every 15 minutes. Each row stores the candle's actual close timestamp from the API — not the ingestion time — so rate-limiting delays never cause timestamp drift. Snapshot data (OI, funding rate, liquidations, long/short ratio) is aligned to the same candle timestamp. Duplicate rows for the same (timestamp, symbol) pair are automatically deduplicated before insertion.
+
+### Deribit (Options Chains)
+Fetches options instruments within 60-day expiry and ±35% of the spot price. Greeks (delta, gamma, vega, theta), mark IV, open interest, and volume are stored every 15 minutes for IV Rank, skew, and term structure calculations.
+
+---
+
 ## 📊 Analytical Indicators & Features
 
 The system implements advanced technical analysis indicators to extract market structure directly from 15-minute futures candlestick data:
@@ -33,6 +43,7 @@ The system implements advanced technical analysis indicators to extract market s
 *   **Value Area (VA)**: The price range containing 70% of the profile's volume/TPO, bounded by Value Area High (VAH) and Value Area Low (VAL).
 *   **High Volume Nodes (HVNs)**: Significant peaks in volume distribution, acting as magnets or strong support/resistance zones.
 *   **Low Volume Nodes (LVNs)**: Valleys in volume distribution representing price rejection zones where price moves rapidly.
+*   **Timestamp Anchoring**: All profile data is anchored to the candle's actual close timestamp from the exchange API, not the ingestion time. Rate-limiting delays do not cause timestamp drift.
 *   **Price Scaling Engine**: Dynamically scales sub-dollar altcoins (e.g. POPCAT, MOODENG) up to 1,000,000x for Polars list processing to prevent step errors, then scales back to actual floats.
 
 ### 2. Profile Shape Classification
@@ -59,6 +70,7 @@ Runs a nearness confluence comparison (with a default 0.75% threshold) to detect
 The orchestrator daemon monitors all active symbols in `market_data.db` after every 15-minute ingestion cycle for alert triggers:
 *   **Alert Criteria**: Fires a dedicated alert notification to Telegram when a symbol enters the `🔥 HIGH CONFLUENCE ENTRY` state.
 *   **1h Cooldown Deduplication**: Logs alerts to the `confluence_alerts` table in DuckDB. If an alert has been dispatched for that symbol in the last 1 hour, it is suppressed to prevent notification spam.
+*   **Complete Market Context**: Each alert includes the full profile picture — POC, VWAP, VAL, VAH, top HVNs/LVNs, anchored-from data range, and candle count — so you can assess the setup without running separate commands.
 *   **Data Sufficiency Guard**: If an asset has less than 48 candles (12 hours of data) in its lookback window, it is flagged as `"Insufficient data"` and skipped. This prevents faulty calculations while database history is populating.
 
 ---
