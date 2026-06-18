@@ -10,15 +10,22 @@ A Python-based cryptocurrency research agent that monitors futures/perpetuals ma
 options-research-analyst/
 ├── data/
 │   └── market_data.db          # Central DuckDB database
+├── logs/
+│   ├── orchestrator-out.log    # Orchestrator stdout log
+│   └── orchestrator-error.log  # Orchestrator stderr log
 ├── venv/                       # Local Python virtual environment
 ├── config.py                   # Environment config loader & DB schema initialization
-├── ingest_coinalyze.py         # CoinAnalyze API futures data ingestion (supports batched altcoin fetching)
+├── ingest_coinalyze.py         # CoinAnalyze API futures data ingestion (batched, rate-limited)
 ├── ingest_deribit.py           # Deribit API options chain ingestion
 ├── backfill.py                 # One-time historical DVOL backfill script
+├── accumulation_monitor.py    # Zero-API accumulation detection monitor
 ├── analyze.py                  # Polars & SQL queries for skew, IV Rank, profiles, and VWAP
-├── orchestrator.py             # Sequential pipeline runner (runs loop, once, and alerts)
+├── brain.py                    # Tag-based market state tracking + shift detection
+├── orchestrator.py             # Sequential pipeline runner (loop, once, alerts, pruning)
 ├── telegram_bot.py             # Telegram commands & scheduled daily brief job
 ├── requirements.txt            # Project python dependencies
+├── ecosystem.config.js         # PM2 process manager configuration
+├── symbols-for-dual-zone.md    # Tracked symbol list (63 symbols)
 └── .env                        # Configuration file (ignored by Git)
 ```
 
@@ -27,10 +34,13 @@ options-research-analyst/
 ## 💾 Data Ingestion
 
 ### CoinAnalyze (Futures/Perpetuals)
-Fetches 15-minute OHLCV candles for all configured symbols every 15 minutes. Each row stores the candle's actual close timestamp from the API — not the ingestion time — so rate-limiting delays never cause timestamp drift. Snapshot data (OI, funding rate, liquidations, long/short ratio) is aligned to the same candle timestamp. Duplicate rows for the same (timestamp, symbol) pair are automatically deduplicated before insertion.
+Fetches 15-minute OHLCV candles for all configured symbols every 30 minutes (PM2 cron). Each row stores the candle's actual close timestamp from the API — not the ingestion time — so rate-limiting delays never cause timestamp drift. Snapshot data (OI, funding rate, liquidations, long/short ratio) is aligned to the same candle timestamp. Duplicate rows for the same (timestamp, symbol) pair are automatically deduplicated before insertion.
+
+*   **Rate Limiting**: CoinAnalyze has a strict rate limit (~5 req/min sliding window). The `RateLimiter` class enforces a 12-second minimum interval between calls, exponential backoff with jitter on 429 responses, and a global penalty window that blocks all subsequent calls when a 429 is received. Symbols are fetched in batches of 15 to reduce total request count.
+*   **Timestamp Auto-Detection**: The API may return candle timestamps in either epoch seconds or milliseconds. The ingestion code auto-detects the format: values > 1e12 are treated as milliseconds and divided by 1000; smaller values are treated as seconds directly.
 
 ### Deribit (Options Chains)
-Fetches options instruments within 60-day expiry and ±35% of the spot price. Greeks (delta, gamma, vega, theta), mark IV, open interest, and volume are stored every 15 minutes for IV Rank, skew, and term structure calculations.
+Fetches options instruments within 60-day expiry and ±20% of the spot price. Greeks (delta, gamma, vega, theta), mark IV, open interest, and volume are stored every 30 minutes for IV Rank, skew, and term structure calculations.
 
 ---
 
@@ -67,7 +77,13 @@ Runs a nearness confluence comparison (with a default 0.75% threshold) to detect
 
 ## 🔔 Background Alert System
 
-The orchestrator daemon monitors all active symbols in `market_data.db` after every 15-minute ingestion cycle for alert triggers:
+The system runs two independent alert monitors:
+
+### Accumulation Monitor (`accumulation_monitor.py`)
+Detects assets with volume spikes and flat price action (accumulation) every 15 minutes via PM2 cron. It reads existing 15-min OHLCV data from the DuckDB `futures_data` table — **zero API calls** — aggregates it into 1-hour windows, and runs the same detection logic as the hourly volume/OI scanner (`VOLUME_SPIKE_THRESHOLD`, `PRICE_SILENT_THRESHOLD`). When a symbol newly enters accumulation, it sends an immediate Telegram alert. State is tracked in `data/accumulation_state.json` to prevent duplicate alerts on subsequent checks.
+
+### High Confluence Entry Monitor (orchestrator)
+The orchestrator daemon monitors all active symbols in `market_data.db` after every 30-minute ingestion cycle for alert triggers:
 *   **Alert Criteria**: Fires a dedicated alert notification to Telegram when a symbol enters the `🔥 HIGH CONFLUENCE ENTRY` state.
 *   **1h Cooldown Deduplication**: Logs alerts to the `confluence_alerts` table in DuckDB. If an alert has been dispatched for that symbol in the last 1 hour, it is suppressed to prevent notification spam.
 *   **Complete Market Context**: Each alert includes the full profile picture — POC, VWAP, VAL, VAH, top HVNs/LVNs, anchored-from data range, and candle count — so you can assess the setup without running separate commands.
@@ -102,6 +118,11 @@ Initialize the database schemas and indexes:
 python config.py
 ```
 
+To wipe and reinitialize (e.g. after schema changes):
+```bash
+rm -f data/market_data.db && python config.py
+```
+
 ### 4. Bootstrap Historical Volatility (IV Rank)
 Run the one-time backfiller. This fetches the last 90 days of daily DVOL index values for BTC and ETH from Deribit to ensure the **IV Rank** calculation works accurately on day one:
 ```bash
@@ -114,9 +135,17 @@ python backfill.py
 
 Use a process manager like `pm2` (configured in `ecosystem.config.js`) to run the background processes:
 
-### In Loop Mode (using PM2)
+### Using PM2 (recommended)
 ```bash
 pm2 start ecosystem.config.js
+```
+
+The orchestrator runs on a `*/30 * * * *` cron (every 30 min) with `--once` flag. The accumulation-monitor runs on a `*/15 * * * *` cron (every 15 min) with `--once` flag. The telegram-bot runs continuously with auto-restart.
+
+### After Config Changes
+If you modify `ecosystem.config.js` or any orchestration files, reload PM2:
+```bash
+pm2 restart ecosystem.config.js
 ```
 
 ### Manually (or using screen)
