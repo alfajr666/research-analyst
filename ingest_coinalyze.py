@@ -235,7 +235,10 @@ def ingest_coinalyze():
                 raw_ts = last_candle.get("t")
                 if raw_ts is not None:
                     try:
-                        candle_ts = datetime.fromtimestamp(float(raw_ts) / 1000.0, tz=timezone.utc)
+                        ts_val = float(raw_ts)
+                        if ts_val > 1e12:
+                            ts_val /= 1000.0
+                        candle_ts = datetime.fromtimestamp(ts_val, tz=timezone.utc)
                     except (ValueError, TypeError, OSError):
                         candle_ts = datetime.now(timezone.utc)
                 else:

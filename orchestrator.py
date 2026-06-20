@@ -12,7 +12,6 @@ from analyze import update_daily_summary, get_profile_summary
 # Startup tracking for grace period & hourly scanner
 STARTUP_TIME = time.time()
 DAEMON_MODE = False
-LAST_SCAN_TIME = 0.0
 
 def prune_db(conn, retention_days: int = 30):
     """Removes historical data older than retention_days to keep the database size bounded."""
@@ -111,16 +110,39 @@ def check_and_alert_confluences(conn):
                 else:
                     anchor_str = "• *Anchored from:* N/A"
 
+                # --- Build the enhanced alert message ---
+                shape = prof.get('profile_shape', '')
+                shape_ctx = "no directional edge until VA break" if shape and shape.startswith("D") else prof.get('profile_shape_desc', '')
+
+                vol_conf = " + volume" if prof.get('volume_surge') else ""
+
+                def fmt_rr(val):
+                    return f"R:R {val}" if val is not None else "R:R N/A"
+
+                trig_long = fmt_price(prof.get('trigger_long'))
+                trig_short = fmt_price(prof.get('trigger_short'))
+                stop_str = fmt_price(prof.get('stop_anchor'))
+                t1l = fmt_price(prof.get('t1_long'))
+                t2l = fmt_price(prof.get('t2_long'))
+                t1s = fmt_price(prof.get('t1_short'))
+                t2s = fmt_price(prof.get('t2_short'))
+
                 alert_msg = (
                     f"🔔 *HIGH CONFLUENCE ENTRY ALERT* 🔔\n\n"
                     f"• *Asset:* #{underlying}\n"
-                    f"• *Current Price:* {price_str}\n"
+                    f"• *Current Price:* {price_str}\n\n"
+                    f"▫️ *Trigger Long:*  Close above {trig_long}{vol_conf}\n"
+                    f"▫️ *Trigger Short:* Close below {trig_short}{vol_conf}\n"
+                    f"▫️ *Stop anchor:*   POC {stop_str}\n\n"
+                    f"▫️ *If Long:*  T1 {t1l} | T2 {t2l} | {fmt_rr(prof.get('rr_long_t2'))}\n"
+                    f"▫️ *If Short:* T1 {t1s} | T2 {t2s} | {fmt_rr(prof.get('rr_short_t2'))}\n\n"
+                    f"▫️ *Bias:* {prof.get('bias_assessment', 'N/A')}\n"
+                    f"▫️ *Profile shape:* {shape} → {shape_ctx}\n"
+                    f"▫️ *Staleness:* levels as of last 15m close ({prof.get('staleness_mins', '?')}m ago)\n\n"
                     f"• *Volume POC:* {poc_str} | *VWAP:* {vwap_str}\n"
                     f"• *Value Area:* {val_str} – {vah_str}\n"
                     f"• *EMA26:* {ema26_str} | *EMA99:* {ema99_str}\n"
                     f"• *HVNs:* {hvns_str} | *LVNs:* {lvns_str}\n\n"
-                    f"• *Profile Shape:* *{prof.get('profile_shape')}*\n"
-                    f"  _{prof.get('profile_shape_desc')}_\n\n"
                     f"{anchor_str}\n\n"
                     f"• *Signal Details:*\n"
                     f"  _{prof.get('ta_desc')}_\n\n"
@@ -156,9 +178,8 @@ def check_and_alert_confluences(conn):
         except Exception as e:
             print(f"  Error checking alert for {underlying}: {e}")
 
-def run_pipeline(force_scan=False):
+def run_pipeline():
     """Runs the full sequential ingestion, scanning, and alerts pipeline."""
-    global LAST_SCAN_TIME
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==========================================")
     print(f"PIPELINE RUN: {now_str} UTC")
@@ -167,14 +188,16 @@ def run_pipeline(force_scan=False):
     # 1. Ensure DB schemas are initialized
     config.init_db()
     
-    # 2. Run hourly scanner if 1 hour has elapsed or forced
-    current_time = time.time()
-    if force_scan or (current_time - LAST_SCAN_TIME >= 3600):
+    # 2. Run hourly scanner if 1 hour has elapsed (check scanner_history table for last run)
+    conn = config.get_db_connection()
+    last_scan = conn.execute("SELECT MAX(timestamp) FROM scanner_history").fetchone()[0]
+    conn.close()
+    elapsed = (datetime.now(timezone.utc) - last_scan).total_seconds() if last_scan else 3601
+    if elapsed >= 3600:
         print("Running hourly market scanner...")
         try:
             from scanner import run_scanner, format_telegram_scanner_message
             json_data, accumulating_all = run_scanner()
-            LAST_SCAN_TIME = current_time
             
             # Send Telegram alert for the hourly rotation
             if json_data:

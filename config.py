@@ -143,6 +143,9 @@ def init_db():
             );
         """)
 
+        # Migration: add new columns for scanner schema updates
+        conn.execute("ALTER TABLE scanner_history ADD COLUMN IF NOT EXISTS price_change_1h DOUBLE;")
+        
         # Create an index on timestamp/underlying for fast analysis
         conn.execute("CREATE INDEX IF NOT EXISTS idx_futures_ts ON futures_data (timestamp, underlying);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_options_ts ON option_chains (timestamp, underlying);")

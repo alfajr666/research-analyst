@@ -106,7 +106,7 @@ def run_scanner():
     }
     
     # Read thresholds from env/defaults
-    vol_threshold = float(os.getenv("VOLUME_SPIKE_THRESHOLD", "3.5"))
+    vol_threshold = float(os.getenv("VOLUME_SPIKE_THRESHOLD", "1.5"))
     price_threshold = float(os.getenv("PRICE_SILENT_THRESHOLD", "3.0"))
     
     results = []
@@ -129,23 +129,18 @@ def run_scanner():
             if current_close <= 0.0:
                 continue
                 
-            # Current 24h Volume (Base)
-            current_vol_24h = sum(volumes[-24:])
-            
-            # 7d Cumulative Volume (Base)
-            total_vol_7d = sum(volumes)
-            
-            # Average Daily Volume (Base)
-            avg_daily_vol_7d = total_vol_7d / 7.0
-            if avg_daily_vol_7d <= 0.0:
+            # Average Hourly Volume over last 24 hours (excluding current hour)
+            avg_hourly_vol_24h = sum(volumes[-25:-1]) / 24.0
+            if avg_hourly_vol_24h <= 0.0:
                 continue
                 
-            # Volume Spike Multiple
-            vol_spike_mult = current_vol_24h / avg_daily_vol_7d
+            # Volume Spike Multiple: last 1h volume vs 24h avg hourly volume
+            last_hour_vol = volumes[-1]
+            vol_spike_mult = last_hour_vol / avg_hourly_vol_24h
             
-            # 24h Price Change (%) - current vs 24 hours ago
-            price_24h_ago = closes[-25]
-            price_change_24h = ((current_close - price_24h_ago) / price_24h_ago) * 100 if price_24h_ago > 0 else 0.0
+            # 1h Price Change (%) - current vs 1 hour ago
+            price_1h_ago = closes[-2]
+            price_change_1h = ((current_close - price_1h_ago) / price_1h_ago) * 100 if price_1h_ago > 0 else 0.0
             
             # 7d Cumulative USD Volume
             vol_7d_usd = sum(v * c for v, c in zip(volumes, closes))
@@ -157,7 +152,7 @@ def run_scanner():
             vol_to_oi_ratio = vol_7d_usd / oi_usd if oi_usd > 0 else 0.0
             
             # Check Accumulation Condition
-            is_accumulating = (vol_spike_mult >= vol_threshold) and (abs(price_change_24h) <= price_threshold)
+            is_accumulating = (vol_spike_mult >= vol_threshold) and (abs(price_change_1h) <= price_threshold)
             
             # Extract underlying name (e.g. BTCUSDT -> BTC)
             clean_sym = binance_meta["binance_symbol"]
@@ -170,7 +165,7 @@ def run_scanner():
                 "open_interest_usd": oi_usd,
                 "vol_to_oi_ratio": vol_to_oi_ratio,
                 "volume_spike_multiple": vol_spike_mult,
-                "price_change_24h": price_change_24h,
+                "price_change_1h": price_change_1h,
                 "is_accumulating": is_accumulating,
                 "close_price": current_close
             })
@@ -184,7 +179,7 @@ def run_scanner():
     # Sort all by Volume-to-OI ratio descending
     results.sort(key=lambda x: x["vol_to_oi_ratio"], reverse=True)
     
-    # Extract top 10
+    # Take top 10 by vol-to-OI ratio
     top_10 = results[:10]
     
     # Extract all currently accumulating assets
@@ -200,12 +195,12 @@ def run_scanner():
                 INSERT INTO scanner_history (
                     timestamp, rank, underlying, symbol, volume_7d_usd,
                     open_interest_usd, vol_to_oi_ratio, volume_spike_multiple,
-                    price_change_24h, is_accumulating
+                    price_change_1h, is_accumulating
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 current_time, i, res["underlying"], res["symbol"], res["volume_7d_usd"],
                 res["open_interest_usd"], res["vol_to_oi_ratio"], res["volume_spike_multiple"],
-                res["price_change_24h"], res["is_accumulating"]
+                res["price_change_1h"], res["is_accumulating"]
             ))
         db_conn.commit()
         print("Scanner results persisted to database.")
@@ -252,7 +247,7 @@ def run_scanner():
                 "open_interest_usd": r["open_interest_usd"],
                 "vol_to_oi_ratio": r["vol_to_oi_ratio"],
                 "volume_spike_multiple": r["volume_spike_multiple"],
-                "price_change_24h": r["price_change_24h"],
+                "price_change_1h": r["price_change_1h"],
                 "is_accumulating": r["is_accumulating"]
             }
             for i, r in enumerate(top_10)
@@ -265,7 +260,7 @@ def run_scanner():
                 "open_interest_usd": r["open_interest_usd"],
                 "vol_to_oi_ratio": r["vol_to_oi_ratio"],
                 "volume_spike_multiple": r["volume_spike_multiple"],
-                "price_change_24h": r["price_change_24h"]
+                "price_change_1h": r["price_change_1h"]
             }
             for r in accumulating_all
         ]
@@ -293,18 +288,18 @@ def format_telegram_scanner_message(json_data, accumulating_all) -> str:
     # 1. Accumulation alerts
     lines.append("🔥 *ACCUMULATION ALERTS (Watchlist)*")
     if accumulating_all:
-        lines.append("_Volume spike >= 3.5x average with flat price (<= 3.0%):_")
+        lines.append("_Volume spike >= 1.5x average with flat price (<= 3.0%):_")
         for i, r in enumerate(accumulating_all, 1):
             clean_sym = r["symbol"].split("_")[0]
             lines.append(
                 f"{i}. 🚀 *#{r['underlying']}* ({clean_sym})\n"
-                f"   • Vol Spike: *{r['volume_spike_multiple']:.2f}x* | 24h Price: *{r['price_change_24h']:+.2f}%*\n"
+                f"   • Vol Spike: *{r['volume_spike_multiple']:.2f}x* | 1h Price: *{r.get('price_change_1h', r.get('price_change_24h', 0.0)):+.2f}%*\n"
                 f"   • 7D Vol: ${r['volume_7d_usd']/1e6:.1f}M | Current OI: ${r['open_interest_usd']/1e6:.1f}M"
             )
     else:
         lines.append("_None (No assets with volume spikes and flat price)._")
         
-    lines.append("\n🏆 *TOP 10 HIGH VOLUME / LOW OI*")
+    lines.append("\n🏆 *TOP HIGH VOLUME / LOW OI*")
     lines.append("_Ranked by 7D USD Volume relative to Open Interest:_")
     
     for i, r in enumerate(json_data["rankings"][:10], 1):
@@ -314,10 +309,10 @@ def format_telegram_scanner_message(json_data, accumulating_all) -> str:
             f"{prefix}*#{r['underlying']}* ({clean_sym})\n"
             f"   • Velocity Ratio: *{r['vol_to_oi_ratio']:.2f}x*\n"
             f"   • 7D Vol: ${r['volume_7d_usd']/1e6:.1f}M | Current OI: ${r['open_interest_usd']/1e6:.1f}M\n"
-            f"   • Vol Spike: {r['volume_spike_multiple']:.1f}x | 24h Price: {r['price_change_24h']:+.2f}%"
+            f"   • Vol Spike: {r['volume_spike_multiple']:.1f}x | 1h Price: {r.get('price_change_1h', r.get('price_change_24h', 0.0)):+.2f}%"
         )
         
-    lines.append("\n💡 _Watchlist json updated at `data/scanned_pairs.json` for external bots._")
+    lines.append('\n💡 Watchlist json updated at `data/scanned_pairs.json` for external bots.')
     return "\n".join(lines)
 
 if __name__ == "__main__":

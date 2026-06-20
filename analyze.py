@@ -607,6 +607,79 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
             ta_signal = "Neutral (No Confluence)"
             ta_desc = "Price, EMAs, and POC are dispersed. No clear confluence entry zone at current price."
 
+    # --- Enhanced trade levels for high confluence alerts ---
+    va_width = (vol_vah - vol_val) if (vol_vah is not None and vol_val is not None and vol_vah > vol_val) else None
+
+    trigger_long = vol_vah + va_width * 0.15 if va_width is not None and vol_vah is not None else None
+    trigger_short = vol_val - va_width * 0.15 if va_width is not None and vol_val is not None else None
+
+    t1_long = vol_vah + va_width * 0.5 if va_width is not None and vol_vah is not None else None
+    t2_long = vol_vah + va_width * 1.0 if va_width is not None and vol_vah is not None else None
+    t1_short = vol_val - va_width * 0.5 if va_width is not None and vol_val is not None else None
+    t2_short = vol_val - va_width * 1.0 if va_width is not None and vol_val is not None else None
+
+    rr_long_t1 = rr_long_t2 = rr_short_t1 = rr_short_t2 = None
+    if trigger_long is not None and poc_vol is not None and trigger_long > poc_vol:
+        risk_long = trigger_long - poc_vol
+        if risk_long > 0:
+            rr_long_t1 = round((t1_long - trigger_long) / risk_long, 1) if t1_long is not None and t1_long > trigger_long else None
+            rr_long_t2 = round((t2_long - trigger_long) / risk_long, 1) if t2_long is not None and t2_long > trigger_long else None
+    if trigger_short is not None and poc_vol is not None and trigger_short < poc_vol:
+        risk_short = poc_vol - trigger_short
+        if risk_short > 0:
+            rr_short_t1 = round((trigger_short - t1_short) / risk_short, 1) if t1_short is not None and t1_short < trigger_short else None
+            rr_short_t2 = round((trigger_short - t2_short) / risk_short, 1) if t2_short is not None and t2_short < trigger_short else None
+
+    bias_parts = []
+    if close_price is not None and vwap_val is not None:
+        if close_price < vwap_val:
+            bias_parts.append("price below VWAP")
+        else:
+            bias_parts.append("price above VWAP")
+    if ema26_val is not None and ema99_val is not None:
+        if ema26_val > ema99_val:
+            bias_parts.append("EMAs bullish (26>99)")
+        elif ema26_val < ema99_val:
+            bias_parts.append("EMAs bearish (26<99)")
+        else:
+            bias_parts.append("EMAs flat")
+    if vol_val is not None and vol_vah is not None and close_price is not None:
+        va_mid = (vol_val + vol_vah) / 2
+        if close_price < va_mid:
+            bias_parts.append("price in lower VA")
+        elif close_price > va_mid:
+            bias_parts.append("price in upper VA")
+        else:
+            bias_parts.append("price at VA mid")
+
+    bearish_signals = 0
+    bullish_signals = 0
+    if close_price is not None and vwap_val is not None:
+        if close_price < vwap_val: bearish_signals += 1
+        else: bullish_signals += 1
+    if ema26_val is not None and ema99_val is not None:
+        if ema26_val < ema99_val: bearish_signals += 1
+        elif ema26_val > ema99_val: bullish_signals += 1
+    if close_price is not None and vol_val is not None and vol_vah is not None:
+        va_mid = (vol_val + vol_vah) / 2
+        if close_price < va_mid: bearish_signals += 1
+        elif close_price > va_mid: bullish_signals += 1
+
+    if bearish_signals > bullish_signals:
+        bias_lean = "Slight short lean"
+    elif bullish_signals > bearish_signals:
+        bias_lean = "Slight long lean"
+    else:
+        bias_lean = "Neutral lean"
+    bias_assessment = f"{bias_lean} ({', '.join(bias_parts)})" if bias_parts else bias_lean
+
+    now_utc = datetime.now(timezone.utc)
+    staleness_mins = round((now_utc - data_end).total_seconds() / 60) if data_end is not None else None
+
+    avg_candle_volume = df_profile["volume"].mean() if not df_profile.is_empty() else None
+    last_candle_volume = df_profile.tail(1)["volume"][0] if not df_profile.is_empty() else None
+    volume_surge = (last_candle_volume > avg_candle_volume * 1.2) if (last_candle_volume is not None and avg_candle_volume is not None and avg_candle_volume > 0) else False
+
     return {
         "underlying": underlying,
         "tpo_poc": poc_tpo,
@@ -628,7 +701,23 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         "ta_desc": ta_desc,
         "data_start": data_start,
         "data_end": data_end,
-        "candle_count": candle_count
+        "candle_count": candle_count,
+        "trigger_long": trigger_long,
+        "trigger_short": trigger_short,
+        "stop_anchor": poc_vol,
+        "t1_long": t1_long,
+        "t2_long": t2_long,
+        "t1_short": t1_short,
+        "t2_short": t2_short,
+        "rr_long_t1": rr_long_t1,
+        "rr_long_t2": rr_long_t2,
+        "rr_short_t1": rr_short_t1,
+        "rr_short_t2": rr_short_t2,
+        "bias_assessment": bias_assessment,
+        "bias_lean": bias_lean,
+        "staleness_mins": staleness_mins,
+        "avg_candle_volume": avg_candle_volume,
+        "volume_surge": volume_surge
     }
 
 def generate_ascii_profile(profile_df, poc, val, vah, num_bars=12) -> str:

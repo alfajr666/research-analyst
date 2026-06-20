@@ -34,13 +34,13 @@ options-research-analyst/
 ## 💾 Data Ingestion
 
 ### CoinAnalyze (Futures/Perpetuals)
-Fetches 15-minute OHLCV candles for all configured symbols every 30 minutes (PM2 cron). Each row stores the candle's actual close timestamp from the API — not the ingestion time — so rate-limiting delays never cause timestamp drift. Snapshot data (OI, funding rate, liquidations, long/short ratio) is aligned to the same candle timestamp. Duplicate rows for the same (timestamp, symbol) pair are automatically deduplicated before insertion.
+Fetches 15-minute OHLCV candles for all configured symbols on a continuous ingestion loop (default 15-minute interval, configured via `INGEST_INTERVAL_MINS`). Each row stores the candle's actual close timestamp from the API — not the ingestion time — so rate-limiting delays never cause timestamp drift. Snapshot data (OI, funding rate, liquidations, long/short ratio) is aligned to the same candle timestamp. Duplicate rows for the same (timestamp, symbol) pair are automatically deduplicated before insertion.
 
 *   **Rate Limiting**: CoinAnalyze has a strict rate limit (~5 req/min sliding window). The `RateLimiter` class enforces a 12-second minimum interval between calls, exponential backoff with jitter on 429 responses, and a global penalty window that blocks all subsequent calls when a 429 is received. Symbols are fetched in batches of 15 to reduce total request count.
 *   **Timestamp Auto-Detection**: The API may return candle timestamps in either epoch seconds or milliseconds. The ingestion code auto-detects the format: values > 1e12 are treated as milliseconds and divided by 1000; smaller values are treated as seconds directly.
 
 ### Deribit (Options Chains)
-Fetches options instruments within 60-day expiry and ±20% of the spot price. Greeks (delta, gamma, vega, theta), mark IV, open interest, and volume are stored every 30 minutes for IV Rank, skew, and term structure calculations.
+Fetches options instruments within 60-day expiry and ±20% of the spot price. Greeks (delta, gamma, vega, theta), mark IV, open interest, and volume are stored on every ingestion cycle (default 15 minutes) for IV Rank, skew, and term structure calculations.
 
 ---
 
@@ -83,7 +83,7 @@ The system runs two independent alert monitors:
 Runs as a continuous PM2 daemon that checks for volume spikes with flat price action (accumulation) every 15 minutes. It reads existing 15-min OHLCV data from the DuckDB `futures_data` table — **zero API calls** — aggregates it into 1-hour windows, and runs the same detection logic as the hourly volume/OI scanner (`VOLUME_SPIKE_THRESHOLD`, `PRICE_SILENT_THRESHOLD`). When a symbol newly enters accumulation, it sends an immediate Telegram alert. State is tracked in `data/accumulation_state.json` to prevent duplicate alerts on subsequent checks.
 
 ### High Confluence Entry Monitor (orchestrator)
-The orchestrator daemon monitors all active symbols in `market_data.db` after every 30-minute ingestion cycle for alert triggers:
+The orchestrator daemon monitors all active symbols in `market_data.db` after every ingestion cycle (default 15 minutes) for alert triggers:
 *   **Alert Criteria**: Fires a dedicated alert notification to Telegram when a symbol enters the `🔥 HIGH CONFLUENCE ENTRY` state.
 *   **1h Cooldown Deduplication**: Logs alerts to the `confluence_alerts` table in DuckDB. If an alert has been dispatched for that symbol in the last 1 hour, it is suppressed to prevent notification spam.
 *   **Complete Market Context**: Each alert includes the full profile picture — POC, VWAP, VAL, VAH, top HVNs/LVNs, anchored-from data range, and candle count — so you can assess the setup without running separate commands.
@@ -140,7 +140,7 @@ Use a process manager like `pm2` (configured in `ecosystem.config.js`) to run th
 pm2 start ecosystem.config.js
 ```
 
-The orchestrator runs on a `*/30 * * * *` cron (every 30 min) with `--once` flag. The accumulation-monitor runs as a continuous daemon, checking for accumulation every 15 minutes. The telegram-bot runs continuously with auto-restart. All PM2 logs are rotated daily at midnight with zero retention via `pm2-logrotate`.
+The orchestrator and accumulation-monitor both run as continuous daemons. The orchestrator runs the full ingestion + alert pipeline on a loop (default 15-minute interval, configured via `INGEST_INTERVAL_MINS`). The accumulation-monitor checks for volume-based accumulation patterns every 15 minutes (zero API calls — reads from local DuckDB). The telegram-bot runs continuously with auto-restart. All PM2 logs are rotated daily at midnight with zero retention via `pm2-logrotate`.
 
 ### After Config Changes
 If you modify `ecosystem.config.js` or any orchestration files, reload PM2:
@@ -149,7 +149,7 @@ pm2 restart ecosystem.config.js
 ```
 
 ### Manually (or using screen)
-1.  **Data Ingestion Orchestrator & Alerts Daemon**:
+1.  **Data Ingestion Orchestrator & Alerts Daemon** (append `--once` to run a single pipeline and exit):
     ```bash
     python orchestrator.py
     ```
