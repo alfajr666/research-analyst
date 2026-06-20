@@ -80,7 +80,7 @@ Runs a nearness confluence comparison (with a default 0.75% threshold) to detect
 The system runs two independent alert monitors:
 
 ### Accumulation Monitor (`accumulation_monitor.py`)
-Detects assets with volume spikes and flat price action (accumulation) every 15 minutes via PM2 cron. It reads existing 15-min OHLCV data from the DuckDB `futures_data` table — **zero API calls** — aggregates it into 1-hour windows, and runs the same detection logic as the hourly volume/OI scanner (`VOLUME_SPIKE_THRESHOLD`, `PRICE_SILENT_THRESHOLD`). When a symbol newly enters accumulation, it sends an immediate Telegram alert. State is tracked in `data/accumulation_state.json` to prevent duplicate alerts on subsequent checks.
+Runs as a continuous PM2 daemon that checks for volume spikes with flat price action (accumulation) every 15 minutes. It reads existing 15-min OHLCV data from the DuckDB `futures_data` table — **zero API calls** — aggregates it into 1-hour windows, and runs the same detection logic as the hourly volume/OI scanner (`VOLUME_SPIKE_THRESHOLD`, `PRICE_SILENT_THRESHOLD`). When a symbol newly enters accumulation, it sends an immediate Telegram alert. State is tracked in `data/accumulation_state.json` to prevent duplicate alerts on subsequent checks.
 
 ### High Confluence Entry Monitor (orchestrator)
 The orchestrator daemon monitors all active symbols in `market_data.db` after every 30-minute ingestion cycle for alert triggers:
@@ -140,7 +140,7 @@ Use a process manager like `pm2` (configured in `ecosystem.config.js`) to run th
 pm2 start ecosystem.config.js
 ```
 
-The orchestrator runs on a `*/30 * * * *` cron (every 30 min) with `--once` flag. The accumulation-monitor runs on a `*/15 * * * *` cron (every 15 min) with `--once` flag. The telegram-bot runs continuously with auto-restart.
+The orchestrator runs on a `*/30 * * * *` cron (every 30 min) with `--once` flag. The accumulation-monitor runs as a continuous daemon, checking for accumulation every 15 minutes. The telegram-bot runs continuously with auto-restart. All PM2 logs are rotated daily at midnight with zero retention via `pm2-logrotate`.
 
 ### After Config Changes
 If you modify `ecosystem.config.js` or any orchestration files, reload PM2:

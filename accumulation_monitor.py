@@ -6,12 +6,14 @@ aggregates them into 1-hour windows, runs the same detection logic as scanner.py
 (volume spike >= 1.5x, |price change| <= 3%), and sends Telegram alerts
 immediately on new detection.
 
-Runs via PM2 cron (every 15 min). Zero new API calls — all data from local DB.
+Runs as a continuous PM2 daemon, checking every 15 minutes. Zero new API calls
+— all data from local DB.
 """
 
 import json
 import os
 import sys
+import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -249,4 +251,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    while True:
+        main()
+        time.sleep(900)
