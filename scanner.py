@@ -1,6 +1,7 @@
 import time
 import os
 import json
+import statistics
 from datetime import datetime, timezone
 import httpx
 import duckdb
@@ -130,7 +131,7 @@ def run_scanner():
                 continue
                 
             # Average Hourly Volume over last 24 hours (excluding current hour)
-            avg_hourly_vol_24h = sum(volumes[-25:-1]) / 24.0
+            avg_hourly_vol_24h = statistics.median(volumes[-25:-1])
             if avg_hourly_vol_24h <= 0.0:
                 continue
                 

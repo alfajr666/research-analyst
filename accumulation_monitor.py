@@ -12,6 +12,7 @@ Runs as a continuous PM2 daemon, checking every 15 minutes. Zero new API calls
 
 import json
 import os
+import statistics
 import sys
 import time
 from collections import OrderedDict
@@ -80,7 +81,7 @@ def check_accumulation(hourly: list[dict]) -> dict | None:
         return None
 
     prev_volumes = [h["volume"] for h in hourly[-25:-1]]
-    avg_vol = sum(prev_volumes) / len(prev_volumes)
+    avg_vol = statistics.median(prev_volumes)
 
     if avg_vol <= 0.0:
         return None

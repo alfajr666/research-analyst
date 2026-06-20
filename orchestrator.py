@@ -66,6 +66,13 @@ def check_and_alert_confluences(conn):
                 
             # If it's a High Confluence Entry
             if prof.get("ta_signal") == "🔥 HIGH CONFLUENCE ENTRY":
+                # Check conviction threshold before proceeding
+                min_conviction = config.MIN_CONVICTION.upper()
+                alert_conviction = prof.get("conviction", "LOW")
+                conv_order = {"LOW": 0, "MODERATE": 1, "HIGH": 2}
+                if conv_order.get(alert_conviction, 0) < conv_order.get(min_conviction, 0):
+                    print(f"  Skipping {alert_conviction} conviction alert for {underlying} (min: {min_conviction})")
+                    continue
                 # Check when we last sent an alert for this asset (1 hour cooldown)
                 cooldown_time = datetime.now(timezone.utc) - timedelta(hours=1)
                 last_alert = conn.execute(
@@ -110,7 +117,7 @@ def check_and_alert_confluences(conn):
                 else:
                     anchor_str = "• *Anchored from:* N/A"
 
-                # --- Build the enhanced alert message ---
+                # --- Build the enhanced alert message (directional) ---
                 shape = prof.get('profile_shape', '')
                 shape_ctx = "no directional edge until VA break" if shape and shape.startswith("D") else prof.get('profile_shape_desc', '')
 
@@ -127,27 +134,71 @@ def check_and_alert_confluences(conn):
                 t1s = fmt_price(prof.get('t1_short'))
                 t2s = fmt_price(prof.get('t2_short'))
 
-                alert_msg = (
-                    f"🔔 *HIGH CONFLUENCE ENTRY ALERT* 🔔\n\n"
-                    f"• *Asset:* #{underlying}\n"
-                    f"• *Current Price:* {price_str}\n\n"
-                    f"▫️ *Trigger Long:*  Close above {trig_long}{vol_conf}\n"
-                    f"▫️ *Trigger Short:* Close below {trig_short}{vol_conf}\n"
-                    f"▫️ *Stop anchor:*   POC {stop_str}\n\n"
-                    f"▫️ *If Long:*  T1 {t1l} | T2 {t2l} | {fmt_rr(prof.get('rr_long_t2'))}\n"
-                    f"▫️ *If Short:* T1 {t1s} | T2 {t2s} | {fmt_rr(prof.get('rr_short_t2'))}\n\n"
-                    f"▫️ *Bias:* {prof.get('bias_assessment', 'N/A')}\n"
-                    f"▫️ *Profile shape:* {shape} → {shape_ctx}\n"
-                    f"▫️ *Staleness:* levels as of last 15m close ({prof.get('staleness_mins', '?')}m ago)\n\n"
-                    f"• *Volume POC:* {poc_str} | *VWAP:* {vwap_str}\n"
-                    f"• *Value Area:* {val_str} – {vah_str}\n"
-                    f"• *EMA26:* {ema26_str} | *EMA99:* {ema99_str}\n"
-                    f"• *HVNs:* {hvns_str} | *LVNs:* {lvns_str}\n\n"
-                    f"{anchor_str}\n\n"
-                    f"• *Signal Details:*\n"
-                    f"  _{prof.get('ta_desc')}_\n\n"
-                    f"_Timestamp: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC_"
-                )
+                directional_bias = prof.get("directional_bias", "neutral")
+                conviction = prof.get("conviction", "LOW")
+                confidence_score = prof.get("confidence_score", 0)
+                confirmations_list = prof.get("confirmations", [])
+
+                conv_icons = {"HIGH": "🔥 HIGH CONVICTION", "MODERATE": "✅ MODERATE", "LOW": "⚠️ LOW"}
+
+                if directional_bias == "neutral":
+                    alert_msg = (
+                        f"🔔 *HIGH CONFLUENCE ENTRY ALERT* 🔔\n\n"
+                        f"• *Asset:* #{underlying}\n"
+                        f"• *Current Price:* {price_str}\n\n"
+                        f"▫️ *Trigger Long:*  Close above {trig_long}{vol_conf}\n"
+                        f"▫️ *Trigger Short:* Close below {trig_short}{vol_conf}\n"
+                        f"▫️ *Stop anchor:*   POC {stop_str}\n\n"
+                        f"▫️ *If Long:*  T1 {t1l} | T2 {t2l} | {fmt_rr(prof.get('rr_long_t2'))}\n"
+                        f"▫️ *If Short:* T1 {t1s} | T2 {t2s} | {fmt_rr(prof.get('rr_short_t2'))}\n\n"
+                        f"▫️ *Bias:* {prof.get('bias_assessment', 'N/A')}\n"
+                        f"▫️ *Profile shape:* {shape} → {shape_ctx}\n"
+                        f"▫️ *Staleness:* levels as of last 15m close ({prof.get('staleness_mins', '?')}m ago)\n\n"
+                        f"• *Volume POC:* {poc_str} | *VWAP:* {vwap_str}\n"
+                        f"• *Value Area:* {val_str} – {vah_str}\n"
+                        f"• *EMA26:* {ema26_str} | *EMA99:* {ema99_str}\n"
+                        f"• *HVNs:* {hvns_str} | *LVNs:* {lvns_str}\n\n"
+                        f"{anchor_str}\n\n"
+                        f"• *Signal Details:*\n"
+                        f"  _{prof.get('ta_desc')}_\n\n"
+                        f"_Timestamp: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC_"
+                    )
+                else:
+                    dir_label = "LONG" if directional_bias == "long" else "SHORT"
+                    conv_label = conv_icons.get(conviction, conviction)
+                    title = f"🔔 *{conv_label} — {dir_label} SETUP* 🔔"
+                    ema_dir = "Bullish (26>99)" if directional_bias == "long" else "Bearish (26<99)"
+                    conf_count = len(confirmations_list)
+
+                    if directional_bias == "long":
+                        entry_line = f"▫️ *Entry:* Close above {trig_long}{vol_conf}"
+                        targets_line = f"▫️ *Targets:* T1 {t1l} | T2 {t2l} | {fmt_rr(prof.get('rr_long_t2'))}"
+                    else:
+                        entry_line = f"▫️ *Entry:* Close below {trig_short}{vol_conf}"
+                        targets_line = f"▫️ *Targets:* T1 {t1s} | T2 {t2s} | {fmt_rr(prof.get('rr_short_t2'))}"
+
+                    conf_summary = f" | ✅ {conf_count} confirmations" if conf_count > 0 else ""
+
+                    alert_msg = (
+                        f"{title}\n\n"
+                        f"• *Asset:* #{underlying} | *Confidence:* {conv_label}{conf_summary}\n"
+                        f"• *Current Price:* {price_str}\n\n"
+                        f"{entry_line}\n"
+                        f"▫️ *Stop anchor:* POC {stop_str}\n\n"
+                        f"{targets_line}\n\n"
+                        f"▫️ *Trend:* EMA26({ema26_str}) {'>' if directional_bias == 'long' else '<'} EMA99({ema99_str}) — {ema_dir}\n"
+                        f"▫️ *Bias:* {prof.get('bias_assessment', 'N/A')}\n"
+                        f"▫️ *Profile:* {shape} → {shape_ctx}\n"
+                        f"▫️ *Staleness:* last 15m close ({prof.get('staleness_mins', '?')}m ago)\n\n"
+                        f"• *Volume POC:* {poc_str} | *VWAP:* {vwap_str}\n"
+                        f"• *Value Area:* {val_str} – {vah_str}\n"
+                        f"• *EMA26:* {ema26_str} | *EMA99:* {ema99_str}\n"
+                        f"• *HVNs:* {hvns_str} | *LVNs:* {lvns_str}\n\n"
+                        f"{anchor_str}\n\n"
+                        f"• *Signal Details:*\n"
+                        f"  _{prof.get('ta_desc')}_\n\n"
+                        f"_Timestamp: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC_"
+                    )
                 
                 # Send the Telegram alert
                 token = config.TELEGRAM_BOT_TOKEN

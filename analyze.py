@@ -673,6 +673,90 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         bias_lean = "Neutral lean"
     bias_assessment = f"{bias_lean} ({', '.join(bias_parts)})" if bias_parts else bias_lean
 
+    # --- Directional bias and confidence scoring ---
+    directional_bias = "neutral"
+    conviction = "LOW"
+    confidence_score = 0
+    confirmations_list = []
+
+    if ta_signal == "🔥 HIGH CONFLUENCE ENTRY":
+        if ema26_val is not None and ema99_val is not None:
+            ema_gap = abs(ema26_val - ema99_val) / max(ema99_val, 1e-10)
+            if ema_gap < 0.001:
+                directional_bias = "neutral"
+            elif ema26_val > ema99_val:
+                directional_bias = "long"
+            else:
+                directional_bias = "short"
+
+        if directional_bias in ("long", "short"):
+            is_bull = directional_bias == "long"
+            score = 0
+            confs = []
+
+            # 1. Price vs VWAP
+            if vwap_val is not None and close_price is not None:
+                if (is_bull and close_price > vwap_val) or (not is_bull and close_price < vwap_val):
+                    score += 1
+                    confs.append("price-VWAP alignment")
+                else:
+                    score -= 1
+
+            # 2. Price vs VA midpoint
+            if vol_val is not None and vol_vah is not None and close_price is not None:
+                va_mid = (vol_val + vol_vah) / 2
+                if (is_bull and close_price > va_mid) or (not is_bull and close_price < va_mid):
+                    score += 1
+                    confs.append("price-VA alignment")
+                else:
+                    score -= 1
+
+            # 3. Profile shape alignment
+            shape_name = shape_dict.get("shape", "")
+            if is_bull:
+                if shape_name == "P-shape":
+                    score += 1
+                    confs.append("P-shape (bullish)")
+                elif shape_name in ("b-shape", "B-shape (Double Distribution)"):
+                    score -= 1
+            else:
+                if shape_name == "b-shape":
+                    score += 1
+                    confs.append("b-shape (bearish)")
+                elif shape_name in ("P-shape", "B-shape (Double Distribution)"):
+                    score -= 1
+
+            # 4. Price vs POC
+            if poc_vol is not None and close_price is not None:
+                if (is_bull and close_price >= poc_vol) or (not is_bull and close_price <= poc_vol):
+                    score += 1
+                    confs.append("price-POC alignment")
+                else:
+                    score -= 1
+
+            # 5. Volume surge
+            if volume_surge:
+                score += 1
+                confs.append("volume surge")
+
+            confidence_score = score
+            confirmations_list = confs
+
+            if score >= 3:
+                conviction = "HIGH"
+            elif score >= 1:
+                conviction = "MODERATE"
+            else:
+                conviction = "LOW"
+
+            # Update ta_desc with directional context
+            if directional_bias == "long":
+                ta_desc = "Price, EMAs (26/99), and POC are tightly coiled within an uptrend (EMA26>EMA99). High potential for a bullish breakout continuation. Prioritize long entries."
+            else:
+                ta_desc = "Price, EMAs (26/99), and POC are tightly coiled within a downtrend (EMA26<EMA99). High potential for a bearish breakdown continuation. Prioritize short entries."
+        else:
+            conviction = "LOW"
+
     now_utc = datetime.now(timezone.utc)
     staleness_mins = round((now_utc - data_end).total_seconds() / 60) if data_end is not None else None
 
@@ -717,7 +801,11 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         "bias_lean": bias_lean,
         "staleness_mins": staleness_mins,
         "avg_candle_volume": avg_candle_volume,
-        "volume_surge": volume_surge
+        "volume_surge": volume_surge,
+        "directional_bias": directional_bias,
+        "conviction": conviction,
+        "confidence_score": confidence_score,
+        "confirmations": confirmations_list
     }
 
 def generate_ascii_profile(profile_df, poc, val, vah, num_bars=12) -> str:

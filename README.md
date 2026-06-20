@@ -66,6 +66,14 @@ Summarizes the profile's structural distribution to diagnose market sentiment:
 ### 3. EMA & POC Confluence Entry Signal
 Runs a nearness confluence comparison (with a default 0.75% threshold) to detect high-probability setups:
 *   **🔥 HIGH CONFLUENCE ENTRY**: Triggered when the current Price, EMA26, EMA99, and the Volume POC are all coiled together. Setup for a breakout.
+    *   **Directional Bias**: Uses EMA cross (26/99) to determine trend direction. EMA26 > EMA99 = long setup; EMA26 < EMA99 = short setup. Only the aligned direction is shown in alerts.
+    *   **Confidence Scoring (5 factors)**: Each factor votes +1/-1 to produce a conviction level:
+        1. Price vs VWAP alignment
+        2. Price vs Value Area midpoint
+        3. Profile shape alignment (P-shape/b-shape)
+        4. Price vs Volume POC
+        5. Volume surge confirmation
+    *   **Conviction Levels**: 🔥 HIGH (≥3/5), ✅ MODERATE (1-2/5), ⚠️ LOW (≤0/5). LOW conviction alerts can be filtered via `MIN_CONVICTION` env var.
 *   **⚡ STRONG CONFLUENCE**: Triggered when the price is near the POC while testing either EMA26 or EMA99.
 *   **⏳ POTENTIAL ENTRY (EMA Pullback)**: Triggered when EMAs are coiled near the POC, but price has drifted. Watch for a pullback.
 
@@ -85,6 +93,8 @@ Runs as a continuous PM2 daemon that checks for volume spikes with flat price ac
 ### High Confluence Entry Monitor (orchestrator)
 The orchestrator daemon monitors all active symbols in `market_data.db` after every ingestion cycle (default 15 minutes) for alert triggers:
 *   **Alert Criteria**: Fires a dedicated alert notification to Telegram when a symbol enters the `🔥 HIGH CONFLUENCE ENTRY` state.
+*   **Directional Bias**: Alert shows only one side (long or short) based on EMA26 vs EMA99 cross, eliminating dual-direction clutter.
+*   **Confidence Scoring**: Each alert includes a conviction level (HIGH/MODERATE/LOW) based on 5 confirming factors. LOW alerts can be filtered via `MIN_CONVICTION` env var (default: `LOW`).
 *   **1h Cooldown Deduplication**: Logs alerts to the `confluence_alerts` table in DuckDB. If an alert has been dispatched for that symbol in the last 1 hour, it is suppressed to prevent notification spam.
 *   **Complete Market Context**: Each alert includes the full profile picture — POC, VWAP, VAL, VAH, top HVNs/LVNs, anchored-from data range, and candle count — so you can assess the setup without running separate commands.
 *   **Data Sufficiency Guard**: If an asset has less than 48 candles (12 hours of data) in its lookback window, it is flagged as `"Insufficient data"` and skipped. This prevents faulty calculations while database history is populating.
@@ -103,6 +113,7 @@ cp .env.example .env
 *   **`TELEGRAM_BOT_TOKEN`**: Create a Telegram bot via [@BotFather](https://t.me/BotFather) and paste the token.
 *   **`TELEGRAM_CHAT_ID`**: Get the ID of the channel, group, or direct chat where you want the brief and alerts delivered.
 *   **`DAILY_BRIEF_TIME_WITA`**: Time to send the daily brief (defaults to `08:00` in WITA / Asia/Makassar timezone).
+*   **`MIN_CONVICTION`** (optional): Minimum conviction level for High Confluence Entry alerts (`LOW`, `MODERATE`, or `HIGH`). Set to `MODERATE` or `HIGH` to filter lower-confidence signals (defaults to `LOW`).
 
 ### 2. Install Dependencies
 Initialize a virtual environment and install dependencies:

@@ -19,6 +19,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # Config Settings
 DB_PATH = os.getenv("DB_PATH", str(DEFAULT_DB_DIR / "market_data.db"))
 INGEST_INTERVAL_MINS = int(os.getenv("INGEST_INTERVAL_MINS", "15"))
+MIN_CONVICTION = os.getenv("MIN_CONVICTION", "LOW")
 DAILY_BRIEF_TIME_WITA = os.getenv("DAILY_BRIEF_TIME_WITA", "08:00")
 
 # API Base URLs
