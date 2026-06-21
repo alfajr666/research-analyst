@@ -9,24 +9,29 @@ A Python-based cryptocurrency research agent that monitors futures/perpetuals ma
 ```
 options-research-analyst/
 ├── data/
-│   └── market_data.db          # Central DuckDB database
+│   ├── market_data.db                      # Central DuckDB database
+│   ├── accumulation_state.json             # Accumulation monitor dedup state
+│   └── scanner_pending_accums.json         # Scanner→monitor bridge (auto-generated)
 ├── logs/
-│   ├── orchestrator-out.log    # Orchestrator stdout log
-│   └── orchestrator-error.log  # Orchestrator stderr log
-├── venv/                       # Local Python virtual environment
-├── config.py                   # Environment config loader & DB schema initialization
-├── ingest_coinalyze.py         # CoinAnalyze API futures data ingestion (batched, rate-limited)
-├── ingest_deribit.py           # Deribit API options chain ingestion
-├── backfill.py                 # One-time historical DVOL backfill script
-├── accumulation_monitor.py    # Zero-API accumulation detection monitor
-├── analyze.py                  # Polars & SQL queries for skew, IV Rank, profiles, and VWAP
-├── brain.py                    # Tag-based market state tracking + shift detection
-├── orchestrator.py             # Sequential pipeline runner (loop, once, alerts, pruning)
-├── telegram_bot.py             # Telegram commands & scheduled daily brief job
-├── requirements.txt            # Project python dependencies
-├── ecosystem.config.js         # PM2 process manager configuration
-├── symbols-for-dual-zone.md    # Tracked symbol list (63 symbols)
-└── .env                        # Configuration file (ignored by Git)
+│   ├── orchestrator-out.log                # Orchestrator stdout log
+│   ├── orchestrator-error.log              # Orchestrator stderr log
+│   ├── accumulation-out.log                # Accumulation monitor stdout log
+│   └── accumulation-error.log              # Accumulation monitor stderr log
+├── venv/                                   # Local Python virtual environment
+├── config.py                               # Environment config loader & DB schema initialization
+├── ingest_coinalyze.py                     # CoinAnalyze API futures data ingestion (batched, rate-limited)
+├── ingest_deribit.py                       # Deribit API options chain ingestion
+├── scanner.py                              # Hourly volume/OI scanner (Binance + CoinAnalyze)
+├── accumulation_monitor.py                 # Accumulation detection + Telegram alerts
+├── analyze.py                              # Polars & SQL queries for skew, IV Rank, profiles, and VWAP
+├── brain.py                                # Tag-based market state tracking + shift detection
+├── orchestrator.py                         # Sequential pipeline runner (loop, once, alerts, pruning)
+├── telegram_bot.py                         # Telegram commands & scheduled daily brief job
+├── backfill.py                             # One-time historical DVOL backfill script
+├── requirements.txt                        # Project python dependencies
+├── ecosystem.config.js                     # PM2 process manager configuration
+├── symbols-for-dual-zone.md                # Tracked symbol list (63 symbols)
+└── .env                                    # Configuration file (ignored by Git)
 ```
 
 ---
@@ -100,10 +105,35 @@ Runs a nearness confluence comparison (with a default 0.75% threshold) to detect
 
 ## 🔔 Background Alert System
 
-The system runs two independent alert monitors:
+The system runs three daemons that produce Telegram alerts:
 
-### Accumulation Monitor (`accumulation_monitor.py`)
-Runs as a continuous PM2 daemon that checks for volume spikes with flat price action (accumulation) every 15 minutes. It reads existing 15-min OHLCV data from the DuckDB `futures_data` table — **zero API calls** — aggregates it into 1-hour windows, and runs the same detection logic as the hourly volume/OI scanner (`VOLUME_SPIKE_THRESHOLD`, `PRICE_SILENT_THRESHOLD`). When a symbol newly enters accumulation, it sends an immediate Telegram alert. State is tracked in `data/accumulation_state.json` to prevent duplicate alerts on subsequent checks.
+### 1. Hourly Volume/OI Scanner (`scanner.py` — via `orchestrator.py`)
+Runs every hour as part of the orchestrator pipeline. Fetches fresh 7-day hourly data from CoinAnalyze for the top 50 USDT perpetuals (pre-filtered from Binance). Detects:
+- **Volume spikes**: 1h volume ≥ `VOLUME_SPIKE_THRESHOLD` × median 24h volume
+- **Accumulation**: Volume spike combined with flat price (`|1h price change| ≤ PRICE_SILENT_THRESHOLD`)
+- **Volume/OI velocity**: Ranks symbols by 7-day USD volume ÷ open interest
+
+Results are broadcast in a combined hourly rotation Telegram message and written to `data/scanner_pending_accums.json` for the accumulation monitor to consume.
+
+### 2. Accumulation Monitor (`accumulation_monitor.py`)
+Runs as a continuous PM2 daemon that checks for volume spikes with flat price action (accumulation) every 15 minutes. It has **two data sources**:
+
+**Source A — DuckDB (zero-API):** Reads existing 15-min OHLCV from `futures_data`, aggregates into 1-hour windows, and runs the same detection logic as the scanner (`VOLUME_SPIKE_THRESHOLD`, `PRICE_SILENT_THRESHOLD`). Requires ≥25 hourly buckets of DB history (≈25h) to produce a result.
+
+**Source B — Scanner feed (bridge file):** Reads `data/scanner_pending_accums.json` written by the hourly scanner. This bypasses the 25-hour DB requirement, allowing symbols freshly discovered by the scanner (like newly listed or low-OI altcoins) to receive immediate dedicated alerts.
+
+When a symbol newly enters accumulation from either source, it sends a dedicated Telegram alert 🔔:
+
+```
+🚨 ACCUMULATION DETECTED 🚨
+📅 2026-06-21 10:06:17 UTC
+
+🔸 #TNSR (TNSRUSDT_PERP.A)
+   • Vol Spike: 8.27x | 1h Price: -2.03%
+   • 7D Vol: $213.2M | OI: $8.6M
+```
+
+State is tracked in `data/accumulation_state.json` with a `source` field (`"db"` or `"scanner"`) to prevent duplicate alerts and correctly manage staleness for each source independently.
 
 ### High Confluence Entry Monitor (orchestrator)
 The orchestrator daemon monitors all active symbols in `market_data.db` after every ingestion cycle (default 15 minutes) for alert triggers:
@@ -166,7 +196,13 @@ Use a process manager like `pm2` (configured in `ecosystem.config.js`) to run th
 pm2 start ecosystem.config.js
 ```
 
-The orchestrator and accumulation-monitor both run as continuous daemons. The orchestrator runs the full ingestion + alert pipeline on a loop (default 15-minute interval, configured via `INGEST_INTERVAL_MINS`). The accumulation-monitor checks for volume-based accumulation patterns every 15 minutes (zero API calls — reads from local DuckDB). The telegram-bot runs continuously with auto-restart. All PM2 logs are rotated daily at midnight with zero retention via `pm2-logrotate`.
+| Process | Script | Interval | Purpose |
+|---|---|---|---|
+| `orchestrator` | `orchestrator.py` | 15 min | Ingestion, hourly scanner, confluence alerts |
+| `accumulation-monitor` | `accumulation_monitor.py` | 15 min | Accumulation detection from DB + scanner feed |
+| `telegram-bot` | `telegram_bot.py` | Continuous | Interactive commands + daily brief |
+
+The orchestrator runs the full ingestion + alert pipeline on a loop (default 15-minute interval, configured via `INGEST_INTERVAL_MINS`). The accumulation-monitor checks for accumulation patterns every 15 minutes using both DuckDB data and the scanner's pending file. The telegram-bot runs continuously with auto-restart. All PM2 logs are rotated daily at midnight with zero retention via `pm2-logrotate`.
 
 ### After Config Changes
 If you modify `ecosystem.config.js` or any orchestration files, reload PM2:

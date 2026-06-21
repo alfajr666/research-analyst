@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Accumulation Monitor — zero-API accumulation detection from DuckDB.
+"""Accumulation Monitor — dual-source accumulation detection + Telegram alerts.
 
-Reads 15-min candles already stored in futures_data by the ingestion pipeline,
-aggregates them into 1-hour windows, runs the same detection logic as scanner.py
-(volume spike >= 1.5x, |price change| <= 3%), and sends Telegram alerts
-immediately on new detection.
+Has two data sources:
+  1) DuckDB (zero-API): reads 15-min candles from futures_data, aggregates
+     into 1-hour windows, runs detection (volume spike >= 1.5x, |price| <= 3%).
+  2) Scanner feed: reads data/scanner_pending_accums.json written by the hourly
+     scanner (scanner.py) to detect accumulation on symbols that lack 25+ hours
+     of DuckDB history (e.g. freshly discovered altcoins).
 
-Runs as a continuous PM2 daemon, checking every 15 minutes. Zero new API calls
-— all data from local DB.
+When a symbol newly enters accumulation from either source, it sends a
+dedicated Telegram alert. State is tracked in data/accumulation_state.json
+with a "source" field ("db" vs "scanner") for independent dedup and staleness.
+
+Runs as a continuous PM2 daemon, checking every 15 minutes.
 """
 
 import json
@@ -186,6 +191,47 @@ def main():
         state = load_state()
         alerted: dict = state.get("alerted", {})
         now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        pending_path: Path = config.DEFAULT_DB_DIR / "scanner_pending_accums.json"
+
+        # ── Process scanner-fed pending accumulations (bypass 25-hour DB req) ──
+        scanner_active_set: set[str] = set()
+        if pending_path.exists():
+            try:
+                with open(pending_path) as f:
+                    pending = json.load(f)
+                scanner_syms = pending.get("symbols", {})
+                scanner_active_set = set(scanner_syms.keys())
+                remaining: dict = {}
+                for sym, meta in scanner_syms.items():
+                    if sym in alerted:
+                        continue
+                    meta_for_alert = {
+                        "vol_spike": meta["vol_spike"],
+                        "price_change_1h": meta["price_change_1h"],
+                        "vol_7d_usd": meta["vol_7d_usd"],
+                        "oi_usd": meta["oi_usd"],
+                    }
+                    underlying = meta["underlying"]
+                    ok = send_alert(sym, underlying, meta_for_alert)
+                    if ok:
+                        alerted[sym] = {
+                            "first_detected": now_iso,
+                            "last_alerted": now_iso,
+                            "vol_spike": meta["vol_spike"],
+                            "price_change_1h": meta["price_change_1h"],
+                            "underlying": underlying,
+                            "source": "scanner",
+                        }
+                        print(f"  Scanner-fed alert sent for {sym}")
+                    else:
+                        remaining[sym] = meta
+                if remaining:
+                    with open(pending_path, "w") as f:
+                        json.dump({"scanner_timestamp": pending["scanner_timestamp"], "symbols": remaining}, f, indent=2)
+                else:
+                    pending_path.unlink(missing_ok=True)
+            except Exception as e:
+                print(f"  Error processing scanner pending accums: {e}")
 
         current_accumulating: set[str] = set()
         new_accumulations: list[tuple[str, str, dict]] = []
@@ -232,9 +278,24 @@ def main():
                     "underlying": underlying,
                 }
 
-        stale = [sym for sym in alerted if sym not in current_accumulating]
+        # ── Stale cleanup: DB-sourced symbols ──
+        stale = [
+            sym for sym in alerted
+            if sym not in current_accumulating
+            and alerted[sym].get("source") != "scanner"
+        ]
         for sym in stale:
             print(f"  {sym} no longer accumulating — removed from state")
+            del alerted[sym]
+
+        # ── Stale cleanup: scanner-sourced symbols ──
+        stale_scanner = [
+            sym for sym in alerted
+            if alerted[sym].get("source") == "scanner"
+            and sym not in scanner_active_set
+        ]
+        for sym in stale_scanner:
+            print(f"  {sym} no longer in scanner accumulations — removed from state")
             del alerted[sym]
 
         state["last_check"] = now_iso
@@ -244,7 +305,8 @@ def main():
         print(
             f"  Accumulating: {len(current_accumulating)} | "
             f"New alerts: {len(new_accumulations)} | "
-            f"Cleared: {len(stale)}"
+            f"DB cleared: {len(stale)} | "
+            f"Scanner cleared: {len(stale_scanner)}"
         )
 
     finally:

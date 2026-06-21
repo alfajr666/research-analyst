@@ -269,6 +269,26 @@ def run_pipeline():
                         print(f"Failed to send scanner Telegram alert: {resp.text}")
                 else:
                     print("Telegram credentials not configured; scanner alert skipped.")
+
+            # Feed scanner-detected accumulations to the accumulation monitor
+            if accumulating_all:
+                pending_path = config.DEFAULT_DB_DIR / "scanner_pending_accums.json"
+                pending = {
+                    "scanner_timestamp": datetime.now(timezone.utc).isoformat(),
+                    "symbols": {
+                        r["symbol"]: {
+                            "underlying": r["underlying"],
+                            "vol_spike": r["volume_spike_multiple"],
+                            "price_change_1h": r["price_change_1h"],
+                            "vol_7d_usd": r["volume_7d_usd"],
+                            "oi_usd": r["open_interest_usd"],
+                        }
+                        for r in accumulating_all
+                    }
+                }
+                with open(pending_path, "w") as f:
+                    json.dump(pending, f, indent=2)
+                print(f"  Fed {len(accumulating_all)} scanner accumulations to monitor.")
         except Exception as e:
             print(f"Error during hourly scan: {e}", file=sys.stderr)
             

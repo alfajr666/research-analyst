@@ -679,6 +679,10 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
     confidence_score = 0
     confirmations_list = []
 
+    avg_candle_volume = df_profile["volume"].mean() if not df_profile.is_empty() else None
+    last_candle_volume = df_profile.tail(1)["volume"][0] if not df_profile.is_empty() else None
+    volume_surge = (last_candle_volume > avg_candle_volume * 1.2) if (last_candle_volume is not None and avg_candle_volume is not None and avg_candle_volume > 0) else False
+
     if ta_signal == "🔥 HIGH CONFLUENCE ENTRY":
         if ema26_val is not None and ema99_val is not None:
             directional_bias = "long" if ema26_val >= ema99_val else "short"
@@ -753,10 +757,6 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
 
     now_utc = datetime.now(timezone.utc)
     staleness_mins = round((now_utc - data_end).total_seconds() / 60) if data_end is not None else None
-
-    avg_candle_volume = df_profile["volume"].mean() if not df_profile.is_empty() else None
-    last_candle_volume = df_profile.tail(1)["volume"][0] if not df_profile.is_empty() else None
-    volume_surge = (last_candle_volume > avg_candle_volume * 1.2) if (last_candle_volume is not None and avg_candle_volume is not None and avg_candle_volume > 0) else False
 
     return {
         "underlying": underlying,
