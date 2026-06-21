@@ -681,13 +681,7 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
 
     if ta_signal == "🔥 HIGH CONFLUENCE ENTRY":
         if ema26_val is not None and ema99_val is not None:
-            ema_gap = abs(ema26_val - ema99_val) / max(ema99_val, 1e-10)
-            if ema_gap < 0.001:
-                directional_bias = "neutral"
-            elif ema26_val > ema99_val:
-                directional_bias = "long"
-            else:
-                directional_bias = "short"
+            directional_bias = "long" if ema26_val >= ema99_val else "short"
 
         if directional_bias in ("long", "short"):
             is_bull = directional_bias == "long"
