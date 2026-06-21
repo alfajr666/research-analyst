@@ -66,7 +66,7 @@ Summarizes the profile's structural distribution to diagnose market sentiment:
 ### 3. EMA & POC Confluence Entry Signal
 Runs a nearness confluence comparison (with a default 0.75% threshold) to detect high-probability setups:
 *   **🔥 HIGH CONFLUENCE ENTRY**: Triggered when the current Price, EMA26, EMA99, and the Volume POC are all coiled together. Setup for a breakout.
-    *   **Directional Bias**: Uses EMA cross (26/99) to determine trend direction. EMA26 > EMA99 = long setup; EMA26 < EMA99 = short setup. Only the aligned direction is shown in alerts.
+    *   **Directional Bias**: Strict EMA cross (26/99). EMA26 ≥ EMA99 = long setup; EMA26 < EMA99 = short setup. Only the aligned direction is shown. Neutral (both directions) only when EMAs are exactly equal (practically never).
     *   **Confidence Scoring (5 factors)**: Each factor votes +1/-1 to produce a conviction level:
         1. Price vs VWAP alignment
         2. Price vs Value Area midpoint
@@ -74,6 +74,21 @@ Runs a nearness confluence comparison (with a default 0.75% threshold) to detect
         4. Price vs Volume POC
         5. Volume surge confirmation
     *   **Conviction Levels**: 🔥 HIGH (≥3/5), ✅ MODERATE (1-2/5), ⚠️ LOW (≤0/5). LOW conviction alerts can be filtered via `MIN_CONVICTION` env var.
+    *   **Example alert** — short setup with LOW conviction:
+        ```
+        🔔 *⚠️ LOW CONVICTION — SHORT SETUP* 🔔
+
+        • Asset: #HBAR | Confidence: ⚠️ LOW (0/5)
+        • Current Price: $0.080600
+
+        ▫️ Entry: Close below $0.079865
+        ▫️ Stop anchor: POC $0.080135
+        ▫️ Targets: T1 $0.079670 | T2 $0.079391 | R:R 1.8
+
+        ▫️ Trend: EMA26($0.080288) < EMA99($0.080313) — Bearish
+        ▫️ Profile: P-shape → Thin volume at the bottom...
+        ▫️ Staleness: last 15m close (11m ago)
+        ```
 *   **⚡ STRONG CONFLUENCE**: Triggered when the price is near the POC while testing either EMA26 or EMA99.
 *   **⏳ POTENTIAL ENTRY (EMA Pullback)**: Triggered when EMAs are coiled near the POC, but price has drifted. Watch for a pullback.
 
