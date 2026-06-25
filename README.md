@@ -118,7 +118,7 @@ Results are broadcast in a combined hourly rotation Telegram message and written
 ### 2. Accumulation & Trend Pullback Confluence Monitor (`accumulation_monitor.py`)
 Runs as a continuous PM2 daemon that checks for the "Holy Grail" confluence setups every 15 minutes:
 - **1h Accumulation (Gate 1):** Detects volume spikes with flat price action (`VOLUME_SPIKE_THRESHOLD`, `PRICE_SILENT_THRESHOLD`) on both local DuckDB futures data and scanner-fed files (`data/scanner_pending_accums.json`).
-- **4h EMA 99 Pullback (Gate 2):** Calculates the 4h EMA 99 on closed 4h candles. The symbol passes if it is within 1% of the EMA 99 (Long/Short pullback support/resistance).
+- **15m EMA 99 Pullback (Gate 2):** Calculates the 15m EMA 99 on raw 15m candles. The symbol passes if it is within 1% of the EMA 99 (Long/Short pullback support/resistance).
 - **15m Green/Red Candle Trigger (Gate 3):** To confirm momentum, the bot waits for the latest closed 15m candle to turn Green (for Longs) or Red (for Shorts).
 - **Entry Zone Range:** Calculates and outputs an actionable "Entry Zone" range (between the EMA 99 and the 1% threshold) directly in the Telegram alert.
 - **State Tracking:** Tracks alerted symbols in `data/accumulation_state.json` (with support for "db" vs "scanner" sources) to prevent duplicate alerts while a symbol remains in the pullback entry zone.

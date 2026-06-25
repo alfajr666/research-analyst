@@ -109,47 +109,26 @@ def check_accumulation(hourly: list[dict]) -> dict | None:
     }
 
 
-def get_4h_ema_99(conn, symbol: str) -> tuple[float, float, str] | None:
-    """Fetch 15-min candles for the last 30 days, aggregate to 4-hour buckets,
-    and calculate EMA 99 using Polars on fully closed 4-hour periods.
+def get_15m_ema_99(conn, symbol: str) -> tuple[float, float, str] | None:
+    """Fetch 15-min candles and calculate EMA 99 using Polars.
 
     Returns (latest_close, latest_ema, trend) or None.
     """
-    now = datetime.now(timezone.utc)
-    current_4h_start = now.replace(
-        hour=now.hour - (now.hour % 4), minute=0, second=0, microsecond=0
-    )
-
     rows = conn.execute("""
         SELECT timestamp, close
         FROM futures_data
         WHERE symbol = ?
-          AND timestamp >= NOW() - INTERVAL '30 days'
-          AND timestamp < ?
+          AND timestamp >= NOW() - INTERVAL '7 days'
         ORDER BY timestamp ASC
-    """, [symbol, current_4h_start]).fetchall()
+    """, [symbol]).fetchall()
 
-    if not rows:
+    if len(rows) < 100:  # Require enough 15m candles for EMA 99
         return None
 
-    # Aggregate to 4-hour buckets
-    buckets: OrderedDict[datetime, float] = OrderedDict()
-    for row in rows:
-        ts = row[0]
-        close = float(row[1] or 0.0)
-
-        four_hour_key = ts.replace(
-            hour=ts.hour - (ts.hour % 4), minute=0, second=0, microsecond=0
-        )
-        buckets[four_hour_key] = close
-
-    if len(buckets) < 100:  # Require enough data for EMA 99
-        return None
-
-    # Create Polars DataFrame and calculate EMA 99
+    # Create Polars DataFrame directly from 15m candles
     df = pl.DataFrame({
-        "timestamp": list(buckets.keys()),
-        "close": list(buckets.values())
+        "timestamp": [r[0] for r in rows],
+        "close": [float(r[1] or 0.0) for r in rows]
     })
 
     df = df.with_columns(
@@ -198,13 +177,13 @@ def send_alert(symbol: str, underlying: str, meta: dict) -> bool:
         zone_min = ema_val
         zone_max = ema_val * 1.01
         emoji = "🔸"
-        setup_type = "4h EMA 99 Pullback + Accumulation"
+        setup_type = "15m EMA 99 Pullback + Accumulation"
         title = "🎯 *HOLY GRAIL LONG DETECTED* 🎯"
     else:
         zone_min = ema_val * 0.99
         zone_max = ema_val
         emoji = "🔻"
-        setup_type = "4h EMA 99 Pullback + Distribution"
+        setup_type = "15m EMA 99 Pullback + Distribution"
         title = "🎯 *HOLY GRAIL SHORT DETECTED* 🎯"
 
     def format_price(p):
@@ -286,11 +265,12 @@ def main():
                         continue
 
                     # Confluence check for scanner-fed symbol
-                    ema_res = get_4h_ema_99(conn, sym)
+                    ema_res = get_15m_ema_99(conn, sym)
                     if not ema_res:
+                        remaining[sym] = meta
                         continue
 
-                    latest_close_4h, latest_ema_4h, trend_4h = ema_res
+                    latest_close, latest_ema, trend = ema_res
 
                     latest_15m = conn.execute("""
                         SELECT open, close
@@ -301,6 +281,7 @@ def main():
                     """, [sym]).fetchone()
 
                     if not latest_15m:
+                        remaining[sym] = meta
                         continue
 
                     open_15m = float(latest_15m[0] or 0.0)
@@ -309,20 +290,21 @@ def main():
                     is_pullback = False
                     ema_dist = 0.0
 
-                    if trend_4h == "long":
-                        ema_dist = (latest_close_4h - latest_ema_4h) / latest_ema_4h
+                    if trend == "long":
+                        ema_dist = (latest_close - latest_ema) / latest_ema
                         if 0.0 <= ema_dist <= 0.01:
                             is_pullback = True
-                    elif trend_4h == "short":
-                        ema_dist = (latest_ema_4h - latest_close_4h) / latest_ema_4h
+                    elif trend == "short":
+                        ema_dist = (latest_ema - latest_close) / latest_ema
                         if 0.0 <= ema_dist <= 0.01:
                             is_pullback = True
 
                     if not is_pullback:
+                        remaining[sym] = meta
                         continue
 
                     # Check 15m execution trigger
-                    is_triggered = (trend_4h == "long" and close_15m > open_15m) or (trend_4h == "short" and close_15m < open_15m)
+                    is_triggered = (trend == "long" and close_15m > open_15m) or (trend == "short" and close_15m < open_15m)
                     if not is_triggered:
                         remaining[sym] = meta
                         continue
@@ -332,8 +314,8 @@ def main():
                         "price_change_1h": meta["price_change_1h"],
                         "vol_7d_usd": meta["vol_7d_usd"],
                         "oi_usd": meta["oi_usd"],
-                        "trend": trend_4h,
-                        "ema_val": latest_ema_4h,
+                        "trend": trend,
+                        "ema_val": latest_ema,
                         "ema_dist": ema_dist,
                     }
                     underlying = meta["underlying"]
@@ -373,12 +355,12 @@ def main():
             if meta is None:
                 continue
 
-            # Gate 2: Check 4h EMA 99 Pullback (Heavy, runs only on accumulating symbols)
-            ema_res = get_4h_ema_99(conn, symbol)
+            # Gate 2: Check 15m EMA 99 Pullback (Heavy, runs only on accumulating symbols)
+            ema_res = get_15m_ema_99(conn, symbol)
             if not ema_res:
                 continue
 
-            latest_close_4h, latest_ema_4h, trend_4h = ema_res
+            latest_close, latest_ema, trend = ema_res
 
             # Gate 3: Check 15m Execution Trigger
             latest_15m = conn.execute("""
@@ -399,12 +381,12 @@ def main():
             is_pullback = False
             ema_dist = 0.0
 
-            if trend_4h == "long":
-                ema_dist = (latest_close_4h - latest_ema_4h) / latest_ema_4h
+            if trend == "long":
+                ema_dist = (latest_close - latest_ema) / latest_ema
                 if 0.0 <= ema_dist <= 0.01:
                     is_pullback = True
-            elif trend_4h == "short":
-                ema_dist = (latest_ema_4h - latest_close_4h) / latest_ema_4h
+            elif trend == "short":
+                ema_dist = (latest_ema - latest_close) / latest_ema
                 if 0.0 <= ema_dist <= 0.01:
                     is_pullback = True
 
@@ -418,13 +400,13 @@ def main():
                 continue
 
             # Check the 15m trigger to actually send the alert
-            is_triggered = (trend_4h == "long" and close_15m > open_15m) or (trend_4h == "short" and close_15m < open_15m)
+            is_triggered = (trend == "long" and close_15m > open_15m) or (trend == "short" and close_15m < open_15m)
             if not is_triggered:
                 continue
 
             # Add confluence details to meta
-            meta["trend"] = trend_4h
-            meta["ema_val"] = latest_ema_4h
+            meta["trend"] = trend
+            meta["ema_val"] = latest_ema
             meta["ema_dist"] = ema_dist
 
             stats = conn.execute("""

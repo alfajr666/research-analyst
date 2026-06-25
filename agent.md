@@ -6,15 +6,15 @@ This document details the configuration and operational spec for the **Options R
 The agent operates as an analytical system monitoring crypto futures (via CoinAnalyze) and options markets (via Deribit). Its primary background function is detecting high-probability structural trend setups and delivering actionable entry signals directly to Telegram.
 
 ## 📈 Confluence Trading Strategy
-The agent implements the **4h EMA 99 Pullback + 1h Accumulation Confluence** setup, designed to find low-risk entries at key macro levels.
+The agent implements the **15m EMA 99 Pullback + 1h Accumulation Confluence** setup, designed to find low-risk entries at key macro levels.
 
-### 1. Macro Trend & Support/Resistance (4h)
-- The agent tracks the **4h EMA 99** as the primary trend filter.
-- **Long Trend:** 4h Close > EMA 99. Pullback is valid if the last closed 4h candle closed within **1%** of the EMA 99 (`0.0% to 1.0%` above it).
-- **Short Trend:** 4h Close < EMA 99. Pullback is valid if the last closed 4h candle closed within **1%** of the EMA 99 (`0.0% to 1.0%` below it).
+### 1. Trend & Support/Resistance (15m)
+- The agent tracks the **15m EMA 99** as the primary trend filter.
+- **Long Trend:** 15m Close > EMA 99. Pullback is valid if the last closed 15m candle closed within **1%** of the EMA 99 (`0.0% to 1.0%` above it).
+- **Short Trend:** 15m Close < EMA 99. Pullback is valid if the last closed 15m candle closed within **1%** of the EMA 99 (`0.0% to 1.0%` below it).
 
 ### 2. Micro Volume Spike / Consolidation (1h)
-- While the coin is resting on its 4h EMA support/resistance, the agent monitors for **Volume Accumulation/Distribution**.
+- While the coin is resting on its 15m EMA support/resistance, the agent monitors for **Volume Accumulation/Distribution**.
 - Requires a volume spike **>= 1.5x** the recent average volume.
 - Requires quiet price consolidation (1h absolute price change **<= 3.0%**).
 
