@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Accumulation Monitor — dual-source accumulation detection + Telegram alerts.
+"""Accumulation Monitor — dual-source confluence detection + Telegram alerts.
 
 Has two data sources:
   1) DuckDB (zero-API): reads 15-min candles from futures_data, aggregates
      into 1-hour windows, runs detection (volume spike >= 1.5x, |price| <= 3%).
   2) Scanner feed: reads data/scanner_pending_accums.json written by the hourly
-     scanner (scanner.py) to detect accumulation on symbols that lack 25+ hours
-     of DuckDB history (e.g. freshly discovered altcoins).
+     scanner (scanner.py).
 
-When a symbol newly enters accumulation from either source, it sends a
-dedicated Telegram alert. State is tracked in data/accumulation_state.json
-with a "source" field ("db" vs "scanner") for independent dedup and staleness.
+For symbols identified as accumulating from either source, it runs the confluence pipeline:
+  - 4h EMA 99 Pullback (within 1% threshold).
+  - 15m Green/Red candle execution trigger.
 
+When a confluence newly triggers, it sends a Telegram alert with the Entry Zone.
+State is tracked in data/accumulation_state.json.
 Runs as a continuous PM2 daemon, checking every 15 minutes.
 """
 
@@ -26,6 +27,7 @@ from pathlib import Path
 
 import duckdb
 import httpx
+import polars as pl
 
 import config
 
@@ -36,11 +38,7 @@ LOOKBACK_HOURS: int = 30
 
 
 def get_hourly_buckets(conn, symbol: str) -> list[dict]:
-    """Fetch 15-min candles and aggregate into 1-hour buckets in Python.
-
-    Returns a list of dicts ordered oldest→newest, one per hour bucket
-    that has at least one data point.
-    """
+    """Fetch 15-min candles and aggregate into 1-hour buckets in Python."""
     rows = conn.execute("""
         SELECT timestamp, volume, close, open_interest
         FROM futures_data
@@ -78,10 +76,7 @@ def get_hourly_buckets(conn, symbol: str) -> list[dict]:
 
 
 def check_accumulation(hourly: list[dict]) -> dict | None:
-    """Run accumulation detection on hourly buckets.
-
-    Returns a metadata dict if accumulating, None otherwise.
-    """
+    """Run accumulation detection on hourly buckets."""
     if len(hourly) < 25:
         return None
 
@@ -114,6 +109,61 @@ def check_accumulation(hourly: list[dict]) -> dict | None:
     }
 
 
+def get_4h_ema_99(conn, symbol: str) -> tuple[float, float, str] | None:
+    """Fetch 15-min candles for the last 30 days, aggregate to 4-hour buckets,
+    and calculate EMA 99 using Polars on fully closed 4-hour periods.
+
+    Returns (latest_close, latest_ema, trend) or None.
+    """
+    now = datetime.now(timezone.utc)
+    current_4h_start = now.replace(
+        hour=now.hour - (now.hour % 4), minute=0, second=0, microsecond=0
+    )
+
+    rows = conn.execute("""
+        SELECT timestamp, close
+        FROM futures_data
+        WHERE symbol = ?
+          AND timestamp >= NOW() - INTERVAL '30 days'
+          AND timestamp < ?
+        ORDER BY timestamp ASC
+    """, [symbol, current_4h_start]).fetchall()
+
+    if not rows:
+        return None
+
+    # Aggregate to 4-hour buckets
+    buckets: OrderedDict[datetime, float] = OrderedDict()
+    for row in rows:
+        ts = row[0]
+        close = float(row[1] or 0.0)
+
+        four_hour_key = ts.replace(
+            hour=ts.hour - (ts.hour % 4), minute=0, second=0, microsecond=0
+        )
+        buckets[four_hour_key] = close
+
+    if len(buckets) < 100:  # Require enough data for EMA 99
+        return None
+
+    # Create Polars DataFrame and calculate EMA 99
+    df = pl.DataFrame({
+        "timestamp": list(buckets.keys()),
+        "close": list(buckets.values())
+    })
+
+    df = df.with_columns(
+        pl.col("close").ewm_mean(span=99, adjust=False).alias("ema_99")
+    )
+
+    latest = df.tail(1).to_dicts()[0]
+    latest_close = latest["close"]
+    latest_ema = latest["ema_99"]
+
+    trend = "long" if latest_close > latest_ema else "short"
+    return latest_close, latest_ema, trend
+
+
 def load_state() -> dict:
     """Load accumulation state from JSON file."""
     if STATE_FILE.exists():
@@ -133,17 +183,46 @@ def save_state(state: dict):
 
 
 def send_alert(symbol: str, underlying: str, meta: dict) -> bool:
-    """Send an immediate Telegram alert for a newly detected accumulation."""
+    """Send an immediate Telegram alert for a newly detected confluence."""
     vol_spike = meta["vol_spike"]
     price_change = meta["price_change_1h"]
     vol_7d = meta.get("vol_7d_usd", 0.0)
     oi_usd = meta.get("oi_usd", 0.0)
     clean_sym = symbol.split("_")[0]
 
+    trend = meta["trend"]
+    ema_val = meta["ema_val"]
+    ema_dist_pct = meta["ema_dist"] * 100.0
+
+    if trend == "long":
+        zone_min = ema_val
+        zone_max = ema_val * 1.01
+        emoji = "🔸"
+        setup_type = "4h EMA 99 Pullback + Accumulation"
+        title = "🎯 *HOLY GRAIL LONG DETECTED* 🎯"
+    else:
+        zone_min = ema_val * 0.99
+        zone_max = ema_val
+        emoji = "🔻"
+        setup_type = "4h EMA 99 Pullback + Distribution"
+        title = "🎯 *HOLY GRAIL SHORT DETECTED* 🎯"
+
+    def format_price(p):
+        if p >= 1000:
+            return f"${p:,.0f}"
+        elif p >= 1:
+            return f"${p:,.2f}"
+        else:
+            return f"${p:,.6f}"
+
+    entry_zone_str = f"{format_price(zone_min)} - {format_price(zone_max)}"
+
     msg = (
-        f"\U0001F6A8 *ACCUMULATION DETECTED* \U0001F6A8\n"
-        f"\U0001F4C5 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
-        f"\U0001F538 *#{underlying}* ({clean_sym})\n"
+        f"{title}\n"
+        f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+        f"{emoji} *#{underlying}* ({clean_sym})\n"
+        f"   \u2022 Setup: *{setup_type}*\n"
+        f"   \u2022 Entry Zone: *{entry_zone_str}* (Dist: {ema_dist_pct:.2f}%)\n"
         f"   \u2022 Vol Spike: *{vol_spike:.2f}x* | 1h Price: *{price_change:+.2f}%*\n"
         f"   \u2022 7D Vol: ${vol_7d / 1e6:.1f}M | OI: ${oi_usd / 1e6:.1f}M"
     )
@@ -205,11 +284,57 @@ def main():
                 for sym, meta in scanner_syms.items():
                     if sym in alerted:
                         continue
+
+                    # Confluence check for scanner-fed symbol
+                    ema_res = get_4h_ema_99(conn, sym)
+                    if not ema_res:
+                        continue
+
+                    latest_close_4h, latest_ema_4h, trend_4h = ema_res
+
+                    latest_15m = conn.execute("""
+                        SELECT open, close
+                        FROM futures_data
+                        WHERE symbol = ?
+                        ORDER BY timestamp DESC
+                        LIMIT 1
+                    """, [sym]).fetchone()
+
+                    if not latest_15m:
+                        continue
+
+                    open_15m = float(latest_15m[0] or 0.0)
+                    close_15m = float(latest_15m[1] or 0.0)
+
+                    is_pullback = False
+                    ema_dist = 0.0
+
+                    if trend_4h == "long":
+                        ema_dist = (latest_close_4h - latest_ema_4h) / latest_ema_4h
+                        if 0.0 <= ema_dist <= 0.01:
+                            is_pullback = True
+                    elif trend_4h == "short":
+                        ema_dist = (latest_ema_4h - latest_close_4h) / latest_ema_4h
+                        if 0.0 <= ema_dist <= 0.01:
+                            is_pullback = True
+
+                    if not is_pullback:
+                        continue
+
+                    # Check 15m execution trigger
+                    is_triggered = (trend_4h == "long" and close_15m > open_15m) or (trend_4h == "short" and close_15m < open_15m)
+                    if not is_triggered:
+                        remaining[sym] = meta
+                        continue
+
                     meta_for_alert = {
                         "vol_spike": meta["vol_spike"],
                         "price_change_1h": meta["price_change_1h"],
                         "vol_7d_usd": meta["vol_7d_usd"],
                         "oi_usd": meta["oi_usd"],
+                        "trend": trend_4h,
+                        "ema_val": latest_ema_4h,
+                        "ema_dist": ema_dist,
                     }
                     underlying = meta["underlying"]
                     ok = send_alert(sym, underlying, meta_for_alert)
@@ -222,7 +347,7 @@ def main():
                             "underlying": underlying,
                             "source": "scanner",
                         }
-                        print(f"  Scanner-fed alert sent for {sym}")
+                        print(f"  Scanner-fed confluence alert sent for {sym}")
                     else:
                         remaining[sym] = meta
                 if remaining:
@@ -233,6 +358,7 @@ def main():
             except Exception as e:
                 print(f"  Error processing scanner pending accums: {e}")
 
+        # ── Process DuckDB-sourced accumulations ──
         current_accumulating: set[str] = set()
         new_accumulations: list[tuple[str, str, dict]] = []
 
@@ -240,16 +366,66 @@ def main():
             symbol: str = sym_row[0]
             underlying: str = sym_row[1]
 
+            # Gate 1: Check 1h Accumulation (Fast)
             hourly = get_hourly_buckets(conn, symbol)
             meta = check_accumulation(hourly)
 
             if meta is None:
                 continue
 
+            # Gate 2: Check 4h EMA 99 Pullback (Heavy, runs only on accumulating symbols)
+            ema_res = get_4h_ema_99(conn, symbol)
+            if not ema_res:
+                continue
+
+            latest_close_4h, latest_ema_4h, trend_4h = ema_res
+
+            # Gate 3: Check 15m Execution Trigger
+            latest_15m = conn.execute("""
+                SELECT open, close
+                FROM futures_data
+                WHERE symbol = ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """, [symbol]).fetchone()
+
+            if not latest_15m:
+                continue
+
+            open_15m = float(latest_15m[0] or 0.0)
+            close_15m = float(latest_15m[1] or 0.0)
+
+            # Check Confluence conditions
+            is_pullback = False
+            ema_dist = 0.0
+
+            if trend_4h == "long":
+                ema_dist = (latest_close_4h - latest_ema_4h) / latest_ema_4h
+                if 0.0 <= ema_dist <= 0.01:
+                    is_pullback = True
+            elif trend_4h == "short":
+                ema_dist = (latest_ema_4h - latest_close_4h) / latest_ema_4h
+                if 0.0 <= ema_dist <= 0.01:
+                    is_pullback = True
+
+            # If it is in pullback, it is considered actively in our setup zone
+            if not is_pullback:
+                continue
+
             current_accumulating.add(symbol)
 
             if symbol in alerted:
                 continue
+
+            # Check the 15m trigger to actually send the alert
+            is_triggered = (trend_4h == "long" and close_15m > open_15m) or (trend_4h == "short" and close_15m < open_15m)
+            if not is_triggered:
+                continue
+
+            # Add confluence details to meta
+            meta["trend"] = trend_4h
+            meta["ema_val"] = latest_ema_4h
+            meta["ema_dist"] = ema_dist
 
             stats = conn.execute("""
                 SELECT
