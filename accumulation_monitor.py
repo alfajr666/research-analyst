@@ -8,7 +8,7 @@ Has two data sources:
      scanner (scanner.py).
 
 For symbols identified as accumulating from either source, it runs the confluence pipeline:
-  - 4h EMA 99 Pullback (within 1% threshold).
+  - 15m EMA 99 Pullback (within 1% threshold).
   - 15m Green/Red candle execution trigger.
 
 When a confluence newly triggers, it sends a Telegram alert with the Entry Zone.
