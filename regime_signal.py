@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 import pickle
 import sys
+import os
+import contextlib
 import warnings
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -43,7 +45,8 @@ WEEKLY_WINDOW  = 7     # rolling days for "weekly" VWAP
 MONTHLY_WINDOW = 30    # rolling days for "monthly" VWAP
 HMM_STATES     = 3     # trending / ranging / high_vol
 HMM_TRAIN_BARS = 300   # minimum bars needed for HMM training
-HMM_ITER       = 200   # max EM iterations
+HMM_ITER       = 500   # max EM iterations (increased to reduce non-convergence noise)
+HMM_TOL        = 1e-2  # looser tolerance — financial data rarely achieves tight convergence
 ACCEPTANCE_WINDOW  = 5    # last N daily closes evaluated
 ACCEPTANCE_MIN     = 4    # must have ≥ this many on correct side
 REGIME_CONF_STRONG = 0.65  # threshold for +2 HMM score
@@ -225,11 +228,12 @@ def fit_hmm(df: pl.DataFrame, symbol: str) -> tuple[str, float]:
         n_components=HMM_STATES,
         covariance_type="diag",
         n_iter=HMM_ITER,
+        tol=HMM_TOL,
         random_state=42,
-        tol=1e-4,
     )
     try:
-        model.fit(train_arr)
+        with open(os.devnull, "w") as f, contextlib.redirect_stderr(f), contextlib.redirect_stdout(f):
+            model.fit(train_arr)
     except Exception as e:
         print(f"  [{symbol}] HMM fit failed: {e}")
         return "unknown", 0.0
