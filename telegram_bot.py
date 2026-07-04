@@ -21,7 +21,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/futures - Show futures metrics (OI change, funding, liquidations)\n"
         "/options - Show options metrics (ATM IV, IV Rank, skew, term structure)\n"
         "/profile - Show 7d volume & market profiles with POC, VA, and LVN levels\n"
-        "/scanner - Show latest results of the hourly volume/OI scanner & alerts\n\n"
+        "/scanner - Show latest results of the hourly volume/OI scanner & alerts\n"
+        "/regime [SYMBOL] - Show HMM + dual VWAP regime signal (default: BTC, ETH, SOL)\n\n"
         "Daily briefs are scheduled to send at *08:00 WITA*."
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
@@ -232,6 +233,86 @@ async def scanner_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(f"Error in scanner command: {e}")
         await update.message.reply_text("❌ Error reading scanner data.")
 
+async def regime_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Shows the latest HMM + dual VWAP regime signal for requested symbols."""
+    await update.message.reply_chat_action(action="typing")
+
+    # Parse optional symbol argument(s)
+    if context.args:
+        requested = [a.upper() for a in context.args]
+    else:
+        requested = ["BTC", "ETH", "SOL"]
+
+    def fmt_p(v):
+        if v is None:
+            return "N/A"
+        v = float(v)
+        if v < 1.0:    return f"${v:.6f}"
+        if v < 10000:  return f"${v:,.2f}"
+        return f"${round(v):,.0f}"
+
+    try:
+        conn = config.get_db_connection(read_only=True)
+        try:
+            reports = []
+            for sym in requested:
+                row = conn.execute("""
+                    SELECT date, signal, no_signal_reason, conviction, conviction_score,
+                           regime, regime_conf, weekly_vwap, monthly_vwap,
+                           ema12, ema25, ema_aligned, acceptance, close_price
+                    FROM regime_signals
+                    WHERE underlying = ?
+                    ORDER BY date DESC LIMIT 1
+                """, (sym,)).fetchone()
+
+                if not row:
+                    reports.append(f"❌ *{sym}*: No regime signal data yet. Run the pipeline first.")
+                    continue
+
+                (sig_date, signal, reason, conviction, score,
+                 regime, regime_conf, w_vwap, m_vwap,
+                 ema12, ema25, ema_aligned, acceptance, close) = row
+
+                if signal == "no_signal":
+                    reports.append(
+                        f"📡 *Regime Signal — #{sym}*\n"
+                        f"• Date: {sig_date}\n"
+                        f"• Signal: ⏸ NO SIGNAL\n"
+                        f"• Reason: `{reason}`\n"
+                        f"• Close: {fmt_p(close)}\n"
+                        f"• Weekly VWAP: {fmt_p(w_vwap)} | Monthly VWAP: {fmt_p(m_vwap)}"
+                    )
+                else:
+                    direction = "LONG 🟢" if signal == "long" else "SHORT 🔴"
+                    icon = {"HIGH": "🔥", "MODERATE": "✅", "LOW": "⚠️"}.get(conviction, "")
+                    ema_ok = "✅" if ema_aligned else "❌"
+                    regime_str = f"{regime} ({(regime_conf or 0)*100:.0f}%)" if regime else "unknown"
+                    reports.append(
+                        f"📡 *Regime Signal — #{sym}*\n"
+                        f"• Date: {sig_date}\n"
+                        f"• Signal: {direction}\n"
+                        f"• Conviction: {icon} {conviction} (score: {score}/6)\n"
+                        f"• Close: {fmt_p(close)}\n\n"
+                        f"*Setup:*\n"
+                        f"  ▫️ Weekly VWAP: {fmt_p(w_vwap)} — price {'above' if signal == 'long' else 'below'} ✅\n"
+                        f"  ▫️ Monthly VWAP: {fmt_p(m_vwap)} ✅\n"
+                        f"  ▫️ Acceptance: {acceptance}/{5} closes ✅\n\n"
+                        f"*Confluences:*\n"
+                        f"  ▫️ Regime: {regime_str}\n"
+                        f"  ▫️ EMA12/25: {fmt_p(ema12)} / {fmt_p(ema25)} {ema_ok}"
+                    )
+
+            if not reports:
+                await update.message.reply_text("❌ No data found.")
+            else:
+                for rep in reports:
+                    await update.message.reply_text(rep, parse_mode="Markdown")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error in regime command: {e}")
+        await update.message.reply_text("❌ Error fetching regime signal data.")
+
 async def scheduled_brief_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Job callback to send the daily brief to the configured channel/chat."""
     chat_id = config.TELEGRAM_CHAT_ID
@@ -283,6 +364,7 @@ def main() -> None:
     app.add_handler(CommandHandler("options", options_command))
     app.add_handler(CommandHandler("profile", profile_command))
     app.add_handler(CommandHandler("scanner", scanner_command))
+    app.add_handler(CommandHandler("regime", regime_command))
 
     # Schedule the daily brief in Asia/Makassar timezone (WITA)
     tz = pytz.timezone("Asia/Makassar")

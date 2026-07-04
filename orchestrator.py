@@ -334,6 +334,25 @@ def run_pipeline():
             conn.close()
     except Exception as e:
         print(f"Error checking confluence alerts: {e}", file=sys.stderr)
+
+    # 7. Daily regime signals (HMM + dual VWAP) — fires once per calendar day
+    try:
+        conn = config.get_db_connection(read_only=False)
+        try:
+            last_signal_date = conn.execute(
+                "SELECT MAX(date) FROM regime_signals"
+            ).fetchone()[0]
+            today = datetime.now(timezone.utc).date()
+            if last_signal_date is None or last_signal_date < today:
+                print("Running daily regime signals (HMM + dual VWAP)...")
+                from regime_signal import run_regime_signals
+                run_regime_signals(conn)
+            else:
+                print(f"Regime signals already run today ({last_signal_date}) — skipping.")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"Error running regime signals: {e}", file=sys.stderr)
         
     print(f"Pipeline run completed.")
 

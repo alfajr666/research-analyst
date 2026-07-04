@@ -22,6 +22,16 @@ INGEST_INTERVAL_MINS = int(os.getenv("INGEST_INTERVAL_MINS", "15"))
 MIN_CONVICTION = os.getenv("MIN_CONVICTION", "LOW")
 DAILY_BRIEF_TIME_WITA = os.getenv("DAILY_BRIEF_TIME_WITA", "08:00")
 
+# Freqtrade historical data path (for regime signal module)
+FREQTRADE_DATA_DIR = os.getenv(
+    "FREQTRADE_DATA_DIR",
+    "/home/gilang/Documents/Project/freqtrade-trading-bot/freqtrade/user_data/data/binanceusdm/futures"
+)
+
+# Directory for persisted HMM model pickles
+HMM_MODELS_DIR = DEFAULT_DB_DIR / "hmm_models"
+HMM_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
 # API Base URLs
 COINANALYZE_BASE_URL = "https://api.coinalyze.net/v1"
 DERIBIT_BASE_URL = "https://www.deribit.com/api/v2"
@@ -153,6 +163,29 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_ts ON brain_outputs (timestamp, underlying);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON confluence_alerts (alert_time, underlying);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_scanner_ts ON scanner_history (timestamp, symbol);")
+
+        # Create regime_signals table (HMM + dual VWAP daily signals)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS regime_signals (
+                date             DATE,
+                underlying       VARCHAR,
+                signal           VARCHAR,
+                no_signal_reason VARCHAR,
+                conviction       VARCHAR,
+                conviction_score INTEGER,
+                regime           VARCHAR,
+                regime_conf      DOUBLE,
+                weekly_vwap      DOUBLE,
+                monthly_vwap     DOUBLE,
+                ema12            DOUBLE,
+                ema25            DOUBLE,
+                ema_aligned      BOOLEAN,
+                acceptance       INTEGER,
+                close_price      DOUBLE,
+                PRIMARY KEY (date, underlying)
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_regime_date ON regime_signals (date, underlying);")
         
         conn.commit()
     finally:
