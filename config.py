@@ -182,10 +182,17 @@ def init_db():
                 ema_aligned      BOOLEAN,
                 acceptance       INTEGER,
                 close_price      DOUBLE,
+                sl               DOUBLE,
+                tp1              DOUBLE,
+                tp2              DOUBLE,
                 PRIMARY KEY (date, underlying)
             );
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_regime_date ON regime_signals (date, underlying);")
+        
+        # Migration: add sl, tp1, tp2 columns if table already exists
+        for col in ["sl DOUBLE", "tp1 DOUBLE", "tp2 DOUBLE"]:
+            conn.execute(f"ALTER TABLE regime_signals ADD COLUMN IF NOT EXISTS {col};")
         
         conn.commit()
     finally:

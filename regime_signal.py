@@ -159,6 +159,17 @@ def compute_features(df: pl.DataFrame) -> pl.DataFrame:
         ((pl.col("high") - pl.col("low")) / pl.col("close")).alias("hl_range_norm")
     )
 
+    # 14-day Average True Range (ATR) for stop-loss and targets calculation
+    prev_close = pl.col("close").shift(1)
+    tr = pl.max_horizontal([
+        pl.col("high") - pl.col("low"),
+        (pl.col("high") - prev_close).abs(),
+        (pl.col("low") - prev_close).abs()
+    ])
+    df = df.with_columns(
+        tr.rolling_mean(window_size=14, min_samples=10).alias("atr14")
+    )
+
     return df
 
 
@@ -386,6 +397,26 @@ def compute_signal(
     else:
         conviction = "LOW"
 
+    # -----------------------------------------------------------------------
+    # Step 4 — Trade Levels (SL/TP) Calculation
+    # -----------------------------------------------------------------------
+    atr_val = latest.get("atr14")
+    if atr_val is None or atr_val <= 0.0:
+        atr_val = 0.02 * close  # fallback to 2% volatility
+
+    # Stop Loss is anchored at the further VWAP (invalidation point) or 1.5*ATR (to survive wicks)
+    sl_pivot = min(weekly_vwap, monthly_vwap) if bias == "long" else max(weekly_vwap, monthly_vwap)
+    risk = max(abs(close - sl_pivot), 1.5 * atr_val)
+
+    if bias == "long":
+        sl = close - risk
+        tp1 = close + 1.5 * risk
+        tp2 = close + 3.0 * risk
+    else:
+        sl = close + risk
+        tp1 = close - 1.5 * risk
+        tp2 = close - 3.0 * risk
+
     return {
         "date":             today,
         "underlying":       symbol,
@@ -402,6 +433,9 @@ def compute_signal(
         "ema_aligned":      ema_aligned,
         "acceptance":       accept_count,
         "close_price":      round(close, 6),
+        "sl":               round(sl, 6),
+        "tp1":              round(tp1, 6),
+        "tp2":              round(tp2, 6),
     }
 
 
@@ -422,6 +456,9 @@ def _no_signal(symbol: str, day: date, reason: str, **extras) -> dict:
         "ema_aligned":      None,
         "acceptance":       extras.get("acceptance"),
         "close_price":      _round_safe(extras.get("close")),
+        "sl":               None,
+        "tp1":              None,
+        "tp2":              None,
     }
     return base
 
@@ -489,6 +526,11 @@ def _build_alert_new(sig: dict) -> str:
         f"📡 *REGIME SIGNAL — {direction}*\n\n"
         f"• *Asset:* #{sig['underlying']}  |  *Conviction:* {icon} {sig['conviction']} (score: {sig['conviction_score']}/6)\n"
         f"• *Price:* {_fmt_price(sig['close_price'])}\n\n"
+        f"🎯 *Levels:*\n"
+        f"  ▫️ *Entry:* {_fmt_price(sig['close_price'])} (Market Entry)\n"
+        f"  ▫️ *Stop Loss:* {_fmt_price(sig['sl'])}\n"
+        f"  ▫️ *Target 1 (1.5R):* {_fmt_price(sig['tp1'])}\n"
+        f"  ▫️ *Target 2 (3.0R):* {_fmt_price(sig['tp2'])}\n\n"
         f"*Setup:*\n"
         f"  ▫️ Weekly VWAP:  {_fmt_price(sig['weekly_vwap'])}  — price {weekly_side} ✅\n"
         f"  ▫️ Monthly VWAP: {_fmt_price(sig['monthly_vwap'])}  — price {monthly_side} ✅\n"
@@ -514,8 +556,8 @@ def _upsert_signal(conn, sig: dict):
         INSERT OR REPLACE INTO regime_signals
             (date, underlying, signal, no_signal_reason, conviction, conviction_score,
              regime, regime_conf, weekly_vwap, monthly_vwap, ema12, ema25,
-             ema_aligned, acceptance, close_price)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ema_aligned, acceptance, close_price, sl, tp1, tp2)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         sig["date"], sig["underlying"], sig["signal"], sig["no_signal_reason"],
         sig["conviction"], sig["conviction_score"],
@@ -523,6 +565,7 @@ def _upsert_signal(conn, sig: dict):
         sig["weekly_vwap"], sig["monthly_vwap"],
         sig["ema12"], sig["ema25"],
         sig["ema_aligned"], sig["acceptance"], sig["close_price"],
+        sig["sl"], sig["tp1"], sig["tp2"],
     ))
 
 

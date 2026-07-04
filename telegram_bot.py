@@ -259,7 +259,8 @@ async def regime_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 row = conn.execute("""
                     SELECT date, signal, no_signal_reason, conviction, conviction_score,
                            regime, regime_conf, weekly_vwap, monthly_vwap,
-                           ema12, ema25, ema_aligned, acceptance, close_price
+                           ema12, ema25, ema_aligned, acceptance, close_price,
+                           sl, tp1, tp2
                     FROM regime_signals
                     WHERE underlying = ?
                     ORDER BY date DESC LIMIT 1
@@ -271,7 +272,8 @@ async def regime_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                 (sig_date, signal, reason, conviction, score,
                  regime, regime_conf, w_vwap, m_vwap,
-                 ema12, ema25, ema_aligned, acceptance, close) = row
+                 ema12, ema25, ema_aligned, acceptance, close,
+                 sl, tp1, tp2) = row
 
                 if signal == "no_signal":
                     reports.append(
@@ -293,6 +295,11 @@ async def regime_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         f"• Signal: {direction}\n"
                         f"• Conviction: {icon} {conviction} (score: {score}/6)\n"
                         f"• Close: {fmt_p(close)}\n\n"
+                        f"🎯 *Levels:*\n"
+                        f"  ▫️ *Entry:* {fmt_p(close)} (Market)\n"
+                        f"  ▫️ *Stop Loss:* {fmt_p(sl)}\n"
+                        f"  ▫️ *Target 1 (1.5R):* {fmt_p(tp1)}\n"
+                        f"  ▫️ *Target 2 (3.0R):* {fmt_p(tp2)}\n\n"
                         f"*Setup:*\n"
                         f"  ▫️ Weekly VWAP: {fmt_p(w_vwap)} — price {'above' if signal == 'long' else 'below'} ✅\n"
                         f"  ▫️ Monthly VWAP: {fmt_p(m_vwap)} ✅\n"
