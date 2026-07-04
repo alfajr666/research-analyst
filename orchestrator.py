@@ -73,6 +73,33 @@ def check_and_alert_confluences(conn):
                 if conv_order.get(alert_conviction, 0) < conv_order.get(min_conviction, 0):
                     print(f"  Skipping {alert_conviction} conviction alert for {underlying} (min: {min_conviction})")
                     continue
+
+                # Fetch 15m alert direction
+                directional_bias = prof.get("directional_bias", "neutral")
+
+                # Daily Regime Filter Gate (align with HIGH conviction daily TraderXO + HMM setups)
+                daily_sig = conn.execute("""
+                    SELECT signal, conviction
+                    FROM regime_signals
+                    WHERE underlying = ?
+                    ORDER BY date DESC LIMIT 1
+                """, (underlying,)).fetchone()
+
+                if daily_sig:
+                    daily_direction, daily_conv = daily_sig
+                    if daily_direction == "no_signal":
+                        print(f"  Suppressed 15m alert for {underlying}: Daily macro regime is NO_SIGNAL.")
+                        continue
+                    if daily_conv != "HIGH":
+                        print(f"  Suppressed 15m alert for {underlying}: Daily conviction is {daily_conv} (requires HIGH).")
+                        continue
+                    if daily_direction != directional_bias:
+                        print(f"  Suppressed 15m alert for {underlying}: Daily direction ({daily_direction}) conflicts with 15m alert ({directional_bias}).")
+                        continue
+                else:
+                    print(f"  Suppressed 15m alert for {underlying}: No daily regime signal available in DB.")
+                    continue
+
                 # Check when we last sent an alert for this asset (1 hour cooldown)
                 cooldown_time = datetime.now(timezone.utc) - timedelta(hours=1)
                 last_alert = conn.execute(
