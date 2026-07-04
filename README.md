@@ -23,6 +23,7 @@ options-research-analyst/
 ├── ingest_deribit.py                       # Deribit API options chain ingestion
 ├── scanner.py                              # Hourly volume/OI scanner (Binance + CoinAnalyze)
 ├── accumulation_monitor.py                 # Accumulation detection + Telegram alerts
+├── regime_signal.py                        # Daily HMM regime engine + TraderXO dual VWAP signals
 ├── analyze.py                              # Polars & SQL queries for skew, IV Rank, profiles, and VWAP
 ├── brain.py                                # Tag-based market state tracking + shift detection
 ├── orchestrator.py                         # Sequential pipeline runner (loop, once, alerts, pruning)
@@ -101,6 +102,14 @@ Runs a nearness confluence comparison (with a default 0.75% threshold) to detect
 *   **VWAP**: Calculated over the lookback window using Typical Price ($\frac{H+L+C}{3}$) weighted by volume.
 *   **24h Range**: Real-time high and low prices fetched via DuckDB queries over the last 24 hours.
 
+### 5. HMM & TraderXO Dual VWAP Regime Signal (Daily)
+Computes trend bias combined with statistical market character classification:
+*   **Dual VWAP Setup**: Computes rolling 7-day (weekly) & 30-day (monthly) VWAP paths. The setup is valid if price stays on the same side of both lines.
+*   **Acceptance Filter**: Requires at least **4 of the last 5 daily closes** on the correct side of the weekly VWAP.
+*   **HMM Regime Filter (Confluence)**: Trains a 3-state Gaussian Hidden Markov Model using log return, realized volatility, VWAP deviation, volume z-score, and normalized high-low range on a 300-bar sliding daily window. Returns trending direction confidence or warns if ranging/high-vol.
+*   **EMA Confluence**: Checks alignment of daily EMA12 and EMA25.
+*   **Conviction Score**: Combines HMM probability, EMA crossovers, perfect 5/5 acceptance, and price distance from monthly VWAP into a 6-point scoring system (HIGH/MODERATE/LOW).
+
 ---
 
 ## 🔔 Background Alert System
@@ -144,6 +153,11 @@ The orchestrator daemon monitors all active symbols in `market_data.db` after ev
 *   **1h Cooldown Deduplication**: Logs alerts to the `confluence_alerts` table in DuckDB. If an alert has been dispatched for that symbol in the last 1 hour, it is suppressed to prevent notification spam.
 *   **Complete Market Context**: Each alert includes the full profile picture — POC, VWAP, VAL, VAH, top HVNs/LVNs, anchored-from data range, and candle count — so you can assess the setup without running separate commands.
 *   **Data Sufficiency Guard**: If an asset has less than 48 candles (12 hours of data) in its lookback window, it is flagged as `"Insufficient data"` and skipped. This prevents faulty calculations while database history is populating.
+
+### 4. Daily Regime Signal Alerts (orchestrator)
+Evaluates and updates HMM + dual VWAP setups once per calendar day:
+*   **DB Logging**: Computes and logs the signal logic (LOW, MODERATE, HIGH, or no_signal) for all symbols with sufficient history (>= 300 bars) to the `regime_signals` DuckDB table.
+*   **Telegram Transition Alerts**: Dispatches a Telegram notification **only** when a setup reaches **HIGH** conviction (score >= 4), or when an active **HIGH** conviction setup closes/invalidates. This keeps channel alert noise low while preserving a complete history database.
 
 ---
 
@@ -229,3 +243,5 @@ pm2 restart ecosystem.config.js
 *   `/futures` - Focuses on perpetual metrics (price shifts, 24h Range, OI shifts, funding, liquidations).
 *   `/options` - Focuses on options metrics (ATM IV, IV Rank, skew, term structure, Max Pain).
 *   `/profile <symbol>` - Generates 7d Volume and TPO profiles with POC, VAH, VAL, HVN, LVN levels, profile shapes, and EMA/VWAP confluence metrics. Defaults to majors if no symbol is provided.
+*   `/regime [symbol]` - Shows the daily HMM + dual VWAP setup direction, HMM regime state, acceptance counts, and conviction parameters. Defaults to BTC, ETH, and SOL.
+
