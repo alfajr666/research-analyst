@@ -41,8 +41,8 @@ import config
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-WEEKLY_WINDOW  = 7     # rolling days for "weekly" VWAP
-MONTHLY_WINDOW = 30    # rolling days for "monthly" VWAP
+WEEKLY_WINDOW = 7      # rolling days for "weekly" VWAP
+VWAP_4H_WINDOW = 18    # rolling 4-hour bars (18 × 4h = 72h = 3 days) for intraday VWAP
 HMM_STATES     = 3     # trending / ranging / high_vol
 HMM_TRAIN_BARS = 300   # minimum bars needed for HMM training
 HMM_ITER       = 500   # max EM iterations (increased to reduce non-convergence noise)
@@ -65,35 +65,154 @@ HMM_FEATURES = ["log_return", "realized_vol", "vwap_dev", "vol_zscore", "hl_rang
 # Section 1 — Data Loader
 # ---------------------------------------------------------------------------
 
-def load_daily_bars(symbol: str) -> Optional[pl.DataFrame]:
+def load_daily_bars(conn, symbol: str) -> Optional[pl.DataFrame]:
     """
-    Loads 1d futures OHLCV from the freqtrade feather file for a given symbol.
-    Returns a Polars DataFrame sorted ascending by date, or None if not found / too short.
+    Loads 1d OHLCV from the futures_data table, aggregated from 15m candles.
+    Returns a Polars DataFrame sorted ascending by date, or None if no data.
     """
-    feather_path = Path(config.FREQTRADE_DATA_DIR) / f"{symbol}_USDT_USDT-1d-futures.feather"
-    if not feather_path.exists():
-        print(f"  [{symbol}] Feather file not found: {feather_path.name} — skipping.")
-        return None
-
+    query = """
+        SELECT
+            DATE(timestamp)                                         AS timestamp,
+            FIRST(open)                                             AS open,
+            MAX(high)                                               AS high,
+            MIN(low)                                                AS low,
+            LAST(close)                                             AS close,
+            SUM(volume)                                             AS volume
+        FROM futures_data
+        WHERE underlying = ?
+        GROUP BY DATE(timestamp)
+        ORDER BY timestamp
+    """
     try:
-        import pandas as pd
-        pdf = pd.read_feather(str(feather_path))
-        df = pl.from_pandas(pdf)
+        arrow = conn.execute(query, (symbol,)).fetch_arrow_table()
     except Exception as e:
-        print(f"  [{symbol}] Failed to read feather: {e} — skipping.")
+        print(f"  [{symbol}] DB query failed: {e} — skipping.")
         return None
 
-    # Normalise column names (freqtrade uses 'date')
-    if "date" in df.columns:
-        df = df.rename({"date": "timestamp"})
-
-    required = {"timestamp", "open", "high", "low", "close", "volume"}
-    if not required.issubset(set(df.columns)):
-        print(f"  [{symbol}] Missing columns {required - set(df.columns)} — skipping.")
+    if arrow.num_rows == 0:
+        print(f"  [{symbol}] No daily data in DB — skipping.")
         return None
 
-    df = df.sort("timestamp").select(["timestamp", "open", "high", "low", "close", "volume"])
+    df = pl.from_arrow(arrow)
+    # ensure proper UTC timestamp type
+    df = df.with_columns(pl.col("timestamp").cast(pl.Datetime("us")))
     return df
+
+
+def load_xh_bars(conn, symbol: str, bar_hours: int, min_bars: int = 1) -> Optional[pl.DataFrame]:
+    """
+    Generic multi-hour OHLCV loader: aggregates 15m candles into N-hour bars.
+    Returns a Polars DataFrame sorted ascending, or None if fewer than min_bars rows.
+
+    Args:
+        conn      : DuckDB connection
+        symbol    : underlying symbol
+        bar_hours : number of hours per bar (1, 4, etc.)
+        min_bars  : minimum acceptable row count (default 1)
+    """
+    interval_secs = bar_hours * 3600
+    query = f"""
+        SELECT
+            TO_TIMESTAMP(
+                FLOOR(EPOCH(timestamp) / {interval_secs}) * {interval_secs}
+            )                                                       AS timestamp,
+            FIRST(open)                                             AS open,
+            MAX(high)                                               AS high,
+            MIN(low)                                                AS low,
+            LAST(close)                                             AS close,
+            SUM(volume)                                             AS volume
+        FROM futures_data
+        WHERE underlying = ?
+        GROUP BY FLOOR(EPOCH(timestamp) / {interval_secs})
+        ORDER BY timestamp
+    """
+    label = f"{bar_hours}h"
+    try:
+        arrow = conn.execute(query, (symbol,)).fetch_arrow_table()
+    except Exception as e:
+        print(f"  [{symbol}] {label} DB query failed: {e} — skipping.")
+        return None
+
+    if arrow.num_rows < min_bars:
+        print(f"  [{symbol}] Only {arrow.num_rows} {label} bars — need {min_bars}. Skipping {label} load.")
+        return None
+
+    df = pl.from_arrow(arrow)
+    df = df.with_columns(pl.col("timestamp").cast(pl.Datetime("us")))
+    return df
+
+
+def load_4h_bars(conn, symbol: str) -> Optional[pl.DataFrame]:
+    """
+    Loads 4-hour OHLCV with rolling 18-bar VWAP for dual-VWAP signal.
+    """
+    df = load_xh_bars(conn, symbol, bar_hours=4, min_bars=VWAP_4H_WINDOW)
+    if df is None:
+        return None
+    vwap_col = _rolling_vwap(df, VWAP_4H_WINDOW, "vwap_4h_3d")
+    df = df.with_columns(vwap_col)
+    return df
+
+
+def compute_vwap_4h(conn, symbol: str) -> Optional[float]:
+    """Returns the latest 4h 3-day rolling VWAP value for a symbol."""
+    df = load_4h_bars(conn, symbol)
+    if df is None:
+        return None
+    return df.tail(1).to_dicts()[0].get("vwap_4h_3d")
+
+
+def prepare_hmm_data(conn, symbol: str) -> Optional[pl.DataFrame]:
+    """
+    Loads 1-hour OHLCV bars and computes the 5 HMM feature columns.
+    Returns a DataFrame with only HMM_FEATURES columns (nulls dropped),
+    or None if insufficient data.
+    """
+    df = load_xh_bars(conn, symbol, bar_hours=1, min_bars=HMM_TRAIN_BARS)
+    if df is None:
+        return None
+
+    # 1. Log return
+    df = df.with_columns(
+        (pl.col("close") / pl.col("close").shift(1)).log().alias("log_return")
+    )
+
+    # 2. Realized vol: 24-bar rolling std (≈ 1 day on 1h data)
+    df = df.with_columns(
+        pl.col("log_return").rolling_std(window_size=24, min_samples=12).alias("realized_vol")
+    )
+
+    # 3. VWAP deviation: % distance from a 24-bar rolling VWAP
+    tp = (df["high"] + df["low"] + df["close"]) / 3.0
+    tp_vol = tp * df["volume"]
+    tp_vol_roll = tp_vol.rolling_sum(window_size=24, min_samples=12)
+    vol_roll = df["volume"].rolling_sum(window_size=24, min_samples=12)
+    vwap_24h = tp_vol_roll / vol_roll
+    df = df.with_columns(
+        ((pl.col("close") - vwap_24h) / vwap_24h).alias("vwap_dev")
+    )
+
+    # 4. Volume z-score: 24-bar rolling
+    df = df.with_columns([
+        pl.col("volume").rolling_mean(window_size=24, min_samples=12).alias("_vol_mean"),
+        pl.col("volume").rolling_std(window_size=24, min_samples=12).alias("_vol_std"),
+    ])
+    df = df.with_columns(
+        ((pl.col("volume") - pl.col("_vol_mean")) / (pl.col("_vol_std") + 1e-9)).alias("vol_zscore")
+    ).drop(["_vol_mean", "_vol_std"])
+
+    # 5. High-low range normalised by close
+    df = df.with_columns(
+        ((pl.col("high") - pl.col("low")) / pl.col("close")).alias("hl_range_norm")
+    )
+
+    hmm_df = df.select(HMM_FEATURES).drop_nulls()
+    if len(hmm_df) < HMM_TRAIN_BARS:
+        print(f"  [{symbol}] Only {len(hmm_df)} clean 1h feature rows — need {HMM_TRAIN_BARS}. Skipping HMM.")
+        return None
+
+    print(f"  [{symbol}] HMM data: {len(hmm_df)} clean 1h feature rows.")
+    return hmm_df
 
 
 # ---------------------------------------------------------------------------
@@ -121,10 +240,8 @@ def compute_features(df: pl.DataFrame) -> pl.DataFrame:
     Adds all derived feature columns to the daily OHLCV DataFrame.
     Returns a new DataFrame with added columns.
     """
-    # --- Dual rolling VWAP ---
-    weekly_vwap  = _rolling_vwap(df, WEEKLY_WINDOW,  "weekly_vwap")
-    monthly_vwap = _rolling_vwap(df, MONTHLY_WINDOW, "monthly_vwap")
-    df = df.with_columns([weekly_vwap, monthly_vwap])
+    # --- Weekly rolling VWAP (7-day) ---
+    df = df.with_columns(_rolling_vwap(df, WEEKLY_WINDOW, "weekly_vwap"))
 
     # --- EMA 12 and EMA 25 ---
     df = df.with_columns([
@@ -313,38 +430,41 @@ def compute_signal(
     df: pl.DataFrame,
     regime_label: str,
     regime_conf: float,
+    vwap_4h: Optional[float] = None,
 ) -> dict:
     """
     Full signal computation for the most recent bar in df.
+    Uses weekly (7d) + 4h (3d) dual VWAP instead of weekly + monthly.
     Returns a signal dict ready for DB insertion and Telegram formatting.
     """
     today = date.today()
 
-    # Guard: need at least MONTHLY_WINDOW rows for VWAP to be meaningful
-    if len(df) < MONTHLY_WINDOW:
+    # Guard: need at least WEEKLY_WINDOW rows for VWAP to be meaningful
+    if len(df) < WEEKLY_WINDOW:
         return _no_signal(symbol, today, "insufficient_data")
 
     latest = df.tail(1).to_dicts()[0]
-    close        = latest.get("close")
-    weekly_vwap  = latest.get("weekly_vwap")
-    monthly_vwap = latest.get("monthly_vwap")
-    ema12        = latest.get("ema12")
-    ema25        = latest.get("ema25")
+    close       = latest.get("close")
+    weekly_vwap = latest.get("weekly_vwap")
+    ema12       = latest.get("ema12")
+    ema25       = latest.get("ema25")
 
-    if any(v is None for v in [close, weekly_vwap, monthly_vwap, ema12, ema25]):
-        return _no_signal(symbol, today, "missing_indicator_data")
+    if any(v is None for v in [close, weekly_vwap, ema12, ema25]):
+        return _no_signal(symbol, today, "missing_indicator_data",
+                          weekly_vwap=weekly_vwap, vwap_4h=vwap_4h,
+                          ema12=ema12, ema25=ema25, close=close)
 
     # -----------------------------------------------------------------------
     # Step 1 — Dual VWAP bias (setup direction)
     # -----------------------------------------------------------------------
     above_weekly  = close > weekly_vwap
-    above_monthly = close > monthly_vwap
+    above_4h      = close > vwap_4h if vwap_4h is not None else above_weekly
 
-    if above_weekly == above_monthly:
+    if above_weekly == above_4h:
         bias = "long" if above_weekly else "short"
     else:
         return _no_signal(symbol, today, "vwap_split",
-                          weekly_vwap=weekly_vwap, monthly_vwap=monthly_vwap,
+                          weekly_vwap=weekly_vwap, vwap_4h=vwap_4h,
                           ema12=ema12, ema25=ema25, close=close)
 
     # -----------------------------------------------------------------------
@@ -355,7 +475,7 @@ def compute_signal(
 
     if accept_side != expected_side or accept_count < ACCEPTANCE_MIN:
         return _no_signal(symbol, today, "acceptance_not_met",
-                          weekly_vwap=weekly_vwap, monthly_vwap=monthly_vwap,
+                          weekly_vwap=weekly_vwap, vwap_4h=vwap_4h,
                           ema12=ema12, ema25=ema25, close=close,
                           acceptance=accept_count)
 
@@ -384,10 +504,11 @@ def compute_signal(
     if accept_count == ACCEPTANCE_WINDOW:
         score += 1
 
-    # Strong distance from monthly VWAP
-    monthly_dist = abs(close - monthly_vwap) / monthly_vwap
-    if monthly_dist >= VWAP_DIST_STRONG:
-        score += 1
+    # Strong distance from 4h VWAP (>= 0.5% beyond)
+    if vwap_4h is not None:
+        vwap_4h_dist = abs(close - vwap_4h) / vwap_4h
+        if vwap_4h_dist >= VWAP_DIST_STRONG:
+            score += 1
 
     # Conviction level
     if score >= HIGH_SCORE:
@@ -404,8 +525,9 @@ def compute_signal(
     if atr_val is None or atr_val <= 0.0:
         atr_val = 0.02 * close  # fallback to 2% volatility
 
-    # Stop Loss is anchored at the further VWAP (invalidation point) or 1.5*ATR (to survive wicks)
-    sl_pivot = min(weekly_vwap, monthly_vwap) if bias == "long" else max(weekly_vwap, monthly_vwap)
+    # Stop Loss anchored at the further VWAP (invalidation point) or 1.5*ATR
+    vwap_4h_pivot = vwap_4h if vwap_4h is not None else weekly_vwap
+    sl_pivot = min(weekly_vwap, vwap_4h_pivot) if bias == "long" else max(weekly_vwap, vwap_4h_pivot)
     risk = max(abs(close - sl_pivot), 1.5 * atr_val)
 
     if bias == "long":
@@ -417,17 +539,19 @@ def compute_signal(
         tp1 = close - 1.5 * risk
         tp2 = close - 3.0 * risk
 
+    vwap_4h_out = round(vwap_4h, 6) if vwap_4h is not None else None
+
     return {
         "date":             today,
         "underlying":       symbol,
-        "signal":           bias,          # "long" | "short"
+        "signal":           bias,
         "no_signal_reason": None,
         "conviction":       conviction,
         "conviction_score": score,
         "regime":           regime_label,
         "regime_conf":      round(regime_conf, 4),
         "weekly_vwap":      round(weekly_vwap, 6),
-        "monthly_vwap":     round(monthly_vwap, 6),
+        "monthly_vwap":     vwap_4h_out,
         "ema12":            round(ema12, 6),
         "ema25":            round(ema25, 6),
         "ema_aligned":      ema_aligned,
@@ -450,7 +574,7 @@ def _no_signal(symbol: str, day: date, reason: str, **extras) -> dict:
         "regime":           extras.get("regime"),
         "regime_conf":      extras.get("regime_conf"),
         "weekly_vwap":      _round_safe(extras.get("weekly_vwap")),
-        "monthly_vwap":     _round_safe(extras.get("monthly_vwap")),
+        "monthly_vwap":     _round_safe(extras.get("vwap_4h")),
         "ema12":            _round_safe(extras.get("ema12")),
         "ema25":            _round_safe(extras.get("ema25")),
         "ema_aligned":      None,
@@ -474,17 +598,12 @@ def _round_safe(v, decimals=6):
 # Section 5 — Orchestrator
 # ---------------------------------------------------------------------------
 
-def _get_universe() -> list[str]:
+def _get_universe(conn) -> list[str]:
     """
-    Returns all symbols with a matching 1d feather file in FREQTRADE_DATA_DIR.
-    Intersection with the options-research-analyst active universe if DB is available.
+    Returns all distinct underlyings available in futures_data table.
     """
-    data_dir = Path(config.FREQTRADE_DATA_DIR)
-    feather_symbols = [
-        p.name.replace("_USDT_USDT-1d-futures.feather", "")
-        for p in data_dir.glob("*_USDT_USDT-1d-futures.feather")
-    ]
-    return sorted(feather_symbols)
+    rows = conn.execute("SELECT DISTINCT underlying FROM futures_data ORDER BY underlying").fetchall()
+    return [r[0] for r in rows if r[0]]
 
 
 def _send_telegram(msg: str):
@@ -519,8 +638,8 @@ def _build_alert_new(sig: dict) -> str:
     regime_str = f"{sig['regime']} ({sig['regime_conf']*100:.0f}% confidence)" if sig["regime"] else "unknown"
     ema_str = "✅" if sig["ema_aligned"] else "❌"
     accept_str = f"{sig['acceptance']}/{ACCEPTANCE_WINDOW} closes on correct side ✅"
-    monthly_side = "above" if sig["signal"] == "long" else "below"
-    weekly_side  = monthly_side
+    vwap_4h_side = "above" if sig["signal"] == "long" else "below"
+    weekly_side  = vwap_4h_side
 
     return (
         f"📡 *REGIME SIGNAL — {direction}*\n\n"
@@ -532,9 +651,9 @@ def _build_alert_new(sig: dict) -> str:
         f"  ▫️ *Target 1 (1.5R):* {_fmt_price(sig['tp1'])}\n"
         f"  ▫️ *Target 2 (3.0R):* {_fmt_price(sig['tp2'])}\n\n"
         f"*Setup:*\n"
-        f"  ▫️ Weekly VWAP:  {_fmt_price(sig['weekly_vwap'])}  — price {weekly_side} ✅\n"
-        f"  ▫️ Monthly VWAP: {_fmt_price(sig['monthly_vwap'])}  — price {monthly_side} ✅\n"
-        f"  ▫️ Acceptance:   {accept_str}\n\n"
+        f"  ▫️ Weekly VWAP: {_fmt_price(sig['weekly_vwap'])}  — price {weekly_side} ✅\n"
+        f"  ▫️ 4h (3d) VWAP: {_fmt_price(sig['monthly_vwap'])}  — price {vwap_4h_side} ✅\n"
+        f"  ▫️ Acceptance:  {accept_str}\n\n"
         f"*Confluences:*\n"
         f"  ▫️ HMM Regime:   {regime_str}\n"
         f"  ▫️ EMA12/EMA25:  {_fmt_price(sig['ema12'])} / {_fmt_price(sig['ema25'])} {ema_str}\n\n"
@@ -586,7 +705,7 @@ def _get_previous_signal(conn, symbol: str) -> Optional[dict]:
 def run_regime_signals(conn, symbols: Optional[list[str]] = None, dry_run: bool = False):
     """
     Main entry point: runs the full pipeline for all (or specified) symbols.
-    Writes results to DB and sends Telegram alerts for HIGH conviction setups.
+    Writes results to DB and sends Telegram alerts for HIGH conviction setup transitions.
 
     Args:
         conn     : DuckDB connection (writable)
@@ -595,26 +714,33 @@ def run_regime_signals(conn, symbols: Optional[list[str]] = None, dry_run: bool 
     """
     config.init_db()
 
-    universe = symbols or _get_universe()
+    universe = symbols or _get_universe(conn)
     print(f"Running regime signals for {len(universe)} symbols...")
 
     results = []
     for symbol in universe:
         print(f"  Processing {symbol}...")
 
-        # Load data
-        df = load_daily_bars(symbol)
+        # Load daily data from DB
+        df = load_daily_bars(conn, symbol)
         if df is None:
             continue
 
         # Feature engineering
         df = compute_features(df)
 
-        # HMM regime
-        regime_label, regime_conf = fit_hmm(df, symbol)
+        # HMM regime (trained on 1-hour bars for sufficient sample size)
+        hmm_df = prepare_hmm_data(conn, symbol)
+        if hmm_df is not None:
+            regime_label, regime_conf = fit_hmm(hmm_df, symbol)
+        else:
+            regime_label, regime_conf = "unknown", 0.0
+
+        # Compute 4h VWAP (3-day rolling)
+        vwap_4h = compute_vwap_4h(conn, symbol)
 
         # Signal logic
-        sig = compute_signal(symbol, df, regime_label, regime_conf)
+        sig = compute_signal(symbol, df, regime_label, regime_conf, vwap_4h=vwap_4h)
         results.append(sig)
 
         if dry_run:
@@ -703,36 +829,63 @@ def main():
 def _run_backtest(n_days: int, symbol: Optional[str] = None):
     """
     Simulates the last n_days of daily signals without touching the DB.
-    Useful for validating VWAP values, acceptance counts, and HMM labels.
+    Uses DB for data but skips DB writes and Telegram.
     """
-    pilot = [symbol] if symbol else ["BTC", "ETH"]
-    print(f"\n{'='*70}")
-    print(f"BACKTEST MODE — last {n_days} bars — symbols: {pilot}")
-    print(f"{'='*70}")
+    conn = config.get_db_connection(read_only=False)
+    try:
+        pilot = [symbol] if symbol else ["BTC", "ETH"]
+        print(f"\n{'='*70}")
+        print(f"BACKTEST MODE — last {n_days} bars — symbols: {pilot}")
+        print(f"{'='*70}")
 
-    for sym in pilot:
-        df = load_daily_bars(sym)
-        if df is None:
-            continue
-        df = compute_features(df)
+        for sym in pilot:
+            df = load_daily_bars(conn, sym)
+            if df is None:
+                continue
+            df = compute_features(df)
 
-        print(f"\n--- {sym} ---")
-        print(f"{'Date':<12} {'Signal':<10} {'Conv':<10} {'Score':>6}  {'Regime':<14} {'RegConf':>8}  {'Accept':>7}  {'EMA_ok':>7}  Reason")
-        print("-" * 110)
+            # Pre-load 4h bars with rolling VWAP for lookups
+            df_4h = load_4h_bars(conn, sym)
+            vwap_4h_series = None
+            vwap_4h_timestamps = None
+            if df_4h is not None:
+                vwap_4h_series = df_4h["vwap_4h_3d"].to_list()
+                vwap_4h_timestamps = df_4h["timestamp"].to_list()
 
-        # For each of the last n_days, simulate signal as of that day
-        total_rows = len(df)
-        start_idx  = max(MONTHLY_WINDOW + HMM_TRAIN_BARS, total_rows - n_days)
+            # Pre-load 1h HMM training data
+            hmm_df = prepare_hmm_data(conn, sym)
 
-        for i in range(start_idx, total_rows):
-            slice_df = df[:i + 1]
-            try:
-                regime_label, regime_conf = fit_hmm(slice_df, sym)
-                sig = compute_signal(sym, slice_df, regime_label, regime_conf)
-                sig["date"] = slice_df["timestamp"].tail(1)[0].date()
-                _print_signal(sig)
-            except Exception as e:
-                print(f"    Error at row {i}: {e}")
+            print(f"\n--- {sym} ---")
+            print(f"{'Date':<12} {'Signal':<10} {'Conv':<10} {'Score':>6}  {'Regime':<14} {'RegConf':>8}  {'Accept':>7}  {'EMA_ok':>7}  Reason")
+            print("-" * 110)
+
+            total_rows = len(df)
+            start_idx  = max(WEEKLY_WINDOW, total_rows - n_days)
+
+            for i in range(start_idx, total_rows):
+                slice_df = df[:i + 1]
+                slice_date = slice_df["timestamp"].tail(1)[0]
+
+                # Find the 4h VWAP as of this date
+                vwap_4h = None
+                if vwap_4h_timestamps:
+                    for ts, v in reversed(list(zip(vwap_4h_timestamps, vwap_4h_series))):
+                        if ts <= slice_date and v is not None:
+                            vwap_4h = v
+                            break
+
+                try:
+                    if hmm_df is not None:
+                        regime_label, regime_conf = fit_hmm(hmm_df, sym)
+                    else:
+                        regime_label, regime_conf = "unknown", 0.0
+                    sig = compute_signal(sym, slice_df, regime_label, regime_conf, vwap_4h=vwap_4h)
+                    sig["date"] = slice_date.date()
+                    _print_signal(sig)
+                except Exception as e:
+                    print(f"    Error at row {i}: {e}")
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

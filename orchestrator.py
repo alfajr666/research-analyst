@@ -90,8 +90,8 @@ def check_and_alert_confluences(conn):
                     if daily_direction == "no_signal":
                         print(f"  Suppressed 15m alert for {underlying}: Daily macro regime is NO_SIGNAL.")
                         continue
-                    if daily_conv != "HIGH":
-                        print(f"  Suppressed 15m alert for {underlying}: Daily conviction is {daily_conv} (requires HIGH).")
+                    if daily_conv not in ("HIGH", "MODERATE"):
+                        print(f"  Suppressed 15m alert for {underlying}: Daily conviction is {daily_conv} (requires HIGH or MODERATE).")
                         continue
                     if daily_direction != directional_bias:
                         print(f"  Suppressed 15m alert for {underlying}: Daily direction ({daily_direction}) conflicts with 15m alert ({directional_bias}).")

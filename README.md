@@ -104,11 +104,11 @@ Runs a nearness confluence comparison (with a default 0.75% threshold) to detect
 
 ### 5. HMM & TraderXO Dual VWAP Regime Signal (Daily)
 Computes trend bias combined with statistical market character classification:
-*   **Dual VWAP Setup**: Computes rolling 7-day (weekly) & 30-day (monthly) VWAP paths. The setup is valid if price stays on the same side of both lines.
+*   **Dual VWAP Setup**: Computes a rolling 7-day (weekly) VWAP on daily bars and an 18-bar (3-day) rolling VWAP on 4-hour bars. The setup is valid if price stays on the same side of both lines.
 *   **Acceptance Filter**: Requires at least **4 of the last 5 daily closes** on the correct side of the weekly VWAP.
-*   **HMM Regime Filter (Confluence)**: Trains a 3-state Gaussian Hidden Markov Model using log return, realized volatility, VWAP deviation, volume z-score, and normalized high-low range on a 300-bar sliding daily window. Returns trending direction confidence or warns if ranging/high-vol.
+*   **HMM Regime Filter (Confluence)**: Trains a 3-state Gaussian Hidden Markov Model using log return, realized volatility, VWAP deviation, volume z-score, and normalized high-low range on **300 one-hour bars** (≈ 12.5 days, aggregated from 15m futures data). Returns trending direction confidence or warns if ranging/high-vol.
 *   **EMA Confluence**: Checks alignment of daily EMA12 and EMA25.
-*   **Conviction Score**: Combines HMM probability, EMA crossovers, perfect 5/5 acceptance, and price distance from monthly VWAP into a 6-point scoring system (HIGH/MODERATE/LOW).
+*   **Conviction Score**: Combines HMM probability, EMA crossovers, perfect 5/5 acceptance, and price distance from 4h VWAP into a 6-point scoring system (HIGH/MODERATE/LOW).
 
 ---
 
@@ -156,8 +156,10 @@ The orchestrator daemon monitors all active symbols in `market_data.db` after ev
 
 ### 4. Daily Regime Signal Alerts (orchestrator)
 Evaluates and updates HMM + dual VWAP setups once per calendar day:
-*   **DB Logging**: Computes and logs the signal logic (LOW, MODERATE, HIGH, or no_signal) for all symbols with sufficient history (>= 300 bars) to the `regime_signals` DuckDB table.
+*   **Data Source**: Daily OHLCV and 1-hour bars are both aggregated from the `futures_data` DB table (15m CoinAnalyze candles). No external freqtrade feather files required.
+*   **DB Logging**: Computes and logs the signal logic (LOW, MODERATE, HIGH, or no_signal) for all symbols with sufficient history (>= 300 one-hour bars ≈ 12.5 days) to the `regime_signals` DuckDB table.
 *   **Telegram Transition Alerts**: Dispatches a Telegram notification **only** when a setup reaches **HIGH** conviction (score >= 4), or when an active **HIGH** conviction setup closes/invalidates. This keeps channel alert noise low while preserving a complete history database.
+*   **15m Confluence Gate**: The daily regime conviction filters 15m confluence alerts. Only **HIGH or MODERATE** daily conviction passes the gate; LOW/no_signal are suppressed.
 
 ---
 

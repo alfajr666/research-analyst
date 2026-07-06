@@ -41,13 +41,26 @@ def get_db_connection(read_only: bool = False):
     Returns a connection to the DuckDB database.
     Note: DuckDB allows only one writer process. If running multiple threads/scripts,
     we must ensure sequential operations or use write locks.
+    We implement a retry mechanism to handle transient lock contention.
     """
+    import time
     db_file = Path(DB_PATH)
     db_file.parent.mkdir(parents=True, exist_ok=True)
-    conn = duckdb.connect(str(db_file), read_only=read_only)
-    conn.execute("PRAGMA memory_limit='128MB';")
-    conn.execute("PRAGMA threads=2;")
-    return conn
+    
+    max_retries = 10
+    retry_delay = 2.0
+    for attempt in range(max_retries):
+        try:
+            conn = duckdb.connect(str(db_file), read_only=read_only)
+            conn.execute("PRAGMA memory_limit='128MB';")
+            conn.execute("PRAGMA threads=2;")
+            return conn
+        except duckdb.Error as e:
+            if attempt == max_retries - 1:
+                raise e
+            print(f"Database connection attempt {attempt + 1} failed (locked/busy). Retrying in {retry_delay}s... Error: {e}")
+            time.sleep(retry_delay)
+
 
 def init_db():
     """Initializes the database schema if it doesn't exist."""
