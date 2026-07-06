@@ -66,38 +66,39 @@ def check_and_alert_confluences(conn):
                 
             # If it's a High Confluence Entry
             if prof.get("ta_signal") == "🔥 HIGH CONFLUENCE ENTRY":
-                # Check conviction threshold before proceeding
-                min_conviction = config.MIN_CONVICTION.upper()
-                alert_conviction = prof.get("conviction", "LOW")
-                conv_order = {"LOW": 0, "MODERATE": 1, "HIGH": 2}
-                if conv_order.get(alert_conviction, 0) < conv_order.get(min_conviction, 0):
-                    print(f"  Skipping {alert_conviction} conviction alert for {underlying} (min: {min_conviction})")
-                    continue
-
-                # Fetch 15m alert direction
                 directional_bias = prof.get("directional_bias", "neutral")
 
-                # Daily Regime Filter Gate (align with HIGH conviction daily TraderXO + HMM setups)
+                # Daily Regime Filter Gate (fetch HMM regime + conviction for all checks)
                 daily_sig = conn.execute("""
-                    SELECT signal, conviction
+                    SELECT signal, conviction, regime, regime_conf
                     FROM regime_signals
                     WHERE underlying = ?
                     ORDER BY date DESC LIMIT 1
                 """, (underlying,)).fetchone()
 
+                daily_regime_info = {"regime": "unknown", "regime_conf": 0.0, "daily_conv": None}
+
                 if daily_sig:
-                    daily_direction, daily_conv = daily_sig
+                    daily_direction, daily_conv, daily_regime, daily_regime_conf = daily_sig
+                    daily_regime_info = {"regime": daily_regime or "unknown", "regime_conf": daily_regime_conf or 0.0, "daily_conv": daily_conv}
+
                     if daily_direction == "no_signal":
                         print(f"  Suppressed 15m alert for {underlying}: Daily macro regime is NO_SIGNAL.")
-                        continue
-                    if daily_conv not in ("HIGH", "MODERATE"):
-                        print(f"  Suppressed 15m alert for {underlying}: Daily conviction is {daily_conv} (requires HIGH or MODERATE).")
                         continue
                     if daily_direction != directional_bias:
                         print(f"  Suppressed 15m alert for {underlying}: Daily direction ({daily_direction}) conflicts with 15m alert ({directional_bias}).")
                         continue
                 else:
                     print(f"  Suppressed 15m alert for {underlying}: No daily regime signal available in DB.")
+                    continue
+
+                # 6-factor conviction scoring (5 confluence factors + 1 HMM regime factor)
+                confidence_score = prof.get("confidence_score", 0)
+                hmm_factor = 1 if daily_regime_info["regime"] in ("trending_up", "trending_down") and daily_regime_info["regime_conf"] >= 0.50 else 0
+                total_score = confidence_score + hmm_factor
+
+                if total_score < 5:
+                    print(f"  Suppressed 15m alert for {underlying}: 6-factor score {total_score}/6 (5-factor: {confidence_score}, HMM factor: {hmm_factor}) — below threshold.")
                     continue
 
                 # Check when we last sent an alert for this asset (1 hour cooldown)
@@ -162,11 +163,14 @@ def check_and_alert_confluences(conn):
                 t2s = fmt_price(prof.get('t2_short'))
 
                 directional_bias = prof.get("directional_bias", "neutral")
-                conviction = prof.get("conviction", "LOW")
-                confidence_score = prof.get("confidence_score", 0)
                 confirmations_list = prof.get("confirmations", [])
+                conf_count = len(confirmations_list)
 
-                conv_icons = {"HIGH": "🔥 HIGH CONVICTION", "MODERATE": "✅ MODERATE", "LOW": "⚠️ LOW"}
+                # Build HMM regime line for the message
+                dr = daily_regime_info
+                regime_pct = f"{dr['regime_conf']*100:.0f}%" if dr['regime_conf'] else "?"
+                daily_conv_label = f" ({dr['daily_conv']})" if dr['daily_conv'] else ""
+                hmm_line = f"▫️ *Daily Regime:* {dr['regime']} ({regime_pct} confidence{daily_conv_label})"
 
                 if directional_bias == "neutral":
                     alert_msg = (
@@ -185,6 +189,7 @@ def check_and_alert_confluences(conn):
                         f"• *Value Area:* {val_str} – {vah_str}\n"
                         f"• *EMA26:* {ema26_str} | *EMA99:* {ema99_str}\n"
                         f"• *HVNs:* {hvns_str} | *LVNs:* {lvns_str}\n\n"
+                        f"{hmm_line}\n\n"
                         f"{anchor_str}\n\n"
                         f"• *Signal Details:*\n"
                         f"  _{prof.get('ta_desc')}_\n\n"
@@ -192,10 +197,8 @@ def check_and_alert_confluences(conn):
                     )
                 else:
                     dir_label = "LONG" if directional_bias == "long" else "SHORT"
-                    conv_label = conv_icons.get(conviction, conviction)
-                    title = f"🔔 *{conv_label} — {dir_label} SETUP* 🔔"
+                    title = f"🔔 *🔥 HIGH CONVICTION — {dir_label} SETUP* 🔔"
                     ema_dir = "Bullish (26>99)" if directional_bias == "long" else "Bearish (26<99)"
-                    conf_count = len(confirmations_list)
 
                     if directional_bias == "long":
                         entry_line = f"▫️ *Entry:* Close above {trig_long}{vol_conf}"
@@ -208,7 +211,7 @@ def check_and_alert_confluences(conn):
 
                     alert_msg = (
                         f"{title}\n\n"
-                        f"• *Asset:* #{underlying} | *Confidence:* {conv_label}{conf_summary}\n"
+                        f"• *Asset:* #{underlying} | *Confidence:* 🔥 HIGH CONVICTION{conf_summary}\n"
                         f"• *Current Price:* {price_str}\n\n"
                         f"{entry_line}\n"
                         f"▫️ *Stop anchor:* POC {stop_str}\n\n"
@@ -221,6 +224,7 @@ def check_and_alert_confluences(conn):
                         f"• *Value Area:* {val_str} – {vah_str}\n"
                         f"• *EMA26:* {ema26_str} | *EMA99:* {ema99_str}\n"
                         f"• *HVNs:* {hvns_str} | *LVNs:* {lvns_str}\n\n"
+                        f"{hmm_line}\n\n"
                         f"{anchor_str}\n\n"
                         f"• *Signal Details:*\n"
                         f"  _{prof.get('ta_desc')}_\n\n"
