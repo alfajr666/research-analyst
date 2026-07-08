@@ -233,6 +233,7 @@ def check_and_alert_confluences(conn):
                         f"▫️ *Stop anchor:* {stop_str}\n\n"
                         f"{targets_line}\n\n"
                         f"▫️ *Trend:* 15m {ema_dir} | 4h Structure: {struct_dir.upper()}\n"
+                        f"▫️ *Momentum:* RSI({prof.get('latest_rsi', 0):.1f})\n"
                         f"▫️ *Sizing:* {sizing_str}\n"
                         f"▫️ *Bias:* {prof.get('bias_assessment', 'N/A')}\n"
                         f"▫️ *Profile:* {shape} → {shape_ctx}\n"

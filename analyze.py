@@ -405,13 +405,21 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         pl.col("close").ewm_mean(span=99, adjust=False).alias("ema99"),
         (pl.col("high") - pl.col("low")).alias("tr1"),
         (pl.col("high") - pl.col("close").shift(1)).abs().alias("tr2"),
-        (pl.col("low") - pl.col("close").shift(1)).abs().alias("tr3")
+        (pl.col("low") - pl.col("close").shift(1)).abs().alias("tr3"),
+        pl.col("close").diff().alias("diff")
+    ])
+    df = df.with_columns([
+        pl.max_horizontal(["tr1", "tr2", "tr3"]).alias("tr"),
+        pl.when(pl.col("diff") > 0).then(pl.col("diff")).otherwise(0).alias("gain"),
+        pl.when(pl.col("diff") < 0).then(pl.col("diff").abs()).otherwise(0).alias("loss")
+    ])
+    df = df.with_columns([
+        pl.col("tr").ewm_mean(span=14, adjust=False).alias("atr"),
+        pl.col("gain").ewm_mean(alpha=1/14, adjust=False).alias("avg_gain"),
+        pl.col("loss").ewm_mean(alpha=1/14, adjust=False).alias("avg_loss")
     ])
     df = df.with_columns(
-        pl.max_horizontal(["tr1", "tr2", "tr3"]).alias("tr")
-    )
-    df = df.with_columns(
-        pl.col("tr").ewm_mean(span=14, adjust=False).alias("atr")
+        (100 - (100 / (1 + pl.col("avg_gain") / (pl.col("avg_loss") + 1e-9)))).alias("rsi")
     )
     
     # Extract latest price and EMAs
@@ -420,6 +428,7 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
     ema26_val = latest_row["ema26"][0]
     ema99_val = latest_row["ema99"][0]
     latest_atr = latest_row["atr"][0]
+    latest_rsi = latest_row["rsi"][0]
     
     # Slice the dataframe to get only the lookback_days for profile calculations
     latest_ts = df["timestamp"].max()
@@ -746,6 +755,13 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         if ema26_val is not None and ema99_val is not None:
             directional_bias = "long" if ema26_val >= ema99_val else "short"
 
+            # RSI Momentum Filter (Trend strength confirmation)
+            if latest_rsi is not None:
+                if directional_bias == "long" and latest_rsi < 50:
+                    directional_bias = "neutral"
+                elif directional_bias == "short" and latest_rsi > 50:
+                    directional_bias = "neutral"
+
         if directional_bias in ("long", "short"):
             is_bull = directional_bias == "long"
             score = 0
@@ -859,6 +875,7 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         "directional_bias": directional_bias,
         "conviction": conviction,
         "latest_atr": latest_atr,
+        "latest_rsi": latest_rsi,
         "confidence_score": confidence_score,
         "confirmations": confirmations_list
     }

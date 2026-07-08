@@ -80,6 +80,7 @@ Runs a nearness confluence comparison (with a default 0.75% threshold) to detect
         4. Price vs Volume POC
         5. Volume surge confirmation
     *   **4h Structural Filter**: The 15m signal must align with the 4-hour EMA structure (EMA26 vs EMA99 on 4h resampled data). Conflicting setups are suppressed.
+    *   **RSI Momentum Filter**: Entries must be supported by 15m RSI momentum (RSI > 50 for Long, RSI < 50 for Short).
     *   **Volatility Targeting (ATR-based TP/SL)**: Stop anchor is set to 2x ATR from the POC, while Take Profit targets are placed at 2x ATR and 4x ATR from the trigger point, enforcing a dynamic 2:1 risk-reward profile.
     *   **Conviction Levels**: 🔥 HIGH (≥3/5), ✅ MODERATE (1-2/5), ⚠️ LOW (≤0/5). LOW conviction alerts can be filtered via `MIN_CONVICTION` env var.
     *   **Example alert** — short setup with LOW conviction:
@@ -160,7 +161,7 @@ The orchestrator daemon monitors all active symbols in `market_data.db` after ev
 Evaluates and updates HMM + dual VWAP setups once per calendar day:
 *   **Data Source**: Daily OHLCV and 1-hour bars are both aggregated from the `futures_data` DB table (15m CoinAnalyze candles). No external freqtrade feather files required.
 *   **DB Logging**: Computes and logs the signal logic (LOW, MODERATE, HIGH, or no_signal) for all symbols with sufficient history (>= 300 one-hour bars ≈ 12.5 days) to the `regime_signals` DuckDB table.
-*   **Telegram Transition Alerts**: Dispatches a Telegram notification **only** when a setup reaches **HIGH** conviction (score >= 4), or when an active **HIGH** conviction setup closes/invalidates. This keeps channel alert noise low while preserving a complete history database.
+*   **Telegram Transition Alerts**: Dispatches a Telegram notification **only** when a setup reaches **HIGH** conviction (score >= 4). Active HIGH conviction setups that close/invalidate are logged silently in the background. This keeps channel alert noise low while preserving a complete history database.
 *   **15m Confluence Gate**: The daily regime conviction filters 15m confluence alerts. Only **HIGH or MODERATE** daily conviction passes the gate; LOW/no_signal are suppressed.
 
 ---

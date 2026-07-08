@@ -778,8 +778,8 @@ def _handle_telegram_alert(sig: dict, prev: Optional[dict]):
 
     elif was_high and sig["signal"] == "no_signal":
         # HIGH setup just closed
-        print(f"  [{symbol}] 🚫 HIGH setup closed — sending invalidation alert.")
-        _send_telegram(_build_alert_closed(symbol, sig["no_signal_reason"] or "setup_closed"))
+        print(f"  [{symbol}] 🚫 HIGH setup closed — logged only (invalidation alert disabled).")
+        # _send_telegram(_build_alert_closed(symbol, sig["no_signal_reason"] or "setup_closed"))
 
     else:
         level = sig["conviction"] or "no_signal"

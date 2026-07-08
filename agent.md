@@ -25,6 +25,7 @@ The agent implements the **15m EMA 99 Pullback + 1h Accumulation Confluence** se
 
 ### 4. 4h Structural Filter & Volatility Targeting
 - **4h Structural Alignment:** The 15m trigger is validated against the 4h EMA26 vs EMA99 structural trend. If the 15m entry conflicts with the higher-timeframe 4h structure, the setup is suppressed.
+- **RSI Momentum Filter:** The 15m 14-period RSI is used to gauge momentum strength. A Long setup is suppressed if RSI < 50. A Short setup is suppressed if RSI > 50.
 - **Dynamic TP/SL (ATR-based):** Stop Losses and Targets are sized dynamically using a 14-period 15m Average True Range (ATR). Stop Anchor is set at 2x ATR, T1 at 2x ATR, and T2 at 4x ATR. This mathematically enforces a consistent 2:1 risk-reward profile regardless of the prevailing volatility regime.
 
 ---
@@ -56,6 +57,6 @@ When the 15m Pullback gates align, the agent sends a Telegram alert with a defin
 ### Daily Regime Alerts
 The regime signal script runs **once per calendar day** via `orchestrator.py`.
 - **Data Source:** Daily OHLCV aggregated from the `futures_data` DB table (15m candles). HMM features computed on 1-hour bars from the same source. No external freqtrade feather files required.
-- **Alert Trigger:** Dispatches a Telegram notification **only** when a setup newly transitions to **HIGH** conviction, or when an active **HIGH** setup invalidates/closes.
+- **Alert Trigger:** Dispatches a Telegram notification **only** when a setup newly transitions to **HIGH** conviction. Invalidation alerts (when a HIGH setup closes) are suppressed and logged silently to reduce noise.
 - **DB Logging:** Logs all signals (LOW/MODERATE/HIGH/no_signal) to DuckDB in the `regime_signals` table.
 - **15m Confluence Gate:** The daily regime conviction acts as a filter for 15m confluence alerts. Alerts with **HIGH or MODERATE** daily conviction pass through; LOW/no_signal are suppressed. This ensures 15m breakout alerts only fire when the macro regime confirms the intraday bias.
