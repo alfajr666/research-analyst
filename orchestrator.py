@@ -101,6 +101,14 @@ def check_and_alert_confluences(conn):
                     print(f"  Suppressed 15m alert for {underlying}: 6-factor score {total_score}/6 (5-factor: {confidence_score}, HMM factor: {hmm_factor}) — below threshold.")
                     continue
 
+                # 4h Structural Trend Filter
+                from analyze import get_structural_trend
+                structure = get_structural_trend(conn, underlying, timeframe="4h")
+                struct_dir = structure.get("direction", "no_signal")
+                if struct_dir != "no_signal" and directional_bias != "neutral" and struct_dir != directional_bias:
+                    print(f"  Suppressed 15m alert for {underlying}: 4h structural trend ({struct_dir}) conflicts with 15m alert ({directional_bias}).")
+                    continue
+
                 # Check when we last sent an alert for this asset (1 hour cooldown)
                 cooldown_time = datetime.now(timezone.utc) - timedelta(hours=1)
                 last_alert = conn.execute(
@@ -156,7 +164,14 @@ def check_and_alert_confluences(conn):
 
                 trig_long = fmt_price(prof.get('trigger_long'))
                 trig_short = fmt_price(prof.get('trigger_short'))
-                stop_str = fmt_price(prof.get('stop_anchor'))
+                
+                if directional_bias == "long":
+                    stop_str = fmt_price(prof.get('stop_anchor_long') or prof.get('stop_anchor'))
+                elif directional_bias == "short":
+                    stop_str = fmt_price(prof.get('stop_anchor_short') or prof.get('stop_anchor'))
+                else:
+                    stop_str = fmt_price(prof.get('stop_anchor_long') or prof.get('stop_anchor'))
+
                 t1l = fmt_price(prof.get('t1_long'))
                 t2l = fmt_price(prof.get('t2_long'))
                 t1s = fmt_price(prof.get('t1_short'))
@@ -208,15 +223,17 @@ def check_and_alert_confluences(conn):
                         targets_line = f"▫️ *Targets:* T1 {t1s} | T2 {t2s} | {fmt_rr(prof.get('rr_short_t2'))}"
 
                     conf_summary = f" | ✅ {conf_count} confirmations" if conf_count > 0 else ""
+                    sizing_str = "Dynamic Volatility (ATR-based TP/SL)" if prof.get('latest_atr') else "Static VA Width"
 
                     alert_msg = (
                         f"{title}\n\n"
                         f"• *Asset:* #{underlying} | *Confidence:* 🔥 HIGH CONVICTION{conf_summary}\n"
                         f"• *Current Price:* {price_str}\n\n"
                         f"{entry_line}\n"
-                        f"▫️ *Stop anchor:* POC {stop_str}\n\n"
+                        f"▫️ *Stop anchor:* {stop_str}\n\n"
                         f"{targets_line}\n\n"
-                        f"▫️ *Trend:* EMA26({ema26_str}) {'>' if directional_bias == 'long' else '<'} EMA99({ema99_str}) — {ema_dir}\n"
+                        f"▫️ *Trend:* 15m {ema_dir} | 4h Structure: {struct_dir.upper()}\n"
+                        f"▫️ *Sizing:* {sizing_str}\n"
                         f"▫️ *Bias:* {prof.get('bias_assessment', 'N/A')}\n"
                         f"▫️ *Profile:* {shape} → {shape_ctx}\n"
                         f"▫️ *Staleness:* last 15m close ({prof.get('staleness_mins', '?')}m ago)\n\n"
@@ -329,22 +346,22 @@ def run_pipeline():
     except Exception as e:
         print(f"Error during CoinAnalyze ingestion: {e}", file=sys.stderr)
         
-    # 3. Ingest options data
-    try:
-        ingest_deribit()
-    except Exception as e:
-        print(f"Error during Deribit ingestion: {e}", file=sys.stderr)
+    # 3. Ingest options data (DISABLED)
+    # try:
+    #     ingest_deribit()
+    # except Exception as e:
+    #     print(f"Error during Deribit ingestion: {e}", file=sys.stderr)
         
-    # 4. Update daily ATM IV lookback table
-    try:
-        # Get write connection and save today's stats
-        conn = config.get_db_connection(read_only=False)
-        try:
-            update_daily_summary(conn)
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"Error updating daily summary: {e}", file=sys.stderr)
+    # 4. Update daily ATM IV lookback table (DISABLED)
+    # try:
+    #     # Get write connection and save today's stats
+    #     conn = config.get_db_connection(read_only=False)
+    #     try:
+    #         update_daily_summary(conn)
+    #     finally:
+    #         conn.close()
+    # except Exception as e:
+    #     print(f"Error updating daily summary: {e}", file=sys.stderr)
         
     # 5. Prune database records older than 30 days
     try:

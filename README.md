@@ -1,6 +1,6 @@
 # BTC/ETH Options & Futures Research Analyst Agent
 
-A Python-based cryptocurrency research agent that monitors futures/perpetuals markets via CoinAnalyze and options chains via Deribit. The agent stores structured data in a local DuckDB database, runs background alert monitoring, and delivers scheduled daily briefs (and on-demand statistics) to Telegram.
+A Python-based cryptocurrency research agent that monitors futures/perpetuals markets via CoinAnalyze. (Note: Deribit options chain monitoring is currently disabled). The agent stores structured data in a local DuckDB database, runs background alert monitoring, and delivers scheduled daily briefs (and on-demand statistics) to Telegram.
 
 ---
 
@@ -20,7 +20,7 @@ options-research-analyst/
 ├── venv/                                   # Local Python virtual environment
 ├── config.py                               # Environment config loader & DB schema initialization
 ├── ingest_coinalyze.py                     # CoinAnalyze API futures data ingestion (batched, rate-limited)
-├── ingest_deribit.py                       # Deribit API options chain ingestion
+├── ingest_deribit.py                       # Deribit API options chain ingestion (DISABLED)
 ├── scanner.py                              # Hourly volume/OI scanner (Binance + CoinAnalyze)
 ├── accumulation_monitor.py                 # Accumulation detection + Telegram alerts
 ├── regime_signal.py                        # Daily HMM regime engine + TraderXO dual VWAP signals
@@ -45,8 +45,8 @@ Fetches 15-minute OHLCV candles for all configured symbols on a continuous inges
 *   **Rate Limiting**: CoinAnalyze has a strict rate limit (~5 req/min sliding window). The `RateLimiter` class enforces a 12-second minimum interval between calls, exponential backoff with jitter on 429 responses, and a global penalty window that blocks all subsequent calls when a 429 is received. Symbols are fetched in batches of 15 to reduce total request count.
 *   **Timestamp Auto-Detection**: The API may return candle timestamps in either epoch seconds or milliseconds. The ingestion code auto-detects the format: values > 1e12 are treated as milliseconds and divided by 1000; smaller values are treated as seconds directly.
 
-### Deribit (Options Chains)
-Fetches options instruments within 60-day expiry and ±20% of the spot price. Greeks (delta, gamma, vega, theta), mark IV, open interest, and volume are stored on every ingestion cycle (default 15 minutes) for IV Rank, skew, and term structure calculations.
+### Deribit (Options Chains) [DISABLED]
+Fetches options instruments within 60-day expiry and ±20% of the spot price. Greeks (delta, gamma, vega, theta), mark IV, open interest, and volume are stored on every ingestion cycle (default 15 minutes) for IV Rank, skew, and term structure calculations. Note: This module and the daily options summary are currently disabled in the orchestrator pipeline.
 
 ---
 
@@ -79,6 +79,8 @@ Runs a nearness confluence comparison (with a default 0.75% threshold) to detect
         3. Profile shape alignment (P-shape/b-shape)
         4. Price vs Volume POC
         5. Volume surge confirmation
+    *   **4h Structural Filter**: The 15m signal must align with the 4-hour EMA structure (EMA26 vs EMA99 on 4h resampled data). Conflicting setups are suppressed.
+    *   **Volatility Targeting (ATR-based TP/SL)**: Stop anchor is set to 2x ATR from the POC, while Take Profit targets are placed at 2x ATR and 4x ATR from the trigger point, enforcing a dynamic 2:1 risk-reward profile.
     *   **Conviction Levels**: 🔥 HIGH (≥3/5), ✅ MODERATE (1-2/5), ⚠️ LOW (≤0/5). LOW conviction alerts can be filtered via `MIN_CONVICTION` env var.
     *   **Example alert** — short setup with LOW conviction:
         ```

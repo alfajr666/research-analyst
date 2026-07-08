@@ -3,7 +3,7 @@
 This document details the configuration and operational spec for the **Options Research Analyst Agent**.
 
 ## 🤖 Agent Purpose
-The agent operates as an analytical system monitoring crypto futures (via CoinAnalyze) and options markets (via Deribit). Its primary background function is detecting high-probability structural trend setups and delivering actionable entry signals directly to Telegram.
+The agent operates as an analytical system monitoring crypto futures (via CoinAnalyze). Options market monitoring (via Deribit) is currently disabled. Its primary background function is detecting high-probability structural trend setups and delivering actionable entry signals directly to Telegram.
 
 ## 📈 Confluence Trading Strategy (15m EMA 99 Pullback)
 The agent implements the **15m EMA 99 Pullback + 1h Accumulation Confluence** setup, designed to find low-risk entries at key macro levels.
@@ -22,6 +22,10 @@ The agent implements the **15m EMA 99 Pullback + 1h Accumulation Confluence** se
 - To avoid catching falling knives, the agent waits for the first closed 15m candle in the direction of the trend:
   - **Long:** 15m candle closes **Green** (`close > open`).
   - **Short:** 15m candle closes **Red** (`close < open`).
+
+### 4. 4h Structural Filter & Volatility Targeting
+- **4h Structural Alignment:** The 15m trigger is validated against the 4h EMA26 vs EMA99 structural trend. If the 15m entry conflicts with the higher-timeframe 4h structure, the setup is suppressed.
+- **Dynamic TP/SL (ATR-based):** Stop Losses and Targets are sized dynamically using a 14-period 15m Average True Range (ATR). Stop Anchor is set at 2x ATR, T1 at 2x ATR, and T2 at 4x ATR. This mathematically enforces a consistent 2:1 risk-reward profile regardless of the prevailing volatility regime.
 
 ---
 

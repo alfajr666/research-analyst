@@ -101,6 +101,41 @@ def get_futures_summary(conn, underlying: str) -> dict:
         "long_short_ratio": latest["long_short_ratio"]
     }
 
+def get_structural_trend(conn, underlying: str, timeframe: str = "4h", lookback_days: int = 30) -> dict:
+    """Computes the structural trend (EMA26 vs EMA99) on a higher timeframe (e.g., 4h or 1h)."""
+    query = f"""
+        SELECT timestamp, close
+        FROM futures_data
+        WHERE underlying = '{underlying}'
+          AND timestamp >= CURRENT_TIMESTAMP - INTERVAL '{lookback_days} days'
+        ORDER BY timestamp ASC
+    """
+    df = conn.execute(query).pl()
+    if df.is_empty():
+        return {"direction": "no_signal"}
+        
+    df = df.sort("timestamp")
+    df = df.group_by_dynamic("timestamp", every=timeframe).agg(pl.col("close").last())
+    
+    df = df.with_columns([
+        pl.col("close").ewm_mean(span=26, adjust=False).alias("ema26"),
+        pl.col("close").ewm_mean(span=99, adjust=False).alias("ema99")
+    ])
+    
+    latest = df.tail(1)
+    if latest.is_empty():
+        return {"direction": "no_signal"}
+        
+    ema26 = latest["ema26"][0]
+    ema99 = latest["ema99"][0]
+    
+    if ema26 is None or ema99 is None:
+        return {"direction": "no_signal"}
+        
+    direction = "long" if ema26 >= ema99 else "short"
+    return {"direction": direction, "ema26": ema26, "ema99": ema99, "timeframe": timeframe}
+
+
 def get_options_summary(conn, underlying: str) -> dict:
     """Computes options metrics (ATM IV, Skew, Term Structure, Max Pain) from option_chains."""
     # 1. Get spot price from latest futures data
@@ -364,17 +399,27 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         
     df = df.sort("timestamp")
     
-    # Calculate EMA26 and EMA99 on the 15m candles
+    # Calculate EMA26, EMA99, and ATR on the 15m candles
     df = df.with_columns([
         pl.col("close").ewm_mean(span=26, adjust=False).alias("ema26"),
-        pl.col("close").ewm_mean(span=99, adjust=False).alias("ema99")
+        pl.col("close").ewm_mean(span=99, adjust=False).alias("ema99"),
+        (pl.col("high") - pl.col("low")).alias("tr1"),
+        (pl.col("high") - pl.col("close").shift(1)).abs().alias("tr2"),
+        (pl.col("low") - pl.col("close").shift(1)).abs().alias("tr3")
     ])
+    df = df.with_columns(
+        pl.max_horizontal(["tr1", "tr2", "tr3"]).alias("tr")
+    )
+    df = df.with_columns(
+        pl.col("tr").ewm_mean(span=14, adjust=False).alias("atr")
+    )
     
     # Extract latest price and EMAs
     latest_row = df.tail(1)
     close_price = latest_row["close"][0]
     ema26_val = latest_row["ema26"][0]
     ema99_val = latest_row["ema99"][0]
+    latest_atr = latest_row["atr"][0]
     
     # Slice the dataframe to get only the lookback_days for profile calculations
     latest_ts = df["timestamp"].max()
@@ -613,19 +658,33 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
     trigger_long = vol_vah + va_width * 0.15 if va_width is not None and vol_vah is not None else None
     trigger_short = vol_val - va_width * 0.15 if va_width is not None and vol_val is not None else None
 
-    t1_long = vol_vah + va_width * 0.5 if va_width is not None and vol_vah is not None else None
-    t2_long = vol_vah + va_width * 1.0 if va_width is not None and vol_vah is not None else None
-    t1_short = vol_val - va_width * 0.5 if va_width is not None and vol_val is not None else None
-    t2_short = vol_val - va_width * 1.0 if va_width is not None and vol_val is not None else None
+    # Volatility Targeting: ATR-based Dynamic TP/SL (Targeting 2:1 RR)
+    if latest_atr is not None and latest_atr > 0 and poc_vol is not None:
+        t1_long = (trigger_long or poc_vol) + (latest_atr * 2)
+        t2_long = (trigger_long or poc_vol) + (latest_atr * 4)
+        t1_short = (trigger_short or poc_vol) - (latest_atr * 2)
+        t2_short = (trigger_short or poc_vol) - (latest_atr * 4)
+        
+        stop_anchor_long = poc_vol - (latest_atr * 2)
+        stop_anchor_short = poc_vol + (latest_atr * 2)
+    else:
+        # Fallback to VA width
+        t1_long = vol_vah + va_width * 0.5 if va_width is not None and vol_vah is not None else None
+        t2_long = vol_vah + va_width * 1.0 if va_width is not None and vol_vah is not None else None
+        t1_short = vol_val - va_width * 0.5 if va_width is not None and vol_val is not None else None
+        t2_short = vol_val - va_width * 1.0 if va_width is not None and vol_val is not None else None
+        
+        stop_anchor_long = poc_vol
+        stop_anchor_short = poc_vol
 
     rr_long_t1 = rr_long_t2 = rr_short_t1 = rr_short_t2 = None
-    if trigger_long is not None and poc_vol is not None and trigger_long > poc_vol:
-        risk_long = trigger_long - poc_vol
+    if trigger_long is not None and stop_anchor_long is not None and trigger_long > stop_anchor_long:
+        risk_long = trigger_long - stop_anchor_long
         if risk_long > 0:
             rr_long_t1 = round((t1_long - trigger_long) / risk_long, 1) if t1_long is not None and t1_long > trigger_long else None
             rr_long_t2 = round((t2_long - trigger_long) / risk_long, 1) if t2_long is not None and t2_long > trigger_long else None
-    if trigger_short is not None and poc_vol is not None and trigger_short < poc_vol:
-        risk_short = poc_vol - trigger_short
+    if trigger_short is not None and stop_anchor_short is not None and trigger_short < stop_anchor_short:
+        risk_short = stop_anchor_short - trigger_short
         if risk_short > 0:
             rr_short_t1 = round((trigger_short - t1_short) / risk_short, 1) if t1_short is not None and t1_short < trigger_short else None
             rr_short_t2 = round((trigger_short - t2_short) / risk_short, 1) if t2_short is not None and t2_short < trigger_short else None
@@ -782,7 +841,8 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         "candle_count": candle_count,
         "trigger_long": trigger_long,
         "trigger_short": trigger_short,
-        "stop_anchor": poc_vol,
+        "stop_anchor_long": stop_anchor_long,
+        "stop_anchor_short": stop_anchor_short,
         "t1_long": t1_long,
         "t2_long": t2_long,
         "t1_short": t1_short,
@@ -798,6 +858,7 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
         "volume_surge": volume_surge,
         "directional_bias": directional_bias,
         "conviction": conviction,
+        "latest_atr": latest_atr,
         "confidence_score": confidence_score,
         "confirmations": confirmations_list
     }
