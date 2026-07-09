@@ -35,13 +35,13 @@ The agent evaluates daily market structure using a combination of rolling VWAP z
 
 ### 1. Setup Detection (Dual VWAP + Closes)
 *   **Dual VWAP Bias:** Computes a rolling 7-day (weekly) VWAP on daily bars and an 18-bar (3-day) rolling VWAP on 4-hour bars. Price must be above both for a **long setup** candidate, or below both for a **short setup** candidate.
-*   **Acceptance Filter:** At least **4 of the last 5** daily closes must reside on the correct side of the weekly VWAP.
+*   **Acceptance Filter (Booster):** At least **4 of the last 5** daily closes should reside on the correct side of the weekly VWAP. This is no longer a hard gate — acceptance strength is folded into the conviction score (5/5 → +2, 4/5 → +1, <4/5 → −1 dampener). A weak acceptance no longer blocks the signal; it simply lowers conviction.
 
 ### 2. Conviction Scoring (Confluences)
 When a setup is found, it is evaluated across a 6-point checklist to determine conviction (**HIGH** (score >= 4), **MODERATE** (score 2-3), or **LOW** (score 0-1)):
 *   **HMM Regime Alignment (+2 / +1 / -1):** A 3-state Gaussian Hidden Markov Model fits log return, realized volatility, VWAP deviation, volume z-score, and high-low ranges on **300 one-hour bars** (≈ 12.5 days, sourced from 15m futures data). It scores +2 for high confidence trending in the setup direction, +1 for mild confidence trending, or -1 for ranging/high-vol.
 *   **EMA Alignment (+1):** Daily EMA12 vs EMA25 aligned with setup direction.
-*   **Perfect Acceptance (+1):** All 5 of the last 5 closes are on the correct side.
+*   **Acceptance Strength (+2 / +1 / -1):** 5/5 closes on side → +2, 4/5 → +1, fewer than 4 → −1 dampener.
 *   **VWAP Distance (+1):** Price is >= 0.5% beyond the 4h (3-day) VWAP.
 
 ---
@@ -59,4 +59,4 @@ The regime signal script runs **once per calendar day** via `orchestrator.py`.
 - **Data Source:** Daily OHLCV aggregated from the `futures_data` DB table (15m candles). HMM features computed on 1-hour bars from the same source. No external freqtrade feather files required.
 - **Alert Trigger:** Dispatches a Telegram notification **only** when a setup newly transitions to **HIGH** conviction. Invalidation alerts (when a HIGH setup closes) are suppressed and logged silently to reduce noise.
 - **DB Logging:** Logs all signals (LOW/MODERATE/HIGH/no_signal) to DuckDB in the `regime_signals` table.
-- **15m Confluence Gate:** The daily regime conviction acts as a filter for 15m confluence alerts. Alerts with **HIGH or MODERATE** daily conviction pass through; LOW/no_signal are suppressed. This ensures 15m breakout alerts only fire when the macro regime confirms the intraday bias.
+- **15m Confluence Gate (HMM Booster/Dampener):** The daily HMM regime no longer acts as a hard filter. Instead it modifies the 15m conviction score as a booster or dampener: a trending HMM regime aligned with the 15m bias adds +2; an opposing trending regime subtracts −2; ranging/high-vol subtracts −1; unknown/low-confidence is neutral (0). The daily signal field (`no_signal` when dual-VWAP acceptance < 4/5) is no longer a veto — only the dual-VWAP *split* (price on opposite sides of weekly vs 4h VWAP) and a 4h structural-trend conflict remain hard suppressions. A 15m setup fires when its 5-factor confluence score plus the HMM modifier clears the threshold (total ≥ 5). This ensures 15m breakout alerts are still biased by the macro regime without being silently killed when the daily signal is missing or `no_signal`.

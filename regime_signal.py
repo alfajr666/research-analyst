@@ -473,18 +473,21 @@ def compute_signal(
     accept_count, accept_side = _acceptance_count(df)
     expected_side = "above" if bias == "long" else "below"
 
-    if accept_side != expected_side or accept_count < ACCEPTANCE_MIN:
-        return _no_signal(symbol, today, "acceptance_not_met",
-                          weekly_vwap=weekly_vwap, vwap_4h=vwap_4h,
-                          ema12=ema12, ema25=ema25, close=close,
-                          acceptance=accept_count)
+    # Acceptance is now a BOOSTER/DAMPENER, not a hard gate.
+    # Only the dual-VWAP *split* (above) is a hard no_signal.
+    acceptance_ok = (accept_side == expected_side and accept_count >= ACCEPTANCE_MIN)
+    if not acceptance_ok:
+        # fall through to scoring with a dampened signal; don't early-return
+        signal_override = "no_signal"
+    else:
+        signal_override = None
 
     # -----------------------------------------------------------------------
     # Step 3 — Conviction scoring
     # -----------------------------------------------------------------------
     score = 0
 
-    # HMM regime alignment
+    # HMM regime alignment (booster/dampener)
     trending_direction = "trending_up" if bias == "long" else "trending_down"
     if regime_label == trending_direction:
         if regime_conf >= REGIME_CONF_STRONG:
@@ -500,9 +503,13 @@ def compute_signal(
     if ema_aligned:
         score += 1
 
-    # Perfect acceptance (5/5)
+    # Acceptance strength as booster (4/5 = +1, 5/5 = +2); weak acceptance dampens
     if accept_count == ACCEPTANCE_WINDOW:
+        score += 2
+    elif accept_count >= ACCEPTANCE_MIN:
         score += 1
+    else:
+        score -= 1   # <4/5 → dampen (acceptance_not_met)
 
     # Strong distance from 4h VWAP (>= 0.5% beyond)
     if vwap_4h is not None:
@@ -544,8 +551,8 @@ def compute_signal(
     return {
         "date":             today,
         "underlying":       symbol,
-        "signal":           bias,
-        "no_signal_reason": None,
+        "signal":           signal_override if signal_override else bias,
+        "no_signal_reason": ("acceptance_not_met" if signal_override else None),
         "conviction":       conviction,
         "conviction_score": score,
         "regime":           regime_label,

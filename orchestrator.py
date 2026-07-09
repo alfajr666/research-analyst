@@ -68,7 +68,9 @@ def check_and_alert_confluences(conn):
             if prof.get("ta_signal") == "🔥 HIGH CONFLUENCE ENTRY":
                 directional_bias = prof.get("directional_bias", "neutral")
 
-                # Daily Regime Filter Gate (fetch HMM regime + conviction for all checks)
+                # Daily Regime as BOOSTER/DAMPENER (not a hard gate)
+                # Hard gates are: dual VWAP split (neutral) + 4h structural conflict.
+                # HMM regime only modifies the conviction score — never vetoes.
                 daily_sig = conn.execute("""
                     SELECT signal, conviction, regime, regime_conf
                     FROM regime_signals
@@ -76,29 +78,35 @@ def check_and_alert_confluences(conn):
                     ORDER BY date DESC LIMIT 1
                 """, (underlying,)).fetchone()
 
-                daily_regime_info = {"regime": "unknown", "regime_conf": 0.0, "daily_conv": None}
+                daily_regime_info = {"regime": "unknown", "regime_conf": 0.0, "daily_conv": None, "signal": "no_signal"}
 
                 if daily_sig:
                     daily_direction, daily_conv, daily_regime, daily_regime_conf = daily_sig
-                    daily_regime_info = {"regime": daily_regime or "unknown", "regime_conf": daily_regime_conf or 0.0, "daily_conv": daily_conv}
+                    daily_regime_info = {
+                        "regime": daily_regime or "unknown",
+                        "regime_conf": daily_regime_conf or 0.0,
+                        "daily_conv": daily_conv,
+                        "signal": daily_direction or "no_signal",
+                    }
 
-                    if daily_direction == "no_signal":
-                        print(f"  Suppressed 15m alert for {underlying}: Daily macro regime is NO_SIGNAL.")
-                        continue
-                    if daily_direction != directional_bias:
-                        print(f"  Suppressed 15m alert for {underlying}: Daily direction ({daily_direction}) conflicts with 15m alert ({directional_bias}).")
-                        continue
-                else:
-                    print(f"  Suppressed 15m alert for {underlying}: No daily regime signal available in DB.")
-                    continue
-
-                # 6-factor conviction scoring (5 confluence factors + 1 HMM regime factor)
+                # 6-factor conviction scoring (5 confluence factors + 1 HMM regime booster)
                 confidence_score = prof.get("confidence_score", 0)
-                hmm_factor = 1 if daily_regime_info["regime"] in ("trending_up", "trending_down") and daily_regime_info["regime_conf"] >= 0.50 else 0
+                # HMM regime: booster if aligned, dampener if opposing/ranging, neutral if unknown
+                regime = daily_regime_info["regime"]
+                regime_conf = daily_regime_info["regime_conf"]
+                if regime in ("trending_up", "trending_down") and regime_conf >= 0.50:
+                    # aligned only if HMM direction matches 15m bias
+                    hmm_aligned = (regime == "trending_up" and directional_bias == "long") or \
+                                  (regime == "trending_down" and directional_bias == "short")
+                    hmm_factor = 2 if hmm_aligned else -2   # boost aligned, dampen opposite trend
+                elif regime in ("ranging", "high_vol"):
+                    hmm_factor = -1                          # dampen choppy regimes
+                else:
+                    hmm_factor = 0                           # unknown / low conf → neutral
                 total_score = confidence_score + hmm_factor
 
                 if total_score < 5:
-                    print(f"  Suppressed 15m alert for {underlying}: 6-factor score {total_score}/6 (5-factor: {confidence_score}, HMM factor: {hmm_factor}) — below threshold.")
+                    print(f"  Suppressed 15m alert for {underlying}: conviction score {total_score}/6 (5-factor: {confidence_score}, HMM factor: {hmm_factor}, regime: {regime}) — below threshold.")
                     continue
 
                 # 4h Structural Trend Filter
