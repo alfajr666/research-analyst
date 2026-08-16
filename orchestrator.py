@@ -13,17 +13,23 @@ from analyze import update_daily_summary, get_profile_summary
 STARTUP_TIME = time.time()
 DAEMON_MODE = False
 
-def prune_db(conn, retention_days: int = 30):
-    """Removes historical data older than retention_days to keep the database size bounded."""
-    limit_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
-    print(f"Pruning database records older than {limit_date.strftime('%Y-%m-%d %H:%M:%S')} UTC...")
+def prune_db(conn, futures_retention_days: int, auxiliary_retention_days: int = 30):
+    """Prunes auxiliary data and optionally retains longer futures history for research."""
+    auxiliary_limit = datetime.now(timezone.utc) - timedelta(days=auxiliary_retention_days)
+    futures_limit = (
+        datetime.now(timezone.utc) - timedelta(days=futures_retention_days)
+        if futures_retention_days > 0 else None
+    )
+    print(f"Pruning auxiliary records older than {auxiliary_limit.strftime('%Y-%m-%d %H:%M:%S')} UTC...")
     try:
         # Prune option_chains
-        res_opt = conn.execute("DELETE FROM option_chains WHERE timestamp < ?", (limit_date,)).rowcount
-        # Prune futures_data
-        res_fut = conn.execute("DELETE FROM futures_data WHERE timestamp < ?", (limit_date,)).rowcount
-        # Prune brain_outputs
-        res_brain = conn.execute("DELETE FROM brain_outputs WHERE timestamp < ?", (limit_date,)).rowcount
+        res_opt = conn.execute("DELETE FROM option_chains WHERE timestamp < ?", (auxiliary_limit,)).rowcount
+        res_brain = conn.execute("DELETE FROM brain_outputs WHERE timestamp < ?", (auxiliary_limit,)).rowcount
+        if futures_limit is None:
+            res_fut = 0
+            print("  Futures history pruning disabled.")
+        else:
+            res_fut = conn.execute("DELETE FROM futures_data WHERE timestamp < ?", (futures_limit,)).rowcount
         
         conn.commit()
         print(f"  Pruned: {res_opt} option chains, {res_fut} futures rows, {res_brain} brain outputs.")
@@ -372,11 +378,11 @@ def run_pipeline():
     # except Exception as e:
     #     print(f"Error updating daily summary: {e}", file=sys.stderr)
         
-    # 5. Prune database records older than 30 days
+    # 5. Retain futures history long enough for alpha research.
     try:
         conn = config.get_db_connection(read_only=False)
         try:
-            prune_db(conn, retention_days=30)
+            prune_db(conn, futures_retention_days=config.FUTURES_RETENTION_DAYS)
         finally:
             conn.close()
     except Exception as e:

@@ -21,6 +21,10 @@ DB_PATH = os.getenv("DB_PATH", str(DEFAULT_DB_DIR / "market_data.db"))
 INGEST_INTERVAL_MINS = int(os.getenv("INGEST_INTERVAL_MINS", "15"))
 MIN_CONVICTION = os.getenv("MIN_CONVICTION", "LOW")
 DAILY_BRIEF_TIME_WITA = os.getenv("DAILY_BRIEF_TIME_WITA", "08:00")
+FUTURES_RETENTION_DAYS = int(os.getenv("FUTURES_RETENTION_DAYS", "365"))
+SCANNER_MIN_24H_VOLUME_USD = float(os.getenv("SCANNER_MIN_24H_VOLUME_USD", "5000000"))
+SCANNER_CORE_24H_VOLUME_USD = float(os.getenv("SCANNER_CORE_24H_VOLUME_USD", "100000000"))
+SCANNER_MAX_CONTRACTS = int(os.getenv("SCANNER_MAX_CONTRACTS", "50"))
 
 # Freqtrade historical data path (for regime signal module)
 FREQTRADE_DATA_DIR = os.getenv(
@@ -169,6 +173,63 @@ def init_db():
 
         # Migration: add new columns for scanner schema updates
         conn.execute("ALTER TABLE scanner_history ADD COLUMN IF NOT EXISTS price_change_1h DOUBLE;")
+
+        # Point-in-time scanner universe for leakage-free liquidity-tier research.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS universe_snapshots (
+                observed_at       TIMESTAMP WITH TIME ZONE,
+                binance_symbol    VARCHAR,
+                coinalyze_symbol  VARCHAR,
+                underlying        VARCHAR,
+                volume_24h_usd    DOUBLE,
+                last_price        DOUBLE,
+                liquidity_tier    VARCHAR,
+                selected_for_scan BOOLEAN,
+                PRIMARY KEY (observed_at, binance_symbol)
+            );
+        """)
+
+        # Immutable research candidates, including candidates that never trigger.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS alpha_candidates (
+                candidate_id       VARCHAR PRIMARY KEY,
+                observed_at        TIMESTAMP WITH TIME ZONE,
+                asset              VARCHAR,
+                source_symbol      VARCHAR,
+                direction          VARCHAR,
+                setup_class        VARCHAR,
+                phase              VARCHAR,
+                strategy_id        VARCHAR,
+                liquidity_tier     VARCHAR,
+                status             VARCHAR,
+                valid_until        TIMESTAMP WITH TIME ZONE,
+                entry_condition    VARCHAR,
+                invalidation_price DOUBLE,
+                targets            VARCHAR,
+                feature_snapshot   VARCHAR
+            );
+        """)
+
+        # Outcomes are separate from candidates so point-in-time inputs stay immutable.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS alpha_outcomes (
+                candidate_id             VARCHAR PRIMARY KEY,
+                evaluated_at             TIMESTAMP WITH TIME ZONE,
+                entry_at                 TIMESTAMP WITH TIME ZONE,
+                entry_price              DOUBLE,
+                outcome                  VARCHAR,
+                expiry_at                TIMESTAMP WITH TIME ZONE,
+                return_15m               DOUBLE,
+                return_1h                DOUBLE,
+                return_4h                DOUBLE,
+                max_favorable_excursion  DOUBLE,
+                max_adverse_excursion    DOUBLE,
+                estimated_cost           DOUBLE,
+                net_return               DOUBLE,
+                details                  VARCHAR,
+                FOREIGN KEY (candidate_id) REFERENCES alpha_candidates(candidate_id)
+            );
+        """)
         
         # Create an index on timestamp/underlying for fast analysis
         conn.execute("CREATE INDEX IF NOT EXISTS idx_futures_ts ON futures_data (timestamp, underlying);")
@@ -176,6 +237,8 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_ts ON brain_outputs (timestamp, underlying);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON confluence_alerts (alert_time, underlying);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_scanner_ts ON scanner_history (timestamp, symbol);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_universe_ts ON universe_snapshots (observed_at, binance_symbol);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_ts ON alpha_candidates (observed_at, setup_class);")
 
         # Create regime_signals table (HMM + dual VWAP daily signals)
         conn.execute("""

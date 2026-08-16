@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 import duckdb
 import config
+from alpha_research import classify_liquidity_tier, record_universe_snapshot
 from ingest_coinalyze import fetch_coinalyze_data, fetch_coinalyze_data_batched
 
 def map_binance_to_coinalyze(symbol: str) -> str:
@@ -47,9 +48,7 @@ def run_scanner():
                 price_change_24h = float(item.get("priceChangePercent", 0.0))
                 last_price = float(item.get("lastPrice", 0.0))
                 
-                # Filter for assets with at least $5,000,000 USD in 24h volume
-                # This filters out dead coins instantly
-                if vol_24h_usd >= 5000000.0:
+                if vol_24h_usd >= config.SCANNER_MIN_24H_VOLUME_USD:
                     active_contracts.append({
                         "binance_symbol": sym,
                         "vol_24h_usd": vol_24h_usd,
@@ -59,11 +58,12 @@ def run_scanner():
             except ValueError:
                 continue
                 
-    print(f"Found {len(active_contracts)} active contracts on Binance with >= $5M 24h volume.")
+    print(f"Found {len(active_contracts)} active contracts on Binance with >= ${config.SCANNER_MIN_24H_VOLUME_USD:,.0f} 24h volume.")
     
-    # Sort by 24h volume descending and take top 50
+    # Keep the full eligible universe as a point-in-time research snapshot.
+    # Detailed CoinAnalyze requests remain capped to respect API limits.
     active_contracts.sort(key=lambda x: x["vol_24h_usd"], reverse=True)
-    top_active = active_contracts[:50]
+    top_active = active_contracts[:config.SCANNER_MAX_CONTRACTS]
     
     # Map to Coinalyze symbols
     coinalyze_symbols_map = {}  # Coinalyze_symbol -> Binance_metadata
@@ -73,7 +73,20 @@ def run_scanner():
         
     symbols_list = list(coinalyze_symbols_map.keys())
     symbols_str = ",".join(symbols_list)
-    print(f"Querying Coinalyze for top {len(symbols_list)} volume leaders...")
+    print(f"Querying Coinalyze for top {len(symbols_list)} liquid contracts...")
+
+    snapshot_time = datetime.now(timezone.utc)
+    snapshot_conn = config.get_db_connection(read_only=False)
+    try:
+        selected_symbols = {item["binance_symbol"] for item in top_active}
+        snapshot_contracts = [
+            {**item, "coinalyze_symbol": map_binance_to_coinalyze(item["binance_symbol"])}
+            for item in active_contracts
+        ]
+        record_universe_snapshot(snapshot_conn, snapshot_time, snapshot_contracts, selected_symbols)
+        snapshot_conn.commit()
+    finally:
+        snapshot_conn.close()
     
     # 2. Fetch current Open Interest from Coinalyze
     print("Fetching Open Interest from Coinalyze...")
@@ -186,7 +199,7 @@ def run_scanner():
     # Extract all currently accumulating assets
     accumulating_all = [r for r in results if r["is_accumulating"]]
     
-    current_time = datetime.now(timezone.utc)
+    current_time = snapshot_time
     
     # 5. Persist top 10 results to DuckDB scanner_history
     db_conn = config.get_db_connection(read_only=False)
