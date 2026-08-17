@@ -2,9 +2,10 @@ import json
 import time
 import sys
 import argparse
-import httpx
+from uuid import uuid4
 from datetime import datetime, timezone, timedelta
 import config
+from alpha_outbox import OUTBOX_DIR
 from ingest_coinalyze import ingest_coinalyze
 from ingest_deribit import ingest_deribit
 from analyze import update_daily_summary, get_profile_summary
@@ -46,7 +47,7 @@ def prune_db(conn, futures_retention_days: int, auxiliary_retention_days: int = 
         print(f"Error during database pruning: {e}", file=sys.stderr)
 
 def check_and_alert_confluences(conn):
-    """Checks all active assets for High Confluence Entry alerts and sends notifications to Telegram with 1h cooldown."""
+    """Checks and records High Confluence Entry events with a one-hour cooldown."""
     global DAEMON_MODE, STARTUP_TIME
     if DAEMON_MODE:
         elapsed = time.time() - STARTUP_TIME
@@ -263,36 +264,20 @@ def check_and_alert_confluences(conn):
                         f"_Timestamp: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC_"
                     )
                 
-                # Send the Telegram alert
-                token = config.TELEGRAM_BOT_TOKEN
-                chat_id = config.TELEGRAM_CHAT_ID
-                if token and chat_id:
-                    url = f"https://api.telegram.org/bot{token}/sendMessage"
-                    payload = {
-                        "chat_id": chat_id,
-                        "text": alert_msg,
-                        "parse_mode": "Markdown"
-                    }
-                    resp = httpx.post(url, json=payload, timeout=10)
-                    if resp.status_code == 200:
-                        print(f"  Alert sent successfully for {underlying}")
-                        # Record alert to database
-                        conn.execute(
-                            "INSERT INTO confluence_alerts (underlying, price, poc, ema26, ema99, val, vah, hvns, lvns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (underlying, prof['close'], prof['volume_poc'], prof['ema26'], prof['ema99'],
-                             prof.get('val'), prof.get('vah'),
-                             json.dumps(prof.get('hvns', [])),
-                             json.dumps(prof.get('lvns', [])))
-                        )
-                        conn.commit()
-                    else:
-                        print(f"  Failed to send Telegram alert for {underlying}: {resp.text}")
-                else:
-                    print(f"  Telegram credentials not configured; alert skipped for {underlying}")
+                # Preserve cooldown state; signal_publisher is the sole automated sender.
+                conn.execute(
+                    "INSERT INTO confluence_alerts (underlying, price, poc, ema26, ema99, val, vah, hvns, lvns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (underlying, prof['close'], prof['volume_poc'], prof['ema26'], prof['ema99'],
+                     prof.get('val'), prof.get('vah'),
+                     json.dumps(prof.get('hvns', [])),
+                     json.dumps(prof.get('lvns', [])))
+                )
+                conn.commit()
+                print(f"  High confluence alert recorded for {underlying}; Telegram delivery is disabled here.")
         except Exception as e:
             print(f"  Error checking alert for {underlying}: {e}")
 
-def run_pipeline():
+def _run_pipeline():
     """Runs the full sequential ingestion, scanning, and alerts pipeline."""
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==========================================")
@@ -301,6 +286,30 @@ def run_pipeline():
     
     # 1. Ensure DB schemas are initialized
     config.init_db()
+
+    # Binance-native discovery is independent of the rate-limited CoinAnalyze
+    # scanner and must run first at each completed-hour boundary.
+    if config.BINANCE_OI_ROTATION_ENABLED:
+        try:
+            from binance_oi_rotation_scanner import completed_hour, run_scanner as run_binance_oi_rotation_scanner
+            interval = completed_hour()
+            conn = config.get_db_connection(read_only=True)
+            try:
+                existing = conn.execute(
+                    """SELECT 1 FROM binance_oi_rotation_scans
+                    WHERE source = 'binance_usdm' AND completed_interval_at = ?
+                      AND scanner_version = ? AND status = 'complete' LIMIT 1""",
+                    (interval, config.BINANCE_OI_ROTATION_SCANNER_VERSION),
+                ).fetchone()
+            finally:
+                conn.close()
+            if existing:
+                print(f"Binance OI rotation scan already recorded for {interval.isoformat()}.")
+            else:
+                feed = run_binance_oi_rotation_scanner()
+                print(f"Binance OI rotation feed published with {len(feed['candidates'])} candidates.")
+        except Exception as e:
+            print(f"Error during Binance OI rotation scan: {e}", file=sys.stderr)
     
     # 2. Run hourly scanner if 1 hour has elapsed (check scanner_history table for last run)
     conn = config.get_db_connection()
@@ -310,28 +319,13 @@ def run_pipeline():
     if elapsed >= 3600:
         print("Running hourly market scanner...")
         try:
-            from scanner import run_scanner, format_telegram_scanner_message
+            from scanner import run_scanner
             json_data, accumulating_all = run_scanner()
             
-            # Send Telegram alert for the hourly rotation
+            # Scanner results remain available to the accumulation monitor, but this
+            # legacy rotation no longer owns Telegram delivery.
             if json_data:
-                msg = format_telegram_scanner_message(json_data, accumulating_all)
-                token = config.TELEGRAM_BOT_TOKEN
-                chat_id = config.TELEGRAM_CHAT_ID
-                if token and chat_id:
-                    url = f"https://api.telegram.org/bot{token}/sendMessage"
-                    payload = {
-                        "chat_id": chat_id,
-                        "text": msg,
-                        "parse_mode": "Markdown"
-                    }
-                    resp = httpx.post(url, json=payload, timeout=15)
-                    if resp.status_code == 200:
-                        print("Scanner Telegram alert sent successfully.")
-                    else:
-                        print(f"Failed to send scanner Telegram alert: {resp.text}")
-                else:
-                    print("Telegram credentials not configured; scanner alert skipped.")
+                print("Scanner rotation completed; Telegram delivery is disabled here.")
 
             # Feed scanner-detected accumulations to the accumulation monitor
             if accumulating_all:
@@ -354,7 +348,7 @@ def run_pipeline():
                 print(f"  Fed {len(accumulating_all)} scanner accumulations to monitor.")
         except Exception as e:
             print(f"Error during hourly scan: {e}", file=sys.stderr)
-            
+
     # 3. Ingest futures data (this now dynamically loads scanned symbols)
     try:
         ingest_coinalyze()
@@ -398,51 +392,108 @@ def run_pipeline():
     except Exception as e:
         print(f"Error checking confluence alerts: {e}", file=sys.stderr)
 
-    # 7. Daily regime signals (HMM + dual VWAP) — fires once per calendar day
+    # The scheduled runtime has one DuckDB owner. Run context and evaluators
+    # sequentially after ingestion so they see the just-closed local data.
     try:
-        conn = config.get_db_connection(read_only=False)
-        try:
-            last_signal_date = conn.execute(
-                "SELECT MAX(date) FROM regime_signals"
-            ).fetchone()[0]
-            today = datetime.now(timezone.utc).date()
-            if last_signal_date is None or last_signal_date < today:
-                print("Running daily regime signals (HMM + dual VWAP)...")
-                from regime_signal import run_regime_signals
-                run_regime_signals(conn)
-            else:
-                print(f"Regime signals already run today ({last_signal_date}) — skipping.")
-        finally:
-            conn.close()
+        from regime_evaluator import run_once as run_regime_evaluator
+        run_regime_evaluator()
     except Exception as e:
-        print(f"Error running regime signals: {e}", file=sys.stderr)
-        
+        print(f"Error running regime evaluator: {e}", file=sys.stderr)
+    from accumulation_evaluator import run_once as run_accumulation_evaluator
+    from acceleration_evaluator import run_once as run_acceleration_evaluator
+    from ignition_evaluator import run_once as run_ignition_evaluator
+    for name, evaluator in (
+        ("accumulation", run_accumulation_evaluator),
+        ("ignition", run_ignition_evaluator),
+        ("acceleration", run_acceleration_evaluator),
+    ):
+        try:
+            evaluator()
+        except Exception as e:
+            print(f"Error running {name} evaluator: {e}", file=sys.stderr)
+
     print(f"Pipeline run completed.")
+
+
+def _start_pipeline_run(run_id: str, started_at: datetime) -> None:
+    connection = config.get_db_connection()
+    try:
+        connection.execute("""
+            INSERT INTO pipeline_runs (run_id, started_at, status, details_json)
+            VALUES (?, ?, 'running', '{}')
+        """, (run_id, started_at))
+    finally:
+        connection.close()
+
+
+def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = None) -> None:
+    """Persist health data without letting metrics failure delay the next cycle."""
+    try:
+        completed_at = datetime.now(timezone.utc)
+        connection = config.get_db_connection()
+        try:
+            latest_data_at = connection.execute("SELECT MAX(timestamp) FROM futures_data").fetchone()[0]
+            freshness = (completed_at - latest_data_at).total_seconds() if latest_data_at else None
+            connection.execute("""
+                UPDATE pipeline_runs
+                SET completed_at = ?, status = ?, data_freshness_seconds = ?,
+                    outbox_depth = ?, error_message = ?, details_json = ?
+                WHERE run_id = ?
+            """, (
+                completed_at, status, freshness, len(list(OUTBOX_DIR.glob("*.json"))),
+                str(error)[:500] if error else None,
+                json.dumps({"data_latest_at": latest_data_at.isoformat() if latest_data_at else None}),
+                run_id,
+            ))
+        finally:
+            connection.close()
+    except Exception as metrics_error:
+        print(f"Error recording pipeline metrics: {metrics_error}", file=sys.stderr)
+
+
+def run_pipeline():
+    """Run the deterministic pipeline and record its durable operational state."""
+    config.init_db()
+    run_id = str(uuid4())
+    _start_pipeline_run(run_id, datetime.now(timezone.utc))
+    try:
+        _run_pipeline()
+    except Exception as error:
+        _finish_pipeline_run(run_id, "failed", error)
+        raise
+    _finish_pipeline_run(run_id, "completed")
+
+
+def publish_events():
+    """Persist and deliver queued events after each sequential pipeline cycle."""
+    from signal_publisher import SignalPublisher
+    print(f"Signal publisher: {SignalPublisher().run_once()}")
 
 def main():
     parser = argparse.ArgumentParser(description="BTC/ETH Options and Futures Research Ingestion Orchestrator")
     parser.add_argument("--once", action="store_true", help="Run the pipeline once and exit immediately.")
     args = parser.parse_args()
+    config.secure_secret_file()
     
     if args.once:
         run_pipeline()
+        publish_events()
     else:
         global DAEMON_MODE
         DAEMON_MODE = True
         interval_secs = config.INGEST_INTERVAL_MINS * 60
         print(f"Starting orchestrator daemon. Loop interval: {config.INGEST_INTERVAL_MINS} minutes ({interval_secs}s)...")
+        next_pipeline_at = 0.0
         while True:
-            start_time = time.time()
-            try:
-                run_pipeline()
-            except Exception as e:
-                print(f"Critical error in orchestrator pipeline: {e}", file=sys.stderr)
-                
-            # Calculate sleep time, taking execution time into account
-            elapsed = time.time() - start_time
-            sleep_time = max(1, interval_secs - elapsed)
-            print(f"Sleeping for {sleep_time:.1f} seconds until next run...")
-            time.sleep(sleep_time)
+            now = time.monotonic()
+            if now >= next_pipeline_at:
+                start_time = time.monotonic()
+                try:
+                    run_pipeline()
+                except Exception as e:
+                    print(f"Critical error in orchestrator pipeline: {e}", file=sys.stderr)
+                next_pipeline_at = start_time + interval_secs
+            time.sleep(min(30, max(1, next_pipeline_at - time.monotonic())))
 
 if __name__ == "__main__":
     main()

@@ -10,7 +10,7 @@ Signal logic:
   1. Setup detection  : dual VWAP same side + 4-of-5 acceptance filter
   2. Conviction score : HMM regime + EMA alignment + acceptance strength + VWAP distance
   3. DB logging       : ALL signals (LOW / MODERATE / HIGH / no_signal)
-  4. Telegram alert   : HIGH conviction only (+ close alert if prior was HIGH)
+   4. Transition logging: HIGH conviction transitions are recorded locally
 
 Run standalone:
   python regime_signal.py               # run today for full universe
@@ -30,7 +30,6 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import polars as pl
 import numpy as np
 
@@ -435,7 +434,7 @@ def compute_signal(
     """
     Full signal computation for the most recent bar in df.
     Uses weekly (7d) + 4h (3d) dual VWAP instead of weekly + monthly.
-    Returns a signal dict ready for DB insertion and Telegram formatting.
+    Returns a signal dict ready for DB insertion and local transition reporting.
     """
     today = date.today()
 
@@ -613,21 +612,6 @@ def _get_universe(conn) -> list[str]:
     return [r[0] for r in rows if r[0]]
 
 
-def _send_telegram(msg: str):
-    token   = config.TELEGRAM_BOT_TOKEN
-    chat_id = config.TELEGRAM_CHAT_ID
-    if not token or not chat_id:
-        print("  Telegram not configured — skipping alert.")
-        return
-    try:
-        url  = f"https://api.telegram.org/bot{token}/sendMessage"
-        resp = httpx.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-        if resp.status_code != 200:
-            print(f"  Telegram send failed: {resp.text}")
-    except Exception as e:
-        print(f"  Telegram error: {e}")
-
-
 def _fmt_price(v) -> str:
     if v is None:
         return "N/A"
@@ -712,12 +696,12 @@ def _get_previous_signal(conn, symbol: str) -> Optional[dict]:
 def run_regime_signals(conn, symbols: Optional[list[str]] = None, dry_run: bool = False):
     """
     Main entry point: runs the full pipeline for all (or specified) symbols.
-    Writes results to DB and sends Telegram alerts for HIGH conviction setup transitions.
+    Writes results to DB and records HIGH conviction setup transitions locally.
 
     Args:
         conn     : DuckDB connection (writable)
         symbols  : list of symbols to process; if None, uses full universe
-        dry_run  : if True, prints signal output but does not write DB or send Telegram
+        dry_run  : if True, prints signal output but does not write DB
     """
     config.init_db()
 
@@ -761,32 +745,29 @@ def run_regime_signals(conn, symbols: Optional[list[str]] = None, dry_run: bool 
         _upsert_signal(conn, sig)
         conn.commit()
 
-        # Telegram alert logic
-        _handle_telegram_alert(sig, prev)
+        # Preserve transition monitoring without legacy transport.
+        _handle_alert_transition(sig, prev)
 
     return results
 
 
-def _handle_telegram_alert(sig: dict, prev: Optional[dict]):
-    """Send Telegram only on HIGH conviction transitions or HIGH setup closure."""
+def _handle_alert_transition(sig: dict, prev: Optional[dict]):
+    """Report HIGH conviction transitions without sending a Telegram message."""
     symbol = sig["underlying"]
     is_high = sig["conviction"] == "HIGH" and sig["signal"] != "no_signal"
     was_high = prev and prev["conviction"] == "HIGH" and prev["signal"] != "no_signal"
 
     if is_high and not was_high:
         # New HIGH conviction setup
-        print(f"  [{symbol}] 🔔 NEW HIGH conviction {sig['signal'].upper()} — sending alert.")
-        _send_telegram(_build_alert_new(sig))
+        print(f"  [{symbol}] NEW HIGH conviction {sig['signal'].upper()} — recorded; Telegram delivery is disabled here.")
 
     elif is_high and was_high and prev["signal"] != sig["signal"]:
         # Direction flip at HIGH conviction
-        print(f"  [{symbol}] 🔔 HIGH conviction direction flip — sending alert.")
-        _send_telegram(_build_alert_new(sig))
+        print(f"  [{symbol}] HIGH conviction direction flip — recorded; Telegram delivery is disabled here.")
 
     elif was_high and sig["signal"] == "no_signal":
         # HIGH setup just closed
         print(f"  [{symbol}] 🚫 HIGH setup closed — logged only (invalidation alert disabled).")
-        # _send_telegram(_build_alert_closed(symbol, sig["no_signal_reason"] or "setup_closed"))
 
     else:
         level = sig["conviction"] or "no_signal"
@@ -818,7 +799,7 @@ def main():
     parser.add_argument("--backtest", type=int, metavar="N",
                         help="Dry-run: show signals for last N daily bars for BTC+ETH (no DB write)")
     parser.add_argument("--dry-run",  action="store_true",
-                        help="Process but do not write DB or send Telegram")
+                        help="Process but do not write DB")
     args = parser.parse_args()
 
     if args.backtest:
@@ -836,7 +817,7 @@ def main():
 def _run_backtest(n_days: int, symbol: Optional[str] = None):
     """
     Simulates the last n_days of daily signals without touching the DB.
-    Uses DB for data but skips DB writes and Telegram.
+    Uses DB for data but skips DB writes.
     """
     conn = config.get_db_connection(read_only=False)
     try:

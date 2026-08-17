@@ -1,62 +1,107 @@
-# Options Research Analyst Agent Spec
+# Alpha Producer Agent Guide
 
-This document details the configuration and operational spec for the **Options Research Analyst Agent**.
+## Mission
 
-## 🤖 Agent Purpose
-The agent operates as an analytical system monitoring crypto futures (via CoinAnalyze). Options market monitoring (via Deribit) is currently disabled. Its primary background function is detecting high-probability structural trend setups and delivering actionable entry signals directly to Telegram.
+This repository produces research-grade, venue-neutral crypto-perpetual trade theses. It complements a downstream trading engine; it does not replace the engine's discovery, risk, or execution systems.
 
-## 📈 Confluence Trading Strategy (15m EMA 99 Pullback)
-The agent implements the **15m EMA 99 Pullback + 1h Accumulation Confluence** setup, designed to find low-risk entries at key macro levels.
+```text
+Producer: thesis -> validated event -> Telegram / configured bot inbox
+Engine:                         event -> eligibility -> risk -> order -> position lifecycle
+```
 
-### 1. Trend & Support/Resistance (15m)
-- The agent tracks the **15m EMA 99** as the primary trend filter.
-- **Long Trend:** 15m Close > EMA 99. Pullback is valid if the last closed 15m candle closed within **1%** of the EMA 99 (`0.0% to 1.0%` above it).
-- **Short Trend:** 15m Close < EMA 99. Pullback is valid if the last closed 15m candle closed within **1%** of the EMA 99 (`0.0% to 1.0%` below it).
+An alpha event must be a falsifiable directional thesis with an entry condition, invalidation, targets, and expiry. A ticker, discovery rank, indicator count, or LLM narrative alone is never alpha.
 
-### 2. Micro Volume Spike / Consolidation (1h)
-- While the coin is resting on its 15m EMA support/resistance, the agent monitors for **Volume Accumulation/Distribution**.
-- Requires a volume spike **>= 1.5x** the recent average volume.
-- Requires quiet price consolidation (1h absolute price change **<= 3.0%**).
+## Ownership Boundaries
 
-### 3. Momentum Execution (15m Trigger)
-- To avoid catching falling knives, the agent waits for the first closed 15m candle in the direction of the trend:
-  - **Long:** 15m candle closes **Green** (`close > open`).
-  - **Short:** 15m candle closes **Red** (`close < open`).
+The producer owns:
 
-### 4. 4h Structural Filter & Volatility Targeting
-- **4h Structural Alignment:** The 15m trigger is validated against the 4h EMA26 vs EMA99 structural trend. If the 15m entry conflicts with the higher-timeframe 4h structure, the setup is suppressed.
-- **RSI Momentum Filter:** The 15m 14-period RSI is used to gauge momentum strength. A Long setup is suppressed if RSI < 50. A Short setup is suppressed if RSI > 50.
-- **Dynamic TP/SL (ATR-based):** Stop Losses and Targets are sized dynamically using a 14-period 15m Average True Range (ATR). Stop Anchor is set at 2x ATR, T1 at 2x ATR, and T2 at 4x ATR. This mathematically enforces a consistent 2:1 risk-reward profile regardless of the prevailing volatility regime.
+- Point-in-time discovery, watchlists, local market-data history, and research records.
+- Canonical asset, direction, setup class, phase, entry condition, invalidation, targets, expiry, feature snapshot, and research confidence.
+- Event validation, durable event/delivery ledgers, Telegram delivery, and disabled-by-default bot-inbox delivery.
 
----
+The downstream engine owns:
 
-## 🛡️ HMM + TraderXO Dual VWAP Regime Signal (Daily)
-The agent evaluates daily market structure using a combination of rolling VWAP zones and a statistical classifier:
+- Venue/instrument mapping, current tradeability, liquidity, and executable costs.
+- Duplicate and portfolio-conflict handling, sizing, leverage, order choice, retries, and position lifecycle.
+- Any order placement. This repository never stores exchange credentials or submits orders.
 
-### 1. Setup Detection (Dual VWAP + Closes)
-*   **Dual VWAP Bias:** Computes a rolling 7-day (weekly) VWAP on daily bars and an 18-bar (3-day) rolling VWAP on 4-hour bars. Price must be above both for a **long setup** candidate, or below both for a **short setup** candidate.
-*   **Acceptance Filter (Booster):** At least **4 of the last 5** daily closes should reside on the correct side of the weekly VWAP. This is no longer a hard gate — acceptance strength is folded into the conviction score (5/5 → +2, 4/5 → +1, <4/5 → −1 dampener). A weak acceptance no longer blocks the signal; it simply lowers conviction.
+## Runtime Topology
 
-### 2. Conviction Scoring (Confluences)
-When a setup is found, it is evaluated across a 6-point checklist to determine conviction (**HIGH** (score >= 4), **MODERATE** (score 2-3), or **LOW** (score 0-1)):
-*   **HMM Regime Alignment (+2 / +1 / -1):** A 3-state Gaussian Hidden Markov Model fits log return, realized volatility, VWAP deviation, volume z-score, and high-low ranges on **300 one-hour bars** (≈ 12.5 days, sourced from 15m futures data). It scores +2 for high confidence trending in the setup direction, +1 for mild confidence trending, or -1 for ranging/high-vol.
-*   **EMA Alignment (+1):** Daily EMA12 vs EMA25 aligned with setup direction.
-*   **Acceptance Strength (+2 / +1 / -1):** 5/5 closes on side → +2, 4/5 → +1, fewer than 4 → −1 dampener.
-*   **VWAP Distance (+1):** Price is >= 0.5% beyond the 4h (3-day) VWAP.
+`ecosystem.config.js` defines two PM2 applications:
 
----
+| Process | Owns | Cadence |
+| --- | --- | --- |
+| `orchestrator` | Ingestion, discovery, backfill, market-data retention, regime and strategy evaluation | 15-minute loop; discovery scans hourly |
+| `signal-publisher` | Alpha-event persistence, optional research coordination, Telegram and configured execution-inbox delivery | Every 30 seconds |
 
-## 🛠️ Monitor & Orchestration Daemons
-All analytical routines run continuously via process managers or sequential pipeline triggers.
+The orchestrator is the only writer of `DB_PATH`, the raw-market database. The publisher is the only writer of `ALPHA_DB_PATH`, the alpha-event ledger. They must be distinct files. Do not run standalone evaluators or duplicate PM2/manual instances against these databases.
 
-### Actionable Pullback Alerts
-When the 15m Pullback gates align, the agent sends a Telegram alert with a defined **Entry Zone** (using local state tracker `accumulation_state.json` to suppress duplicates):
-- **Long Entry Zone:** `[EMA 99, EMA 99 * 1.01]`
-- **Short Entry Zone:** `[EMA 99 * 0.99, EMA 99]`
+## Data and Discovery
 
-### Daily Regime Alerts
-The regime signal script runs **once per calendar day** via `orchestrator.py`.
-- **Data Source:** Daily OHLCV aggregated from the `futures_data` DB table (15m candles). HMM features computed on 1-hour bars from the same source. No external freqtrade feather files required.
-- **Alert Trigger:** Dispatches a Telegram notification **only** when a setup newly transitions to **HIGH** conviction. Invalidation alerts (when a HIGH setup closes) are suppressed and logged silently to reduce noise.
-- **DB Logging:** Logs all signals (LOW/MODERATE/HIGH/no_signal) to DuckDB in the `regime_signals` table.
-- **15m Confluence Gate (HMM Booster/Dampener):** The daily HMM regime no longer acts as a hard filter. Instead it modifies the 15m conviction score as a booster or dampener: a trending HMM regime aligned with the 15m bias adds +2; an opposing trending regime subtracts −2; ranging/high-vol subtracts −1; unknown/low-confidence is neutral (0). The daily signal field (`no_signal` when dual-VWAP acceptance < 4/5) is no longer a veto — only the dual-VWAP *split* (price on opposite sides of weekly vs 4h VWAP) and a 4h structural-trend conflict remain hard suppressions. A 15m setup fires when its 5-factor confluence score plus the HMM modifier clears the threshold (total ≥ 5). This ensures 15m breakout alerts are still biased by the macro regime without being silently killed when the daily signal is missing or `no_signal`.
+`orchestrator.py` obtains CoinAnalyze 15-minute perpetual market data and runs the scanner using Binance public contract metadata plus CoinAnalyze hourly observations. It writes point-in-time universe and broad-discovery snapshots, including rejected contracts, to make later research reproducible.
+
+The scanner ranks independent pools, each limited by `DISCOVERY_TOP_N`:
+
+| Pool | Thesis | Character |
+| --- | --- | --- |
+| `ignition` | An expansion may begin soon | Quiet/compressed base, activity or positioning change, no fresh breakout |
+| `continuation` | An existing move may continue | Directional movement with volume/OI participation, no exhausted expansion |
+
+New selections are recorded in append-only watchlist history and queue durable `deep_backfill_jobs`. The scanner backfills 14 days of 15-minute OHLCV, OI, and funding before an asset can qualify. Watchlist residency is at least 24 hours; stale, ineligible, or no-longer-ranked assets expire.
+
+Evaluators consume only local warmed data. They neither call CoinAnalyze nor write raw market data. `FREQTRADE_DATA_DIR` provides an optional historical Feather archive for research, not live data.
+
+## Strategy and Bar Safety
+
+The producer is medium frequency: it evaluates completed 15-minute candles for a 15-minute-to-hours horizon. Every evaluator uses the start of the current UTC 15-minute candle as its cutoff and must query strictly earlier bars. Forming candles and stale series are excluded.
+
+Current strategy families remain separate hypotheses:
+
+- `accumulation_base`: legacy EMA99 pullback and completed-bar confirmation.
+- `impulse_ignition`: compressed pre-breakout base with supporting activity/positioning.
+- `continuation_breakout`: established move with re-acceleration evidence.
+
+The HMM plus dual-VWAP evaluator provides macro context. Its historical results are not proof of alpha and must not be represented as calibrated or execution-authorizing.
+
+## Event Contract
+
+Evaluators atomically write version-1 JSON files to `data/alpha_outbox/`. Identity is deduplicated by `strategy_id`, `asset`, `direction`, and `observed_at`; `alpha_id` and `dedupe_key` are deterministic.
+
+Required fields:
+
+```text
+schema_version, alpha_id, strategy_id, asset, direction, setup_class, phase,
+observed_at, valid_until, horizon_minutes, confidence, entry_condition,
+invalidation_price, targets, feature_snapshot, dedupe_key
+```
+
+`confidence` is a score-derived research value until it has been calibrated out of sample. Feature snapshots are immutable. Event statuses are `active`, `expired`, and `invalidated`.
+
+The publisher validates and persists an event before attempting delivery. `alpha_events` is authoritative; `signal_deliveries` records Telegram attempts and bounded retry state. Telegram failure must never delete or duplicate an event.
+
+## Optional Research and Bot Delivery
+
+Local-evidence LLM research is disabled unless `LLM_RESEARCH_ENABLED=true`. It is bounded by report, retry, input/output, timeout, and monthly-budget settings. It may add an advisory Telegram note but cannot alter deterministic event fields or authorize execution.
+
+The execution adapter is also disabled by default. When explicitly enabled, it writes one validated immutable item to each configured target inbox (`bybit`, `bybit-test`, `mexc`, or `propr`) and records receipts in `execution_deliveries`. It does not connect to exchanges, select a venue, or place an order. Only active, unexpired events with the supported `limit_at_ema_context` shape, a single target, valid geometry, and a target allowlist match can be forwarded.
+
+## Research Discipline
+
+Treat every setup class and version as an independent hypothesis. Preserve point-in-time candidates and feature snapshots separately from outcomes. Promotion requires walk-forward evaluation, asset-relative normalization, liquidity-tier and regime breakdowns, conservative fees/spread/slippage/funding, matched baselines, and out-of-sample confidence calibration.
+
+Discovery rank, technical confluence, HMM output, LLM commentary, and a successfully delivered inbox item are not trade instructions.
+
+## Operations
+
+```bash
+cp .env.example .env
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python config.py
+pm2 start ecosystem.config.js
+```
+
+Set `COINANALYZE_API_KEY` for collection and `TELEGRAM_BOT_TOKEN` plus `TELEGRAM_CHAT_ID` for Telegram delivery. Use `./venv/bin/python orchestrator.py --once` for one pipeline cycle, `pm2 status` for process state, and `pm2 logs orchestrator` or `pm2 logs signal-publisher` for diagnosis.
+
+When an expected event is absent, inspect the chain in this order: universe/discovery snapshot, watchlist history, `deep_backfill_jobs`, fresh completed `futures_data`, evaluator outbox file, `alpha_events`, `signal_deliveries`, and (if enabled) `execution_deliveries`.

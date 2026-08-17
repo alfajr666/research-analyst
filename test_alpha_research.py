@@ -34,6 +34,7 @@ class AlphaResearchPersistenceTests(unittest.TestCase):
         self.assertEqual(tiers, [("BTCUSDT", "core", True), ("SMALLUSDT", "emerging", False)])
 
         candidate_id = alpha_research.record_candidate(self.conn, {
+            "candidate_id": "candidate:SMALL:2026-08-16T10:00:00Z",
             "observed_at": observed_at,
             "asset": "SMALL",
             "source_symbol": "SMALLUSDT_PERP.A",
@@ -60,6 +61,19 @@ class AlphaResearchPersistenceTests(unittest.TestCase):
             JOIN alpha_outcomes o USING (candidate_id)
         """).fetchone()
         self.assertEqual(record, ("SMALL", "emerging", "target", 0.035))
+
+    def test_rejects_non_emitted_candidate_without_stable_identity(self):
+        with self.assertRaisesRegex(ValueError, "explicit stable candidate_id"):
+            alpha_research.record_candidate(self.conn, {
+                "observed_at": datetime(2026, 8, 16, 10, tzinfo=timezone.utc),
+                "asset": "SMALL",
+                "setup_class": "impulse_ignition",
+                "phase": "armed",
+                "strategy_id": "impulse-ignition-v1",
+                "liquidity_tier": "emerging",
+                "status": "armed",
+                "valid_until": datetime(2026, 8, 16, 11, tzinfo=timezone.utc),
+            })
 
 
 if __name__ == "__main__":

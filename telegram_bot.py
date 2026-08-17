@@ -1,4 +1,5 @@
 import logging
+import sys
 from datetime import time, datetime, timezone
 import pytz
 from telegram import Update
@@ -11,6 +12,24 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+
+def is_authorized_sender(update: Update) -> bool:
+    """Allow commands only from explicitly configured chats and users."""
+    chat_id = str(update.effective_chat.id) if update.effective_chat else None
+    user_id = str(update.effective_user.id) if update.effective_user else None
+    chat_allowed = not config.TELEGRAM_ALLOWED_CHAT_IDS or chat_id in config.TELEGRAM_ALLOWED_CHAT_IDS
+    user_allowed = not config.TELEGRAM_ALLOWED_USER_IDS or user_id in config.TELEGRAM_ALLOWED_USER_IDS
+    return chat_allowed and user_allowed
+
+
+def allowlisted(handler):
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not is_authorized_sender(update):
+            logger.warning("Rejected Telegram command from chat=%s user=%s", update.effective_chat, update.effective_user)
+            return
+        await handler(update, context)
+    return wrapped
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Greets the user and displays available commands."""
@@ -348,6 +367,12 @@ def main() -> None:
     if not token:
         print("Error: TELEGRAM_BOT_TOKEN is not configured in .env. Bot cannot start.", file=sys.stderr)
         sys.exit(1)
+    try:
+        config.secure_secret_file()
+        config.validate_telegram_allowlist()
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
         
     custom_request = HTTPXRequest(
         connection_pool_size=5,
@@ -365,13 +390,13 @@ def main() -> None:
     )
 
     # Register commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("brief", brief_command))
-    app.add_handler(CommandHandler("futures", futures_command))
-    app.add_handler(CommandHandler("options", options_command))
-    app.add_handler(CommandHandler("profile", profile_command))
-    app.add_handler(CommandHandler("scanner", scanner_command))
-    app.add_handler(CommandHandler("regime", regime_command))
+    app.add_handler(CommandHandler("start", allowlisted(start)))
+    app.add_handler(CommandHandler("brief", allowlisted(brief_command)))
+    app.add_handler(CommandHandler("futures", allowlisted(futures_command)))
+    app.add_handler(CommandHandler("options", allowlisted(options_command)))
+    app.add_handler(CommandHandler("profile", allowlisted(profile_command)))
+    app.add_handler(CommandHandler("scanner", allowlisted(scanner_command)))
+    app.add_handler(CommandHandler("regime", allowlisted(regime_command)))
 
     # Schedule the daily brief in Asia/Makassar timezone (WITA)
     tz = pytz.timezone("Asia/Makassar")

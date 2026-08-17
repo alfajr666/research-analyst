@@ -75,6 +75,9 @@ def load_symbols() -> list:
                 # Add top 10 rankings
                 for item in scan_data.get("rankings", []):
                     scanned_symbols.append(item["symbol"])
+                # Keep the scanner's liquid universe in the research data set,
+                # not only the alert-oriented top 10.
+                scanned_symbols.extend(scan_data.get("research_universe", []))
                 
                 # Merge into watchlist (avoid duplicates)
                 merged_count = 0
@@ -86,6 +89,24 @@ def load_symbols() -> list:
                     print(f"Watchlist: Dynamically injected {merged_count} hot symbols from hourly scan.")
         except Exception as e:
             print(f"Error loading scanned pairs: {e}")
+
+    # Rotation candidates are a separate, versioned artifact. A stale or malformed
+    # feed never expands the CoinAnalyze research workload.
+    rotation_path = config.BINANCE_OI_ROTATION_FEED_PATH
+    if rotation_path.exists():
+        try:
+            with open(rotation_path, "r", encoding="utf-8") as f:
+                rotation_feed = json.load(f)
+            expires_at = datetime.fromisoformat(rotation_feed["expires_at"])
+            if rotation_feed.get("source") == "binance_usdm" and expires_at > datetime.now(timezone.utc):
+                from binance_oi_rotation_scanner import coinalyze_symbol_from_binance
+                rotation_symbols = [coinalyze_symbol_from_binance(item["symbol"]) for item in rotation_feed.get("candidates", [])]
+                added = [symbol for symbol in rotation_symbols if symbol not in symbols]
+                symbols.extend(added)
+                if added:
+                    print(f"Watchlist: Injected {len(added)} fresh Binance OI rotation candidates.")
+        except (KeyError, TypeError, ValueError, OSError) as e:
+            print(f"Error loading Binance OI rotation feed: {e}")
             
     # Always ensure BTC, ETH, and SOL are in the list
     for default in ["BTCUSDT_PERP.A", "ETHUSDT_PERP.A", "SOLUSDT_PERP.A"]:

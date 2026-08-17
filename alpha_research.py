@@ -2,7 +2,6 @@
 
 import json
 from datetime import datetime
-from uuid import uuid4
 
 import config
 
@@ -51,7 +50,9 @@ def record_candidate(conn, candidate: dict) -> str:
     if missing:
         raise ValueError(f"Candidate missing required fields: {', '.join(sorted(missing))}")
 
-    candidate_id = candidate.get("candidate_id", str(uuid4()))
+    candidate_id = candidate.get("candidate_id")
+    if not candidate_id:
+        raise ValueError("Non-emitted candidates require an explicit stable candidate_id")
     conn.execute("""
         INSERT INTO alpha_candidates (
             candidate_id, observed_at, asset, source_symbol, direction,

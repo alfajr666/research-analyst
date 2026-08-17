@@ -2,12 +2,14 @@ import time
 import os
 import json
 import statistics
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import httpx
 import duckdb
 import config
 from alpha_research import classify_liquidity_tier, record_universe_snapshot
 from ingest_coinalyze import fetch_coinalyze_data, fetch_coinalyze_data_batched
+import bootstrap_trend_history
+import two_pool_discovery
 
 def map_binance_to_coinalyze(symbol: str) -> str:
     """Maps Binance symbol to Coinalyze symbol format."""
@@ -17,9 +19,183 @@ def map_binance_to_coinalyze(symbol: str) -> str:
         return "1000SHIBUSDT_PERP.A"
     return f"{symbol}_PERP.A"
 
+
+def _history_values(history: list[dict]) -> list[float]:
+    """Extract CoinAnalyze history values across its endpoint-specific shapes."""
+    values = []
+    for item in history:
+        for key in ("c", "value", "openInterest"):
+            if item.get(key) is not None:
+                try:
+                    values.append(float(item[key]))
+                except (TypeError, ValueError):
+                    pass
+                break
+    return values
+
+
+def build_discovery_record(binance_meta: dict, coinalyze_symbol: str, ohlcv_history: list[dict],
+                           oi_history: list[dict], current_oi: float, funding_rate: float,
+                           now: datetime | None = None) -> dict:
+    """Normalize one hourly CoinAnalyze snapshot for the two discovery pools."""
+    volume_24h = float(binance_meta["vol_24h_usd"])
+    asset = binance_meta["binance_symbol"].removesuffix("USDT")
+    record = {
+        "symbol": coinalyze_symbol,
+        "asset": asset,
+        "liquidity_tier": classify_liquidity_tier(volume_24h),
+        "eligible": volume_24h >= config.SCANNER_MIN_24H_VOLUME_USD,
+        "data_fresh": False,
+        "history_warmed": False,
+        "volume_24h_usd": volume_24h,
+        "open_interest_usd": 0.0,
+        "volume_zscore": 0.0,
+        "oi_change_1h": 0.0,
+        "price_change_1h": 0.0,
+        "price_change_24h": 0.0,
+        "price_range_percentile": 0.5,
+        "funding_rate": funding_rate,
+        "funding_zscore": 0.0,
+        "long_short_ratio_change": 0.0,
+        "fresh_breakout": False,
+        "post_breakout_pullback": False,
+        "exhausted_expansion": False,
+    }
+    try:
+        candles = sorted(ohlcv_history, key=lambda candle: float(candle.get("t", 0.0)))
+        closes = [float(candle["c"]) for candle in candles]
+        highs = [float(candle["h"]) for candle in candles]
+        lows = [float(candle["l"]) for candle in candles]
+        volumes = [float(candle["v"]) for candle in candles]
+        oi_values = _history_values(oi_history)
+        if len(closes) < 49 or len(oi_values) < 2 or closes[-1] <= 0 or closes[-2] <= 0:
+            return record
+
+        latest_timestamp = float(candles[-1]["t"])
+        if latest_timestamp > 1e12:
+            latest_timestamp /= 1000
+        latest_at = datetime.fromtimestamp(latest_timestamp, tz=timezone.utc)
+        now = now or datetime.now(timezone.utc)
+        if latest_at < now - timedelta(hours=2) or latest_at > now + timedelta(minutes=5):
+            return record
+
+        current_close = closes[-1]
+        current_oi = current_oi if current_oi > 0 else oi_values[-1]
+        record["open_interest_usd"] = current_oi * current_close
+        record["data_fresh"] = True
+        record["history_warmed"] = True
+        record["price_change_1h"] = current_close / closes[-2] - 1
+        record["price_change_24h"] = current_close / closes[-25] - 1 if closes[-25] > 0 else 0.0
+        record["oi_change_1h"] = current_oi / oi_values[-2] - 1 if oi_values[-2] > 0 else 0.0
+
+        baseline = volumes[-25:-1]
+        mean_volume = statistics.mean(baseline)
+        volume_stdev = statistics.pstdev(baseline)
+        record["volume_zscore"] = (volumes[-1] - mean_volume) / volume_stdev if volume_stdev > 0 else 0.0
+
+        prior_high = max(highs[-25:-1])
+        prior_low = min(lows[-25:-1])
+        range_width = prior_high - prior_low
+        if range_width > 0:
+            record["price_range_percentile"] = max(0.0, min(1.0, (current_close - prior_low) / range_width))
+
+        upward_breakout = current_close > prior_high and record["price_change_1h"] >= 0.005
+        downward_breakout = current_close < prior_low and record["price_change_1h"] <= -0.005
+        record["fresh_breakout"] = (upward_breakout or downward_breakout) and record["volume_zscore"] >= 1.0
+
+        previous_high = max(highs[-49:-25])
+        previous_low = min(lows[-49:-25])
+        recent_high = max(highs[-25:-1])
+        recent_low = min(lows[-25:-1])
+        upward_pullback = recent_high >= previous_high * 1.005 and current_close <= recent_high * 0.99
+        downward_pullback = recent_low <= previous_low * 0.995 and current_close >= recent_low * 1.01
+        record["post_breakout_pullback"] = not record["fresh_breakout"] and (upward_pullback or downward_pullback)
+        at_range_edge = record["price_range_percentile"] >= 0.95 or record["price_range_percentile"] <= 0.05
+        record["exhausted_expansion"] = (
+            abs(record["price_change_24h"]) >= 0.10
+            and at_range_edge
+            and record["volume_zscore"] >= 2.0
+            and record["oi_change_1h"] <= 0.0
+        )
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return record
+    return record
+
+
+def _retry_delay(attempts: int) -> timedelta:
+    return timedelta(minutes=config.DEEP_BACKFILL_RETRY_BASE_MINUTES * 2 ** max(attempts - 1, 0))
+
+
+def claim_due_deep_backfill_jobs(conn, now: datetime, batch_size: int = config.DEEP_BACKFILL_BATCH_SIZE) -> list[str]:
+    """Lease a bounded set of due jobs; expired leases are safe to retry."""
+    lease_expired_at = now - timedelta(minutes=config.DEEP_BACKFILL_LEASE_MINUTES)
+    jobs = conn.execute("""
+        SELECT symbol
+        FROM deep_backfill_jobs
+        WHERE (status IN ('pending', 'failed') AND next_retry_at <= ?)
+           OR (status = 'running' AND started_at <= ?)
+        ORDER BY next_retry_at, created_at
+        LIMIT ?
+    """, (now, lease_expired_at, batch_size)).fetchall()
+    symbols = [symbol for symbol, in jobs]
+    if symbols:
+        conn.execute(f"""
+            UPDATE deep_backfill_jobs
+            SET status = 'running', attempts = attempts + 1, started_at = ?, updated_at = ?
+            WHERE symbol IN ({', '.join('?' for _ in symbols)})
+        """, (now, now, *symbols))
+        conn.commit()
+    return symbols
+
+
+def finish_deep_backfill_job(conn, symbol: str, now: datetime, error: Exception | None = None) -> None:
+    if error is None:
+        conn.execute("""
+            UPDATE deep_backfill_jobs
+            SET status = 'completed', last_error = NULL, completed_at = ?, updated_at = ?
+            WHERE symbol = ?
+        """, (now, now, symbol))
+    else:
+        attempts = conn.execute("SELECT attempts FROM deep_backfill_jobs WHERE symbol = ?", (symbol,)).fetchone()[0]
+        conn.execute("""
+            UPDATE deep_backfill_jobs
+            SET status = 'failed', next_retry_at = ?, last_error = ?, updated_at = ?
+            WHERE symbol = ?
+        """, (now + _retry_delay(attempts), str(error), now, symbol))
+    conn.commit()
+
+
+def process_deep_backfill_jobs(now: datetime | None = None, bootstrap=None) -> list[str]:
+    """Run due bootstrap jobs without allowing failures to interrupt scanning."""
+    now = now or datetime.now(timezone.utc)
+    bootstrap = bootstrap or bootstrap_trend_history.bootstrap
+    conn = config.get_db_connection(read_only=False)
+    try:
+        symbols = claim_due_deep_backfill_jobs(conn, now)
+    finally:
+        conn.close()
+    for symbol in symbols:
+        try:
+            bootstrap([symbol], days=14)
+        except Exception as error:
+            print(f"Failed to bootstrap deep discovery history for {symbol}: {error}")
+            conn = config.get_db_connection(read_only=False)
+            try:
+                finish_deep_backfill_job(conn, symbol, now, error)
+            finally:
+                conn.close()
+        else:
+            conn = config.get_db_connection(read_only=False)
+            try:
+                finish_deep_backfill_job(conn, symbol, now)
+            finally:
+                conn.close()
+    return symbols
+
 def run_scanner():
     """Runs the hourly scan using a hybrid Binance-Coinalyze approach to optimize API rate limits."""
     print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC] Starting hourly market scanner...")
+    config.init_db()
     
     if not config.COINANALYZE_API_KEY:
         print("API Key not found. Skipping scan.")
@@ -65,15 +241,16 @@ def run_scanner():
     active_contracts.sort(key=lambda x: x["vol_24h_usd"], reverse=True)
     top_active = active_contracts[:config.SCANNER_MAX_CONTRACTS]
     
-    # Map to Coinalyze symbols
+    # Map the whole eligible universe. The detailed top-50 scanner below reuses
+    # these broad-fetch maps rather than making a second set of API requests.
     coinalyze_symbols_map = {}  # Coinalyze_symbol -> Binance_metadata
-    for item in top_active:
+    for item in active_contracts:
         coinalyze_sym = map_binance_to_coinalyze(item["binance_symbol"])
         coinalyze_symbols_map[coinalyze_sym] = item
         
     symbols_list = list(coinalyze_symbols_map.keys())
     symbols_str = ",".join(symbols_list)
-    print(f"Querying Coinalyze for top {len(symbols_list)} liquid contracts...")
+    print(f"Querying Coinalyze for {len(symbols_list)} eligible liquid contracts...")
 
     snapshot_time = datetime.now(timezone.utc)
     snapshot_conn = config.get_db_connection(read_only=False)
@@ -88,17 +265,17 @@ def run_scanner():
     finally:
         snapshot_conn.close()
     
-    # 2. Fetch current Open Interest from Coinalyze
+    # 2. Fetch the broad data required by both discovery and detailed rankings.
     print("Fetching Open Interest from Coinalyze...")
     oi_data = fetch_coinalyze_data_batched("open-interest", {"symbols": symbols_str}, batch_size=20)
     oi_map = {
-        item["symbol"]: float(item.get("value", 0.0))
+        item["symbol"]: float(item.get("openInterest", item.get("value", 0.0)))
         for item in oi_data
         if item.get("symbol")
     }
     
     # 3. Fetch 7-day hourly candlestick history from Coinalyze
-    print("Fetching 7-day hourly history from Coinalyze...")
+    print("Fetching 7-day hourly OHLCV and OI history from Coinalyze...")
     now_epoch = int(time.time())
     from_epoch = now_epoch - 3600 * 24 * 7  # 7 days ago
     
@@ -118,6 +295,51 @@ def run_scanner():
         for item in ohlcv_data
         if item.get("symbol")
     }
+    oi_history_data = fetch_coinalyze_data_batched(
+        "open-interest-history",
+        {
+            "symbols": symbols_str,
+            "interval": "1hour",
+            "from": str(from_epoch),
+            "to": str(now_epoch),
+        },
+        batch_size=20,
+    )
+    oi_history_map = {
+        item["symbol"]: item.get("history", [])
+        for item in oi_history_data
+        if item.get("symbol")
+    }
+    print("Fetching current funding rates from Coinalyze...")
+    funding_data = fetch_coinalyze_data_batched("funding-rate", {"symbols": symbols_str}, batch_size=20)
+    funding_map = {
+        item["symbol"]: float(item.get("value", 0.0))
+        for item in funding_data
+        if item.get("symbol")
+    }
+
+    broad_records = [
+        build_discovery_record(
+            binance_meta,
+            coinalyze_sym,
+            ohlcv_map.get(coinalyze_sym, []),
+            oi_history_map.get(coinalyze_sym, []),
+            oi_map.get(coinalyze_sym, 0.0),
+            funding_map.get(coinalyze_sym, 0.0),
+            snapshot_time,
+        )
+        for coinalyze_sym, binance_meta in coinalyze_symbols_map.items()
+    ]
+
+    discovery_conn = config.get_db_connection(read_only=False)
+    try:
+        two_pool_discovery.process_snapshot(discovery_conn, snapshot_time, broad_records)
+        discovery_conn.commit()
+        print(f"Recorded {len(broad_records)} broad discovery records.")
+    except Exception as discovery_err:
+        print(f"Failed to process broad discovery snapshot: {discovery_err}")
+    finally:
+        discovery_conn.close()
     
     # Read thresholds from env/defaults
     vol_threshold = float(os.getenv("VOLUME_SPIKE_THRESHOLD", "1.5"))
@@ -126,7 +348,9 @@ def run_scanner():
     results = []
     
     # 4. Calculate scanner metrics
-    for coinalyze_sym, binance_meta in coinalyze_symbols_map.items():
+    for coinalyze_sym, binance_meta in (
+        (map_binance_to_coinalyze(item["binance_symbol"]), item) for item in top_active
+    ):
         oi = oi_map.get(coinalyze_sym, 0.0)
         if oi <= 0.0:
             continue
@@ -188,6 +412,7 @@ def run_scanner():
             
     if not results:
         print("No valid metrics calculated.")
+        process_deep_backfill_jobs()
         return None, []
         
     # Sort all by Volume-to-OI ratio descending
@@ -250,6 +475,10 @@ def run_scanner():
         
     json_data = {
         "last_updated": current_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "research_universe": [
+            map_binance_to_coinalyze(item["binance_symbol"])
+            for item in top_active
+        ],
         "pairs_clean": pairs_clean,
         "pairs_ccxt": pairs_ccxt,
         "rankings": [
@@ -287,7 +516,8 @@ def run_scanner():
         print(f"Scanned pairlist saved to {json_path}.")
     except Exception as json_err:
         print(f"Failed to save JSON pairlist: {json_err}")
-        
+
+    process_deep_backfill_jobs()
     return json_data, accumulating_all
 
 def format_telegram_scanner_message(json_data, accumulating_all) -> str:

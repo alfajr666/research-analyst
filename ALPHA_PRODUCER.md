@@ -156,6 +156,125 @@ An event is eligible for production only when a target engine can map it to a
 currently tradeable venue instrument. The engine remains the final authority
 on current liquidity and executable cost.
 
+## Two-Pool Discovery Module
+
+The broad discovery module runs before deep DuckDB ingestion. It does not
+select assets because they are already trending; it records a point-in-time
+eligible universe and independently ranks two small pools.
+
+```text
+Eligible perpetual universe
+        |
+Hourly low-cost state snapshot
+        |
+        +-> ignition pool: quiet, constructive pre-breakout bases
+        +-> continuation pool: active participation and established movement
+        |
+20 deep-watchlist assets total
+        |
+15m OHLCV/OI/funding backfill and strategy evaluation
+```
+
+### Broad Snapshot
+
+Every eligible contract records its hourly liquidity and discovery features,
+including volume, open interest, price change, funding, and long/short-ratio
+change when available. It is retained even for rejected assets so research can
+reconstruct the selection decision without survivorship bias.
+
+Eligibility is static and execution-oriented: venue mapping, rolling notional
+floor, history warmup, and data freshness. A current top-mover rank is not an
+eligibility condition.
+
+### Independent Rankings
+
+| Pool | Purpose | Positive inputs | Exclusions |
+| --- | --- | --- | --- |
+| `ignition` | Find latent expansion before broad attention | Quiet price, compression, modest relative strength, OI pressure with limited price movement, neutral funding | Fresh breakout, high current price change, volume spike, post-breakout pullback |
+| `continuation` | Find active second-wave opportunities | Volume/OI participation, price movement, trend confirmation | Insufficient liquidity or exhausted/crowded expansion |
+
+Raw metrics are converted to each asset's trailing percentile or robust z-score
+where history exists. `volume / OI` never ranks alone: it is combined with
+absolute-liquidity floors because low OI can otherwise dominate the list.
+Long/short-ratio **change**, not its absolute level, is the intended feature.
+
+### Lifecycle
+
+1. An asset enters a pool when it ranks in that pool's top 10 and is eligible.
+2. On first entry, deep ingestion backfills at least 14 days of 15m OHLCV, OI,
+   and funding before the asset can produce a strategy event.
+3. An active asset remains for at least 24 hours, then must requalify.
+4. It expires on stale data, loss of liquidity, strategy invalidation, or a
+   completed/exhausted move.
+
+The module emits research watchlist entries only. Strategy modules evaluate
+them later; no discovery rank is an order instruction.
+
+## Evaluator Topology
+
+The orchestrator owns all external market-data access, broad discovery,
+backfills, and raw DuckDB writes. Evaluators never call CoinAnalyze directly.
+They read warmed data and publish versioned research events to an outbox.
+
+```text
+orchestrator -> raw data + active watchlists -> evaluators -> alpha outbox
+```
+
+| Process | Cadence | Watchlist | Responsibility |
+| --- | --- | --- | --- |
+| `orchestrator` | 15m | all | Ingestion, discovery, backfill, freshness |
+| `accumulation-monitor` | 15m | legacy | Existing EMA99/accumulation evaluator |
+| `ignition-evaluator` | 15m | ignition | Pre-breakout armed-base quality |
+| `acceleration-evaluator` | 15m | continuation | Second-wave trend re-acceleration quality |
+| `regime-evaluator` | daily | active universe | HMM/VWAP macro context |
+
+The outbox is append-only and deduplicated by strategy, asset, direction, and
+observation timestamp. It is the seam consumed later by the alpha-event writer
+and execution engines. Evaluators remain read-only against DuckDB, avoiding
+multi-writer contention.
+
+## Signal Publisher: Telegram First
+
+`signal_publisher.py` is the sole automated Telegram sender. Execution-engine feeds are
+intentionally deferred; neither a clearable JSON file nor venue routing belongs
+in this iteration.
+
+```text
+evaluator outbox event
+        |
+signal publisher
+        |
+        +-> alpha_events: immutable authoritative DB log
+        +-> signal_deliveries: Telegram attempt and result log
+        +-> Telegram notification
+```
+
+The publisher is the sole DuckDB writer for alpha-event delivery records in the
+dedicated `ALPHA_DB_PATH` database, separate from the scanner-owned market database. It
+must persist a validated event before attempting Telegram delivery, deduplicate
+by the event outbox key, and retry undelivered Telegram messages without
+duplicating the event itself.
+
+### Event Lifecycle
+
+| Event status | Meaning |
+| --- | --- |
+| `active` | Published event remains valid until its expiry or later invalidation |
+| `expired` | Validity window elapsed |
+| `invalidated` | An evaluator explicitly withdrew the thesis |
+
+Telegram delivery is independent of event status. A Telegram outage creates a
+pending/failed delivery receipt, not a missing alpha event.
+
+### Delivery Requirements
+
+- Render the strategy family, asset, direction, phase, confidence, trigger,
+  invalidation, targets, expiry, and source timestamp.
+- Send only active events with unexpired `valid_until`.
+- Record every delivery attempt, response/error, and completion timestamp.
+- Retry transient failures with bounded exponential backoff.
+- Never infer execution, venue mapping, sizing, or order type.
+
 ## Cadence and Data-Speed Boundary
 
 Engines cycle every five minutes and do not compete for sub-minute execution.
@@ -221,6 +340,36 @@ barrier outcome against a predefined invalidation.
 
 **Baseline:** Trend direction plus a simple range breakout. The full setup must
 outperform this baseline after costs.
+
+### Trend Re-acceleration Quality Score
+
+The first scanner is a ranking model, not an exact chart-pattern matcher. No
+explosive move is expected to reproduce a fixed sequence. Instead, every asset
+with sufficient point-in-time history receives component scores for:
+
+- Established trend.
+- Quality of the recent base and volatility compression.
+- Breakout acceptance above the base.
+- Spot/perpetual participation through volume and OI change.
+- Relative strength versus BTC.
+- Crowding and late-entry risk from funding, range expansion, and extension.
+
+Presets change the relative importance of the components rather than imposing
+different market truths:
+
+| Preset | Intent | Relative emphasis |
+| --- | --- | --- |
+| `early` | Rank assets near the end of a constructive base | Trend, compression, relative strength |
+| `balanced` | Rank first-breakout candidates | Even quality score with breakout confirmation |
+| `confirmed` | Rank demonstrated follow-through | Breakout acceptance and participation |
+
+The score is a research prior. It is not a probability, order instruction, or
+hard eligibility gate. Backtests must evaluate score buckets and individual
+components against matched controls before any preset can produce alpha events.
+
+`explosion_ignition` is separate from this continuation ranker. It only ranks
+the armed state: price remains inside a compressed base after a prior impulse.
+Fresh breakouts and post-breakout pullbacks are excluded rather than scored.
 
 ### 2. Impulse Ignition v1
 

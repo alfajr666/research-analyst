@@ -1,252 +1,173 @@
-# BTC/ETH Options & Futures Research Analyst Agent
+# Alpha Producer
 
-A Python-based cryptocurrency research agent that monitors futures/perpetuals markets via CoinAnalyze. (Note: Deribit options chain monitoring is currently disabled). The agent stores structured data in a local DuckDB database, runs background alert monitoring, and delivers scheduled daily briefs (and on-demand statistics) to Telegram.
+Alpha Producer is a research-grade, medium-frequency source of venue-neutral crypto-perpetual trade theses. It identifies and records a portable market thesis, then delivers it to Telegram and, only when explicitly enabled, target-bot inboxes. It does not place orders.
 
----
-
-## 📂 Project Architecture
-
-```
-options-research-analyst/
-├── data/
-│   ├── market_data.db                      # Central DuckDB database
-│   ├── accumulation_state.json             # Accumulation monitor dedup state
-│   └── scanner_pending_accums.json         # Scanner→monitor bridge (auto-generated)
-├── logs/
-│   ├── orchestrator-out.log                # Orchestrator stdout log
-│   ├── orchestrator-error.log              # Orchestrator stderr log
-│   ├── accumulation-out.log                # Accumulation monitor stdout log
-│   └── accumulation-error.log              # Accumulation monitor stderr log
-├── venv/                                   # Local Python virtual environment
-├── config.py                               # Environment config loader & DB schema initialization
-├── ingest_coinalyze.py                     # CoinAnalyze API futures data ingestion (batched, rate-limited)
-├── ingest_deribit.py                       # Deribit API options chain ingestion (DISABLED)
-├── scanner.py                              # Hourly volume/OI scanner (Binance + CoinAnalyze)
-├── accumulation_monitor.py                 # Accumulation detection + Telegram alerts
-├── regime_signal.py                        # Daily HMM regime engine + TraderXO dual VWAP signals
-├── analyze.py                              # Polars & SQL queries for skew, IV Rank, profiles, and VWAP
-├── brain.py                                # Tag-based market state tracking + shift detection
-├── orchestrator.py                         # Sequential pipeline runner (loop, once, alerts, pruning)
-├── telegram_bot.py                         # Telegram commands & scheduled daily brief job
-├── backfill.py                             # One-time historical DVOL backfill script
-├── requirements.txt                        # Project python dependencies
-├── ecosystem.config.js                     # PM2 process manager configuration
-├── symbols-for-dual-zone.md                # Tracked symbol list (63 symbols)
-└── .env                                    # Configuration file (ignored by Git)
+```text
+Producer: market data -> discovery -> evaluation -> alpha event -> delivery
+Engine:                                                    event -> risk -> execution
 ```
 
----
+The producer owns candidate selection, direction, setup class, phase, entry condition, invalidation, targets, expiry, feature snapshot, and research confidence. A consuming engine owns venue mapping, live tradeability, liquidity and cost checks, portfolio conflicts, sizing, leverage, order selection, and position lifecycle.
 
-## 💾 Data Ingestion
+## Architecture
 
-### CoinAnalyze (Futures/Perpetuals)
-Fetches 15-minute OHLCV candles for all configured symbols on a continuous ingestion loop (default 15-minute interval, configured via `INGEST_INTERVAL_MINS`). Each row stores the candle's actual close timestamp from the API — not the ingestion time — so rate-limiting delays never cause timestamp drift. Snapshot data (OI, funding rate, liquidations, long/short ratio) is aligned to the same candle timestamp. Duplicate rows for the same (timestamp, symbol) pair are automatically deduplicated before insertion.
-
-*   **Rate Limiting**: CoinAnalyze has a strict rate limit (~5 req/min sliding window). The `RateLimiter` class enforces a 12-second minimum interval between calls, exponential backoff with jitter on 429 responses, and a global penalty window that blocks all subsequent calls when a 429 is received. Symbols are fetched in batches of 15 to reduce total request count.
-*   **Timestamp Auto-Detection**: The API may return candle timestamps in either epoch seconds or milliseconds. The ingestion code auto-detects the format: values > 1e12 are treated as milliseconds and divided by 1000; smaller values are treated as seconds directly.
-
-### Deribit (Options Chains) [DISABLED]
-Fetches options instruments within 60-day expiry and ±20% of the spot price. Greeks (delta, gamma, vega, theta), mark IV, open interest, and volume are stored on every ingestion cycle (default 15 minutes) for IV Rank, skew, and term structure calculations. Note: This module and the daily options summary are currently disabled in the orchestrator pipeline.
-
----
-
-## 📊 Analytical Indicators & Features
-
-The system implements advanced technical analysis indicators to extract market structure directly from 15-minute futures candlestick data:
-
-### 1. Volume & TPO (Time Price Opportunity) Profiles
-*   **Point of Control (POC)**: The price level with the highest volume (Volume POC) or time spent (TPO POC).
-*   **Value Area (VA)**: The price range containing 70% of the profile's volume/TPO, bounded by Value Area High (VAH) and Value Area Low (VAL).
-*   **High Volume Nodes (HVNs)**: Significant peaks in volume distribution, acting as magnets or strong support/resistance zones.
-*   **Low Volume Nodes (LVNs)**: Valleys in volume distribution representing price rejection zones where price moves rapidly.
-*   **Timestamp Anchoring**: All profile data is anchored to the candle's actual close timestamp from the exchange API, not the ingestion time. Rate-limiting delays do not cause timestamp drift.
-*   **Price Scaling Engine**: Dynamically scales sub-dollar altcoins (e.g. POPCAT, MOODENG) up to 1,000,000x for Polars list processing to prevent step errors, then scales back to actual floats.
-
-### 2. Profile Shape Classification
-Summarizes the profile's structural distribution to diagnose market sentiment:
-*   **D-Shape (Balanced)**: Normal-like distribution where volume is concentrated in the middle (bracketed, rangebound market).
-*   **P-Shape (Bullish Consolidation)**: Profile is thin at the bottom and thick at the top. Signals short-covering rallies or upward trend consolidation.
-*   **b-Shape (Bearish Consolidation)**: Profile is thin at the top and thick at the bottom. Signals long liquidations or downward trend consolidation.
-*   **B-Shape (Double Distribution)**: Two distinct high-volume areas separated by a deep middle LVN, indicating transition/breakout between value zones.
-
-### 3. EMA & POC Confluence Entry Signal
-Runs a nearness confluence comparison (with a default 0.75% threshold) to detect high-probability setups:
-*   **🔥 HIGH CONFLUENCE ENTRY**: Triggered when the current Price, EMA26, EMA99, and the Volume POC are all coiled together. Setup for a breakout.
-    *   **Directional Bias**: Strict EMA cross (26/99). EMA26 ≥ EMA99 = long setup; EMA26 < EMA99 = short setup. Only the aligned direction is shown. Neutral (both directions) only when EMAs are exactly equal (practically never).
-    *   **Confidence Scoring (5 factors)**: Each factor votes +1/-1 to produce a conviction level:
-        1. Price vs VWAP alignment
-        2. Price vs Value Area midpoint
-        3. Profile shape alignment (P-shape/b-shape)
-        4. Price vs Volume POC
-        5. Volume surge confirmation
-    *   **4h Structural Filter**: The 15m signal must align with the 4-hour EMA structure (EMA26 vs EMA99 on 4h resampled data). Conflicting setups are suppressed.
-    *   **RSI Momentum Filter**: Entries must be supported by 15m RSI momentum (RSI > 50 for Long, RSI < 50 for Short).
-    *   **Volatility Targeting (ATR-based TP/SL)**: Stop anchor is set to 2x ATR from the POC, while Take Profit targets are placed at 2x ATR and 4x ATR from the trigger point, enforcing a dynamic 2:1 risk-reward profile.
-    *   **Conviction Levels**: 🔥 HIGH (≥3/5), ✅ MODERATE (1-2/5), ⚠️ LOW (≤0/5). LOW conviction alerts can be filtered via `MIN_CONVICTION` env var.
-    *   **Example alert** — short setup with LOW conviction:
-        ```
-        🔔 *⚠️ LOW CONVICTION — SHORT SETUP* 🔔
-
-        • Asset: #HBAR | Confidence: ⚠️ LOW (0/5)
-        • Current Price: $0.080600
-
-        ▫️ Entry: Close below $0.079865
-        ▫️ Stop anchor: POC $0.080135
-        ▫️ Targets: T1 $0.079670 | T2 $0.079391 | R:R 1.8
-
-        ▫️ Trend: EMA26($0.080288) < EMA99($0.080313) — Bearish
-        ▫️ Profile: P-shape → Thin volume at the bottom...
-        ▫️ Staleness: last 15m close (11m ago)
-        ```
-*   **⚡ STRONG CONFLUENCE**: Triggered when the price is near the POC while testing either EMA26 or EMA99.
-*   **⏳ POTENTIAL ENTRY (EMA Pullback)**: Triggered when EMAs are coiled near the POC, but price has drifted. Watch for a pullback.
-
-### 4. VWAP & 24h High/Low Range
-*   **VWAP**: Calculated over the lookback window using Typical Price ($\frac{H+L+C}{3}$) weighted by volume.
-*   **24h Range**: Real-time high and low prices fetched via DuckDB queries over the last 24 hours.
-
-### 5. HMM & TraderXO Dual VWAP Regime Signal (Daily)
-Computes trend bias combined with statistical market character classification:
-*   **Dual VWAP Setup**: Computes a rolling 7-day (weekly) VWAP on daily bars and an 18-bar (3-day) rolling VWAP on 4-hour bars. The setup is valid if price stays on the same side of both lines.
-*   **Acceptance Filter (Booster)**: Requires at least **4 of the last 5 daily closes** on the correct side of the weekly VWAP. No longer a hard gate — acceptance strength is folded into the conviction score (5/5 → +2, 4/5 → +1, <4/5 → −1 dampener). A weak acceptance lowers conviction but does not block the signal.
-*   **HMM Regime Filter (Confluence)**: Trains a 3-state Gaussian Hidden Markov Model using log return, realized volatility, VWAP deviation, volume z-score, and normalized high-low range on **300 one-hour bars** (≈ 12.5 days, aggregated from 15m futures data). Returns trending direction confidence or warns if ranging/high-vol.
-*   **EMA Confluence**: Checks alignment of daily EMA12 and EMA25.
-*   **Conviction Score**: Combines HMM probability, EMA crossovers, perfect 5/5 acceptance, and price distance from 4h VWAP into a 6-point scoring system (HIGH/MODERATE/LOW).
-
----
-
-## 🔔 Background Alert System
-
-The system runs three daemons that produce Telegram alerts:
-
-### 1. Hourly Volume/OI Scanner (`scanner.py` — via `orchestrator.py`)
-Runs every hour as part of the orchestrator pipeline. Fetches fresh 7-day hourly data from CoinAnalyze for the top 50 USDT perpetuals (pre-filtered from Binance). Detects:
-- **Volume spikes**: 1h volume ≥ `VOLUME_SPIKE_THRESHOLD` × median 24h volume
-- **Accumulation**: Volume spike combined with flat price (`|1h price change| ≤ PRICE_SILENT_THRESHOLD`)
-- **Volume/OI velocity**: Ranks symbols by 7-day USD volume ÷ open interest
-
-Results are broadcast in a combined hourly rotation Telegram message and written to `data/scanner_pending_accums.json` for the accumulation monitor to consume.
-
-### 2. Accumulation & Trend Pullback Confluence Monitor (`accumulation_monitor.py`)
-Runs as a continuous PM2 daemon that checks for the "Holy Grail" confluence setups every 15 minutes:
-- **1h Accumulation (Gate 1):** Detects volume spikes with flat price action (`VOLUME_SPIKE_THRESHOLD`, `PRICE_SILENT_THRESHOLD`) on both local DuckDB futures data and scanner-fed files (`data/scanner_pending_accums.json`).
-- **15m EMA 99 Pullback (Gate 2):** Calculates the 15m EMA 99 on raw 15m candles. The symbol passes if it is within 1% of the EMA 99 (Long/Short pullback support/resistance).
-- **15m Green/Red Candle Trigger (Gate 3):** To confirm momentum, the bot waits for the latest closed 15m candle to turn Green (for Longs) or Red (for Shorts).
-- **Entry Zone Range:** Calculates and outputs an actionable "Entry Zone" range (between the EMA 99 and the 1% threshold) directly in the Telegram alert.
-- **State Tracking:** Tracks alerted symbols in `data/accumulation_state.json` (with support for "db" vs "scanner" sources) to prevent duplicate alerts while a symbol remains in the pullback entry zone.
-
-When a symbol newly enters accumulation from either source, it sends a dedicated Telegram alert 🔔:
-
-```
-🚨 ACCUMULATION DETECTED 🚨
-📅 2026-06-21 10:06:17 UTC
-
-🔸 #TNSR (TNSRUSDT_PERP.A)
-   • Vol Spike: 8.27x | 1h Price: -2.03%
-   • 7D Vol: $213.2M | OI: $8.6M
+```text
+Binance 24h contract metadata + CoinAnalyze 15m/hourly market data
+                              |
+                              v
+                    orchestrator (DB_PATH)
+      snapshots -> discovery -> watchlists -> backfill -> evaluators
+                              |
+                              v
+              data/alpha_outbox/*.json (atomic, deduplicated)
+                              |
+                              v
+                 signal-publisher (ALPHA_DB_PATH)
+                 /              |               \
+                v               v                v
+          alpha ledger     Telegram       enabled bot inboxes
 ```
 
-State is tracked in `data/accumulation_state.json` with a `source` field (`"db"` or `"scanner"`) to prevent duplicate alerts and correctly manage staleness for each source independently.
+PM2 runs two applications:
 
-### High Confluence Entry Monitor (orchestrator)
-The orchestrator daemon monitors all active symbols in `market_data.db` after every ingestion cycle (default 15 minutes) for alert triggers:
-*   **Alert Criteria**: Fires a dedicated alert notification to Telegram when a symbol enters the `🔥 HIGH CONFLUENCE ENTRY` state.
-*   **Directional Bias**: Alert shows only one side (long or short) based on EMA26 vs EMA99 cross, eliminating dual-direction clutter.
-*   **Confidence Scoring**: Each alert includes a conviction level (HIGH/MODERATE/LOW) based on 5 confirming factors. LOW alerts can be filtered via `MIN_CONVICTION` env var (default: `LOW`).
-*   **1h Cooldown Deduplication**: Logs alerts to the `confluence_alerts` table in DuckDB. If an alert has been dispatched for that symbol in the last 1 hour, it is suppressed to prevent notification spam.
-*   **Complete Market Context**: Each alert includes the full profile picture — POC, VWAP, VAL, VAH, top HVNs/LVNs, anchored-from data range, and candle count — so you can assess the setup without running separate commands.
-*   **Data Sufficiency Guard**: If an asset has less than 48 candles (12 hours of data) in its lookback window, it is flagged as `"Insufficient data"` and skipped. This prevents faulty calculations while database history is populating.
+| Process | Responsibility | Schedule |
+| --- | --- | --- |
+| `orchestrator` | Ingestion, universe snapshots, two-pool discovery, durable backfill, retention, regime and strategy evaluation | Every 15 minutes; discovery hourly |
+| `signal-publisher` | Event validation/persistence, optional local-evidence research, Telegram and configured bot-inbox delivery | Every 30 seconds |
 
-### 4. Daily Regime Signal Alerts (orchestrator)
-Evaluates and updates HMM + dual VWAP setups once per calendar day:
-*   **Data Source**: Daily OHLCV and 1-hour bars are both aggregated from the `futures_data` DB table (15m CoinAnalyze candles). No external freqtrade feather files required.
-*   **DB Logging**: Computes and logs the signal logic (LOW, MODERATE, HIGH, or no_signal) for all symbols with sufficient history (>= 300 one-hour bars ≈ 12.5 days) to the `regime_signals` DuckDB table.
-*   **Telegram Transition Alerts**: Dispatches a Telegram notification **only** when a setup reaches **HIGH** conviction (score >= 4). Active HIGH conviction setups that close/invalidate are logged silently in the background. This keeps channel alert noise low while preserving a complete history database.
-*   **15m Confluence Gate (HMM Booster/Dampener)**: The daily HMM regime no longer acts as a hard filter on 15m alerts. It modifies the 15m conviction score as a booster or dampener: a trending HMM regime aligned with the 15m bias adds +2; an opposing trending regime subtracts −2; ranging/high-vol subtracts −1; unknown/low-confidence is neutral (0). The daily `signal` field (`no_signal` when dual-VWAP acceptance < 4/5) is no longer a veto. Only two conditions remain hard suppressions: (1) a dual-VWAP *split* — price on opposite sides of the weekly vs 4h VWAP — and (2) a 4h structural-trend conflict with the 15m bias. A 15m setup fires when its 5-factor confluence score plus the HMM modifier clears the total threshold (≥ 5). This keeps 15m breakout alerts biased by the macro regime without being silently killed when the daily signal is missing or `no_signal`.
+`orchestrator` is the sole writer of the raw market database (`DB_PATH`). `signal-publisher` is the sole writer of the separate alpha-event ledger (`ALPHA_DB_PATH`). Keep these paths distinct, and do not start duplicate PM2 or manual evaluator processes against them.
 
----
+## Discovery and Evaluation
 
-## 🛠️ Setup Instructions
+Every eligible Binance USDT perpetual is retained in point-in-time universe and broad-discovery snapshots, including rejected contracts. Assets are classified as `core`, `emerging`, or `not_eligible`, so historical work can use the universe that existed at the time rather than today's survivors.
 
-### 1. Configure Credentials
-Copy `.env.example` to `.env` and fill in the values:
+The hourly scanner independently ranks two capped pools:
+
+| Pool | Finds | Excludes |
+| --- | --- | --- |
+| `ignition` | Quiet, compressed bases where activity or positioning may precede a move | Fresh breakouts, post-breakout pullbacks, high current movement/volume |
+| `continuation` | Established directional movement with volume and OI participation | Illiquid and exhausted expansions |
+
+New watchlist selections create a durable `deep_backfill_jobs` record. The scanner obtains 14 days of 15-minute OHLCV, OI, and funding before a candidate qualifies. Watchlist history is append-only; selection has a 24-hour minimum residency and then requires continued qualification.
+
+Evaluators use local warmed DuckDB data only. They never call CoinAnalyze and never write raw market data. The optional `FREQTRADE_DATA_DIR` Feather archive is for historical research, not live input.
+
+| Setup class | Hypothesis |
+| --- | --- |
+| `accumulation_base` | EMA99 pullback and completed-bar confirmation |
+| `impulse_ignition` | Pre-breakout compression with supporting activity and positioning |
+| `continuation_breakout` | Established move with re-acceleration evidence |
+
+All decisions use completed 15-minute candles. Evaluators cut off at the current UTC 15-minute boundary, query only earlier bars, and reject stale data. The intended horizon is 15 minutes to hours, not sub-minute execution.
+
+## Alpha Events and Delivery
+
+Evaluators atomically write schema-versioned JSON events to `data/alpha_outbox/`. Each event is deduplicated by `strategy_id`, `asset`, `direction`, and `observed_at`.
+
+```json
+{
+  "schema_version": 1,
+  "alpha_id": "deterministic UUID",
+  "strategy_id": "impulse-ignition-v1",
+  "asset": "SOL",
+  "direction": "long",
+  "setup_class": "impulse_ignition",
+  "phase": "armed_base",
+  "observed_at": "2026-08-16T10:15:00Z",
+  "valid_until": "2026-08-16T14:15:00Z",
+  "horizon_minutes": 240,
+  "confidence": 0.67,
+  "entry_condition": {"type": "breakout_above", "price": 145.2},
+  "invalidation_price": 142.7,
+  "targets": [148.1, 151.0],
+  "feature_snapshot": {}
+}
+```
+
+`confidence` is a score-derived research estimate, not a calibrated production probability. `feature_snapshot` is immutable. Events are `active`, `expired`, or `invalidated`.
+
+The publisher validates and persists each event before delivery. `alpha_events` is authoritative. `signal_deliveries` records Telegram attempts, responses/errors, retry times, and completion. Active events may be sent to Telegram; bounded retries do not duplicate the event.
+
+## Optional Integrations
+
+### Local-Evidence Research
+
+LLM research is disabled by default. Set `LLM_RESEARCH_ENABLED=true` only after supplying a provider key, model, pricing, and a suitable monthly budget. The coordinator works from local event evidence and is bounded by timeout, retry, report, and input/output limits. Its Telegram note is advisory and cannot change deterministic event fields.
+
+### Execution Inboxes
+
+The adapter is disabled by default. It can write validated, immutable messages into target bot inboxes for `bybit`, `bybit-test`, `mexc`, or `propr`; it never connects to an exchange or submits an order.
+
+Enable an individual target with its `EXECUTION_*_ENABLED` setting and use an asset allowlist where required. Only active, unexpired events with a supported `limit_at_ema_context` entry, exactly one target, valid stop/target geometry, and a supported asset are forwarded. Delivery state and bot receipts are retained in `execution_deliveries`.
+
+## Setup
+
+1. Create your local configuration.
+
 ```bash
 cp .env.example .env
 ```
 
-*   **`COINANALYZE_API_KEY`**: Register on [coinalyze.net](https://coinalyze.net) to get a free API key.
-*   **`TELEGRAM_BOT_TOKEN`**: Create a Telegram bot via [@BotFather](https://t.me/BotFather) and paste the token.
-*   **`TELEGRAM_CHAT_ID`**: Get the ID of the channel, group, or direct chat where you want the brief and alerts delivered.
-*   **`DAILY_BRIEF_TIME_WITA`**: Time to send the daily brief (defaults to `08:00` in WITA / Asia/Makassar timezone).
-*   **`MIN_CONVICTION`** (optional): Minimum conviction level for High Confluence Entry alerts (`LOW`, `MODERATE`, or `HIGH`). Set to `MODERATE` or `HIGH` to filter lower-confidence signals (defaults to `LOW`).
+Set `COINANALYZE_API_KEY` for live market collection. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` for Telegram delivery. Keep every execution integration disabled until its receiving bot and allowlist are ready.
 
-### 2. Install Dependencies
-Initialize a virtual environment and install dependencies:
+2. Create a virtual environment and install dependencies.
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Initialize Database
-Initialize the database schemas and indexes:
+3. Initialize the schemas.
+
 ```bash
 python config.py
 ```
 
-To wipe and reinitialize (e.g. after schema changes):
+`config.py` creates missing tables and applies normal column migrations. Do not delete a populated database to apply regular schema changes: doing so destroys raw data, discovery snapshots, candidates, outcomes, and delivery history.
+
+4. Optionally bootstrap selected assets with deep history.
+
 ```bash
-rm -f data/market_data.db && python config.py
+./venv/bin/python bootstrap_trend_history.py --days 14
 ```
 
-### 4. Bootstrap Historical Volatility (IV Rank)
-Run the one-time backfiller. This fetches the last 90 days of daily DVOL index values for BTC and ETH from Deribit to ensure the **IV Rank** calculation works accurately on day one:
-```bash
-python backfill.py
-```
+Normal discovery queues this work automatically when an asset first enters a pool.
 
----
+## Running
 
-## 🚀 Running the Services
+Start the supported PM2 topology:
 
-Use a process manager like `pm2` (configured in `ecosystem.config.js`) to run the background processes:
-
-### Using PM2 (recommended)
 ```bash
 pm2 start ecosystem.config.js
+pm2 status
+pm2 logs orchestrator
+pm2 logs signal-publisher
 ```
 
-| Process | Script | Interval | Purpose |
-|---|---|---|---|
-| `orchestrator` | `orchestrator.py` | 15 min | Ingestion, hourly scanner, confluence alerts |
-| `accumulation-monitor` | `accumulation_monitor.py` | 15 min | Accumulation detection from DB + scanner feed |
-| `telegram-bot` | `telegram_bot.py` | Continuous | Interactive commands + daily brief |
+Restart it after changing Python or PM2 configuration:
 
-The orchestrator runs the full ingestion + alert pipeline on a loop (default 15-minute interval, configured via `INGEST_INTERVAL_MINS`). The accumulation-monitor checks for accumulation patterns every 15 minutes using both DuckDB data and the scanner's pending file. The telegram-bot runs continuously with auto-restart. All PM2 logs are rotated daily at midnight with zero retention via `pm2-logrotate`.
-
-### After Config Changes
-If you modify `ecosystem.config.js` or any orchestration files, reload PM2:
 ```bash
 pm2 restart ecosystem.config.js
 ```
 
-### Manually (or using screen)
-1.  **Data Ingestion Orchestrator & Alerts Daemon** (append `--once` to run a single pipeline and exit):
-    ```bash
-    python orchestrator.py
-    ```
-2.  **Telegram Command Bot listener & Scheduler**:
-    ```bash
-    python telegram_bot.py
-    ```
+Run a one-off ingestion, discovery, and evaluation cycle with immediate event publishing:
 
----
+```bash
+./venv/bin/python orchestrator.py --once
+```
 
-## 🔍 Telegram Command Reference
-*   `/start` - Shows welcome message and list of commands.
-*   `/brief` - Generates and sends the comprehensive BTC/ETH/SOL market brief immediately (includes 24h ranges, options, skew, and Volume Profiles with shape & TA confluence).
-*   `/futures` - Focuses on perpetual metrics (price shifts, 24h Range, OI shifts, funding, liquidations).
-*   `/options` - Focuses on options metrics (ATM IV, IV Rank, skew, term structure, Max Pain).
-*   `/profile <symbol>` - Generates 7d Volume and TPO profiles with POC, VAH, VAL, HVN, LVN levels, profile shapes, and EMA/VWAP confluence metrics. Defaults to majors if no symbol is provided.
-*   `/regime [symbol]` - Shows the daily HMM + dual VWAP setup direction, HMM regime state, acceptance counts, and conviction parameters. Defaults to BTC, ETH, and SOL.
+## Troubleshooting
 
+| Symptom | Check |
+| --- | --- |
+| No ingestion or discovery | `COINANALYZE_API_KEY`, then `pm2 logs orchestrator` |
+| Selected asset has no event | `discovery_watchlist_history`, `deep_backfill_jobs`, fresh completed `futures_data`, then evaluator outbox files |
+| No Telegram signal | Credentials, `alpha_events`, `signal_deliveries`, then `pm2 logs signal-publisher` |
+| No bot-inbox item | Target enablement/allowlist, event shape and expiry, then `execution_deliveries` |
+| DuckDB lock error | Stop duplicate processes; retain one market-data writer and one separate publisher-ledger writer |
+| No regime context | Retain enough 15-minute history for daily/hourly aggregation; the Feather archive does not populate live DuckDB |
+
+## Research Constraints
+
+Treat each setup class and strategy version as an independent hypothesis. Evaluate with point-in-time universes and immutable candidate records, walk-forward splits, asset-relative normalization, liquidity-tier/regime reporting, conservative fees/spread/slippage/funding, and matched baselines. The current HMM results, discovery ranks, confidence scores, LLM commentary, and delivery records are not evidence of alpha or execution authorization.

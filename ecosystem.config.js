@@ -13,12 +13,13 @@ module.exports = {
       restart_delay: 5000,
     },
     {
-      name: "accumulation-monitor",
+      // Delivery must continue while a research pipeline cycle is rate-limited.
+      name: "signal-publisher",
       interpreter: "./venv/bin/python",
-      script: "accumulation_monitor.py",
+      script: "signal_publisher.py",
       cwd: __dirname,
-      error_file: "./logs/accumulation-error.log",
-      out_file: "./logs/accumulation-out.log",
+      error_file: "./logs/signal-publisher-error.log",
+      out_file: "./logs/signal-publisher-out.log",
       merge_logs: true,
       autorestart: true,
       max_restarts: 10,
