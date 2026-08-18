@@ -37,6 +37,8 @@ PM2 runs two applications:
 
 `orchestrator` is the sole writer of the raw market database (`DB_PATH`). `signal-publisher` is the sole writer of the separate alpha-event ledger (`ALPHA_DB_PATH`). Keep these paths distinct, and do not start duplicate PM2 or manual evaluator processes against them.
 
+When CoinAnalyze is rate-limited (high 429s or stale 15m bars), non-critical CA calls are shaped and the system automatically fails over to Binance USDM + Bybit Linear (venue_agg_v1) for OHLCV + best-effort OI/funding. Core CA ohlcv continues for recovery detection. See specs/ca-limited-takeover.md, MARKET_FAILOVER_ENABLED, CA_SHAPE_ON_CIRCUIT. Preferred loader and purity stamps preserve strategy correctness.
+
 ## Discovery and Evaluation
 
 Every eligible Binance USDT perpetual is retained in point-in-time universe and broad-discovery snapshots, including rejected contracts. Assets are classified as `core`, `emerging`, or `not_eligible`, so historical work can use the universe that existed at the time rather than today's survivors.

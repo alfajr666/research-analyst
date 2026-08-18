@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import config
 from api_clients.coinalyze import CoinAnalyzeClient
+from ingest_venue_agg_failover import is_ca_limited, log_ca_shaped
 
 _coin_client = CoinAnalyzeClient()
 
@@ -171,63 +172,75 @@ def ingest_coinalyze():
                 "volume": float(last_candle.get("v", 0.0))
             }
 
-    # 2. Fetch current Open Interest
-    oi_data = fetch_coinalyze_data_batched("open-interest", {"symbols": symbols_str}, batch_size=30)
-    oi_map = {}
-    for item in oi_data:
-        sym = item.get("symbol")
-        val = item.get("openInterest", item.get("value", 0.0))
-        oi_map[sym] = float(val)
-        
-    # 3. Fetch current Funding Rate (rate limiting handled by CoinAnalyzeClient)
-    funding_data = fetch_coinalyze_data_batched("funding-rate", {"symbols": symbols_str}, batch_size=30)
-    funding_map = {}
-    for item in funding_data:
-        sym = item.get("symbol")
-        val = item.get("value", 0.0)
-        funding_map[sym] = float(val)
-        
-    # 4. Fetch current Predicted Funding Rate
-    pred_funding_data = fetch_coinalyze_data_batched("predicted-funding-rate", {"symbols": symbols_str}, batch_size=30)
-    pred_funding_map = {}
-    for item in pred_funding_data:
-        sym = item.get("symbol")
-        val = item.get("value", 0.0)
-        pred_funding_map[sym] = float(val)
+    # 2+. Secondary fields: shape (skip full-universe) when CA limited to protect quota and let BY/BN takeover provide backbone.
+    shape = getattr(config, "CA_SHAPE_ON_CIRCUIT", False) and is_ca_limited()
+    if shape:
+        print("CA limited (circuit) — shaping: skipping secondary full-universe calls (oi/funding/pred/liq/ls). Failover will supply.")
+        for rt in ("open-interest", "funding-rate", "predicted-funding-rate", "liquidation-history", "long-short-ratio-history"):
+            log_ca_shaped(rt)
+        oi_map = {}
+        funding_map = {}
+        pred_funding_map = {}
+        liq_map = {}
+        ls_map = {}
+    else:
+        # 2. Fetch current Open Interest
+        oi_data = fetch_coinalyze_data_batched("open-interest", {"symbols": symbols_str}, batch_size=30)
+        oi_map = {}
+        for item in oi_data:
+            sym = item.get("symbol")
+            val = item.get("openInterest", item.get("value", 0.0))
+            oi_map[sym] = float(val)
+            
+        # 3. Fetch current Funding Rate (rate limiting handled by CoinAnalyzeClient)
+        funding_data = fetch_coinalyze_data_batched("funding-rate", {"symbols": symbols_str}, batch_size=30)
+        funding_map = {}
+        for item in funding_data:
+            sym = item.get("symbol")
+            val = item.get("value", 0.0)
+            funding_map[sym] = float(val)
+            
+        # 4. Fetch current Predicted Funding Rate
+        pred_funding_data = fetch_coinalyze_data_batched("predicted-funding-rate", {"symbols": symbols_str}, batch_size=30)
+        pred_funding_map = {}
+        for item in pred_funding_data:
+            sym = item.get("symbol")
+            val = item.get("value", 0.0)
+            pred_funding_map[sym] = float(val)
 
-    # 5. Fetch Liquidation History (larger batch)
-    liq_data = fetch_coinalyze_data_batched("liquidation-history", {
-        "symbols": symbols_str,
-        "interval": "15min",
-        "from": str(from_epoch),
-        "to": str(now_epoch)
-    }, batch_size=40)
-    
-    liq_map = {}
-    for item in liq_data:
-        sym = item.get("symbol")
-        history = item.get("history", [])
-        if history:
-            last_liq = history[-1]
-            liq_map[sym] = {
-                "long": float(last_liq.get("l", 0.0)),
-                "short": float(last_liq.get("s", 0.0))
-            }
+        # 5. Fetch Liquidation History (larger batch)
+        liq_data = fetch_coinalyze_data_batched("liquidation-history", {
+            "symbols": symbols_str,
+            "interval": "15min",
+            "from": str(from_epoch),
+            "to": str(now_epoch)
+        }, batch_size=40)
+        
+        liq_map = {}
+        for item in liq_data:
+            sym = item.get("symbol")
+            history = item.get("history", [])
+            if history:
+                last_liq = history[-1]
+                liq_map[sym] = {
+                    "long": float(last_liq.get("l", 0.0)),
+                    "short": float(last_liq.get("s", 0.0))
+                }
 
-    # 6. Fetch Long/Short Ratio History (larger batch)
-    ls_data = fetch_coinalyze_data_batched("long-short-ratio-history", {
-        "symbols": symbols_str,
-        "interval": "15min",
-        "from": str(from_epoch),
-        "to": str(now_epoch)
-    }, batch_size=40)
-    
-    ls_map = {}
-    for item in ls_data:
-        sym = item.get("symbol")
-        history = item.get("history", [])
-        if history:
-            ls_map[sym] = get_latest_history_value(history, "ratio", default=1.0)
+        # 6. Fetch Long/Short Ratio History (larger batch)
+        ls_data = fetch_coinalyze_data_batched("long-short-ratio-history", {
+            "symbols": symbols_str,
+            "interval": "15min",
+            "from": str(from_epoch),
+            "to": str(now_epoch)
+        }, batch_size=40)
+        
+        ls_map = {}
+        for item in ls_data:
+            sym = item.get("symbol")
+            history = item.get("history", [])
+            if history:
+                ls_map[sym] = get_latest_history_value(history, "ratio", default=1.0)
 
     # 7. Write consolidated records to DuckDB
     db_conn = config.get_db_connection(read_only=False)

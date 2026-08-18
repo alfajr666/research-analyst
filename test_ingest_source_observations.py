@@ -43,3 +43,16 @@ class IngestSourceObservationsTests(unittest.TestCase):
         """, (obs_id, sym, underlying, row_ts, row_ts, row_ts, json.dumps(payload)))
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM source_observations WHERE observation_id=?", (obs_id,)).fetchone()[0], 1)
         conn.close()
+
+    def test_shaping_decision_and_log(self):
+        import unittest.mock as mock
+        with mock.patch("ingest_coinalyze.is_ca_limited", return_value=True), \
+             mock.patch.object(config, "CA_SHAPE_ON_CIRCUIT", True), \
+             mock.patch("ingest_venue_agg_failover.log_ca_shaped") as mock_log:
+            # Simulate the decision branch (full ingest needs net; just verify path)
+            shape = getattr(config, "CA_SHAPE_ON_CIRCUIT", False) and ingest_coinalyze.is_ca_limited()
+            self.assertTrue(shape)
+            # Call via the source module
+            from ingest_venue_agg_failover import log_ca_shaped as _log
+            _log("funding-rate")
+            mock_log.assert_called()

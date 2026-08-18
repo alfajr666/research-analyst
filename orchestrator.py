@@ -9,6 +9,7 @@ import config
 from alpha_outbox import OUTBOX_DIR
 from ingest_coinalyze import ingest_coinalyze
 from ingest_deribit import ingest_deribit
+from ingest_venue_agg_failover import is_ca_limited
 from analyze import update_daily_summary, get_profile_summary
 
 def _get_or_create_cutoff_run(cutoff_at: datetime) -> str:
@@ -311,19 +312,19 @@ def _run_pipeline():
     # 1. Ensure DB schemas are initialized
     config.init_db()
 
-    # Binance-native discovery is independent of the rate-limited CoinAnalyze
-    # scanner and must run first at each completed-hour boundary.
+    # Binance OI rotation writes are now owned exclusively by the dedicated
+    # binance-oi-rotation-scanner PM2 worker (separate DB: BINANCE_OI_DB_PATH).
+    # Orchestrator only reads status/feed to avoid writer contention.
     if config.BINANCE_OI_ROTATION_ENABLED:
         try:
-            from binance_oi_rotation_scanner import completed_hour, run_scanner as run_binance_oi_rotation_scanner
+            from binance_oi_rotation_scanner import completed_hour
             interval = completed_hour()
-            config.init_binance_oi_db()
             conn = config.get_db_connection(read_only=True, db_path=config.BINANCE_OI_DB_PATH)
             try:
                 existing = conn.execute(
                     """SELECT 1 FROM binance_oi_rotation_scans
                     WHERE source = 'binance_usdm' AND completed_interval_at = ?
-                      AND scanner_version = ? AND status = 'complete' LIMIT 1""",
+                      AND scanner_version = ? AND bar_minutes = 60 AND status = 'complete' LIMIT 1""",
                     (interval, config.BINANCE_OI_ROTATION_SCANNER_VERSION),
                 ).fetchone()
             finally:
@@ -331,10 +332,9 @@ def _run_pipeline():
             if existing:
                 print(f"Binance OI rotation scan already recorded for {interval.isoformat()}.")
             else:
-                feed = run_binance_oi_rotation_scanner()
-                print(f"Binance OI rotation feed published with {len(feed['candidates'])} candidates.")
+                print(f"Binance OI rotation scan for {interval.isoformat()} pending (handled by dedicated worker).")
         except Exception as e:
-            print(f"Error during Binance OI rotation scan: {e}", file=sys.stderr)
+            print(f"Error checking Binance OI rotation status: {e}", file=sys.stderr)
     
     # 2. Run hourly scanner if 1 hour has elapsed (check scanner_history table for last run)
     conn = config.get_db_connection()
@@ -379,6 +379,15 @@ def _run_pipeline():
         ingest_coinalyze()
     except Exception as e:
         print(f"Error during CoinAnalyze ingestion: {e}", file=sys.stderr)
+
+    # 3b. Venue agg failover (guarded by MARKET_FAILOVER_ENABLED=false by default)
+    try:
+        from ingest_venue_agg_failover import ingest_venue_agg_failover
+        failover_res = ingest_venue_agg_failover()
+        if failover_res.get("status") != "disabled":
+            print(f"  Failover summary: {failover_res}")
+    except Exception as e:
+        print(f"Error during venue-agg failover: {e}", file=sys.stderr)
         
     # 3. Ingest options data (DISABLED)
     # try:
@@ -454,7 +463,8 @@ def _run_pipeline():
                     SELECT source_end, json_extract(payload_json, '$.open'), json_extract(payload_json, '$.high'),
                            json_extract(payload_json, '$.low'), json_extract(payload_json, '$.close')
                     FROM source_observations
-                    WHERE asset = ? AND interval = '15m' AND source = 'coinalyze'
+                    WHERE asset = ? AND interval = '15m'
+                      AND json_extract(payload_json, '$.close')::DOUBLE > 0
                     ORDER BY source_end DESC LIMIT 300
                 """, (asset,)).fetchall()
                 if rows:
@@ -578,12 +588,13 @@ def _run_pipeline():
     try:
         conn = config.get_db_connection(read_only=True)
         now = datetime.now(timezone.utc)
+        # Preferred (CA or venue_agg failover) freshness for health (spec)
         latest = conn.execute(
-            "SELECT max(source_end) FROM source_observations WHERE interval='15m' AND source='coinalyze'"
+            "SELECT max(source_end) FROM source_observations WHERE interval='15m' AND json_extract(payload_json, '$.close')::DOUBLE > 0"
         ).fetchone()[0]
         age = round((now - latest).total_seconds() / 60, 1) if latest else None
         bars30 = conn.execute(
-            "SELECT count(*) FROM source_observations WHERE interval='15m' AND source='coinalyze' AND source_end > ?",
+            "SELECT count(*) FROM source_observations WHERE interval='15m' AND source_end > ? AND json_extract(payload_json, '$.close')::DOUBLE > 0",
             (now - timedelta(minutes=30),)
         ).fetchone()[0] or 0
         ca = conn.execute(
@@ -594,8 +605,16 @@ def _run_pipeline():
             "SELECT status, count(*) FROM source_request_log WHERE source='openmarket' AND requested_at > ? GROUP BY status",
             (now - timedelta(minutes=15),)
         ).fetchall()
+        ca_limited = is_ca_limited()
+        failover_active = getattr(config, "MARKET_FAILOVER_ENABLED", False)
+        shaped_count = sum(c[1] for c in ca if str(c[0]) == "shaped_due_to_circuit") or 0
+        failover_source = getattr(config, "FAILOVER_SOURCE_NAME", "venue_agg_v1")
+        failover_bars30 = conn.execute(
+            "SELECT count(*) FROM source_observations WHERE interval='15m' AND source=? AND source_end > ? AND json_extract(payload_json, '$.close')::DOUBLE > 0",
+            (failover_source, now - timedelta(minutes=30))
+        ).fetchone()[0] or 0
         latest_str = latest.strftime("%Y-%m-%d %H:%M UTC") if hasattr(latest, "strftime") else str(latest)
-        print(f"Health: age={age}m bars30={bars30} latest={latest_str} ca={dict(ca) or {}} om={dict(om) or {}}")
+        print(f"Health: age={age}m bars30={bars30} latest={latest_str} caLimited={ca_limited} failoverActive={failover_active} shaped15m={shaped_count} failoverBars30m={failover_bars30} ca={dict(ca) or {}} om={dict(om) or {}}")
 
         # Wire non-trading health to bot-health-watchdog (sketch implemented)
         try:
@@ -616,6 +635,10 @@ def _run_pipeline():
                 },
                 "ca": dict(ca) or {},
                 "om": dict(om) or {},
+                "caLimited": ca_limited,
+                "failoverActive": failover_active,
+                "caShaped15m": shaped_count,
+                "failoverBars30m": failover_bars30,
                 "ts": now.isoformat(),
             }
             tmp = hpath.with_suffix(".tmp")

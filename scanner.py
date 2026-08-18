@@ -8,6 +8,7 @@ import duckdb
 import config
 from alpha_research import classify_liquidity_tier, record_universe_snapshot
 from api_clients.coinalyze import CoinAnalyzeClient
+from ingest_venue_agg_failover import is_ca_limited, log_ca_shaped
 import bootstrap_trend_history
 import two_pool_discovery
 
@@ -267,58 +268,68 @@ def run_scanner():
     finally:
         snapshot_conn.close()
     
-    # 2. Fetch the broad data required by both discovery and detailed rankings.
-    print("Fetching Open Interest from Coinalyze...")
-    oi_data = _coin_client.fetch_batched("open-interest", symbols_list, cutoff_id="scanner")
-    oi_map = {
-        item["symbol"]: float(item.get("openInterest", item.get("value", 0.0)))
-        for item in oi_data
-        if item.get("symbol")
-    }
-    
-    # 3. Fetch 7-day hourly candlestick history from Coinalyze
-    print("Fetching 7-day hourly OHLCV and OI history from Coinalyze...")
-    now_epoch = int(time.time())
-    from_epoch = now_epoch - 3600 * 24 * 7  # 7 days ago
-    
-    ohlcv_data = _coin_client.fetch_batched(
-        "ohlcv-history",
-        symbols_list,
-        other_params={
-            "interval": "1hour",
-            "from": str(from_epoch),
-            "to": str(now_epoch)
-        },
-        cutoff_id="scanner"
-    )
-    
-    ohlcv_map = {
-        item["symbol"]: item.get("history", [])
-        for item in ohlcv_data
-        if item.get("symbol")
-    }
-    oi_history_data = _coin_client.fetch_batched(
-        "open-interest-history",
-        symbols_list,
-        other_params={
-            "interval": "1hour",
-            "from": str(from_epoch),
-            "to": str(now_epoch),
-        },
-        cutoff_id="scanner",
-    )
-    oi_history_map = {
-        item["symbol"]: item.get("history", [])
-        for item in oi_history_data
-        if item.get("symbol")
-    }
-    print("Fetching current funding rates from Coinalyze...")
-    funding_data = _coin_client.fetch_batched("funding-rate", symbols_list, cutoff_id="scanner")
-    funding_map = {
-        item["symbol"]: float(item.get("value", 0.0))
-        for item in funding_data
-        if item.get("symbol")
-    }
+    # 2. Fetch the broad data... shaped when CA limited (discovery tolerates stale for one cycle)
+    shape = getattr(config, "CA_SHAPE_ON_CIRCUIT", False) and is_ca_limited()
+    if shape:
+        print("CA limited — shaping scanner: skipping heavy CA pulls (oi/ohlcv-history/funding). Using empty for this cycle.")
+        for rt in ("open-interest", "ohlcv-history", "open-interest-history", "funding-rate"):
+            log_ca_shaped(rt)
+        oi_map = {}
+        ohlcv_map = {}
+        oi_history_map = {}
+        funding_map = {}
+    else:
+        print("Fetching Open Interest from Coinalyze...")
+        oi_data = _coin_client.fetch_batched("open-interest", symbols_list, cutoff_id="scanner")
+        oi_map = {
+            item["symbol"]: float(item.get("openInterest", item.get("value", 0.0)))
+            for item in oi_data
+            if item.get("symbol")
+        }
+        
+        # 3. Fetch 7-day hourly candlestick history from Coinalyze
+        print("Fetching 7-day hourly OHLCV and OI history from Coinalyze...")
+        now_epoch = int(time.time())
+        from_epoch = now_epoch - 3600 * 24 * 7  # 7 days ago
+        
+        ohlcv_data = _coin_client.fetch_batched(
+            "ohlcv-history",
+            symbols_list,
+            other_params={
+                "interval": "1hour",
+                "from": str(from_epoch),
+                "to": str(now_epoch)
+            },
+            cutoff_id="scanner"
+        )
+        
+        ohlcv_map = {
+            item["symbol"]: item.get("history", [])
+            for item in ohlcv_data
+            if item.get("symbol")
+        }
+        oi_history_data = _coin_client.fetch_batched(
+            "open-interest-history",
+            symbols_list,
+            other_params={
+                "interval": "1hour",
+                "from": str(from_epoch),
+                "to": str(now_epoch),
+            },
+            cutoff_id="scanner",
+        )
+        oi_history_map = {
+            item["symbol"]: item.get("history", [])
+            for item in oi_history_data
+            if item.get("symbol")
+        }
+        print("Fetching current funding rates from Coinalyze...")
+        funding_data = _coin_client.fetch_batched("funding-rate", symbols_list, cutoff_id="scanner")
+        funding_map = {
+            item["symbol"]: float(item.get("value", 0.0))
+            for item in funding_data
+            if item.get("symbol")
+        }
 
     broad_records = [
         build_discovery_record(

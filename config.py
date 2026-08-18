@@ -75,13 +75,28 @@ BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS = int(os.getenv("BINANCE_OI_ROTATION_FEED_
 BINANCE_OI_ROTATION_FEED_PATH = Path(os.getenv("BINANCE_OI_ROTATION_FEED_PATH", str(DEFAULT_DB_DIR / "binance_oi_rotation_feed.json")))
 BINANCE_OI_DB_PATH = os.getenv("BINANCE_OI_DB_PATH", str(DEFAULT_DB_DIR / "binance_oi.db"))
 
+# 10m/15m liquid-tier fast path (additive cadence; see specs/binance-oi-rotation-10m-fast-path.md)
+BINANCE_OI_10M_ENABLED = os.getenv("BINANCE_OI_10M_ENABLED", "true").lower() == "true"
+BINANCE_OI_10M_BAR_MINUTES = int(os.getenv("BINANCE_OI_10M_BAR_MINUTES", "15"))
+BINANCE_OI_10M_MIN_24H_VOLUME_USD = float(os.getenv("BINANCE_OI_10M_MIN_24H_VOLUME_USD", "5000000"))
+BINANCE_OI_10M_MAX_CONTRACTS = int(os.getenv("BINANCE_OI_10M_MAX_CONTRACTS", "100"))
+BINANCE_OI_10M_MIN_OI_DELTA_USD = float(os.getenv("BINANCE_OI_10M_MIN_OI_DELTA_USD", "250000"))
+BINANCE_OI_10M_MIN_OI_PERCENTILE = float(os.getenv("BINANCE_OI_10M_MIN_OI_PERCENTILE", "0.95"))
+BINANCE_OI_10M_MIN_VOLUME_ANOMALY = float(os.getenv("BINANCE_OI_10M_MIN_VOLUME_ANOMALY", "1.0"))
+BINANCE_OI_10M_HISTORY_BARS = int(os.getenv("BINANCE_OI_10M_HISTORY_BARS", "672"))  # ~7d @15m
+BINANCE_OI_10M_DISCORD_ENABLED = os.getenv("BINANCE_OI_10M_DISCORD_ENABLED", "true").lower() == "true"
+BINANCE_OI_10M_FEED_MERGE_HOURLY = os.getenv("BINANCE_OI_10M_FEED_MERGE_HOURLY", "true").lower() == "true"
+
 
 def init_binance_oi_db(db_path: str | Path | None = None):
     """Initialize the Binance OI rotation tables in a dedicated DB file.
     This separates it from the main market DB to reduce lock contention.
+    Supports dual cadence (1h + 10m/15m) by including bar_minutes in identity keys.
     """
-    conn = get_db_connection(read_only=False, db_path=db_path or BINANCE_OI_DB_PATH)
+    target = str(db_path or BINANCE_OI_DB_PATH)
+    conn = get_db_connection(read_only=False, db_path=target)
     try:
+        # New schema (with bar_minutes in relevant PKs)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS binance_oi_rotation_observations (
                 source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
@@ -92,7 +107,8 @@ def init_binance_oi_db(db_path: str | Path | None = None):
                 oi_change_1h_usd DOUBLE, price_change_1h DOUBLE,
                 volume_1h_usd DOUBLE, volume_anomaly DOUBLE,
                 oi_spike_percentile DOUBLE, observed_at TIMESTAMP WITH TIME ZONE,
-                PRIMARY KEY (source, completed_interval_at, scanner_version, symbol)
+                bar_minutes INTEGER DEFAULT 60,
+                PRIMARY KEY (source, completed_interval_at, scanner_version, symbol, bar_minutes)
             );
         """)
         conn.execute("""
@@ -100,7 +116,8 @@ def init_binance_oi_db(db_path: str | Path | None = None):
                 source VARCHAR, asset VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
                 scanner_version VARCHAR, symbol VARCHAR, rank INTEGER,
                 metrics_json VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
-                PRIMARY KEY (source, asset, completed_interval_at, scanner_version)
+                bar_minutes INTEGER DEFAULT 60,
+                PRIMARY KEY (source, asset, completed_interval_at, scanner_version, bar_minutes)
             );
         """)
         conn.execute("""
@@ -116,6 +133,7 @@ def init_binance_oi_db(db_path: str | Path | None = None):
             CREATE TABLE IF NOT EXISTS binance_oi_rotation_raw_oi_history (
                 source VARCHAR, symbol VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
                 open_interest_usd DOUBLE, completed_interval_at TIMESTAMP WITH TIME ZONE,
+                bar_minutes INTEGER DEFAULT 60,
                 PRIMARY KEY (source, symbol, observed_at)
             );
         """)
@@ -125,7 +143,8 @@ def init_binance_oi_db(db_path: str | Path | None = None):
             CREATE TABLE IF NOT EXISTS binance_oi_rotation_scans (
                 source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
                 scanner_version VARCHAR, status VARCHAR, completed_at TIMESTAMP WITH TIME ZONE,
-                PRIMARY KEY (source, completed_interval_at, scanner_version)
+                bar_minutes INTEGER DEFAULT 60,
+                PRIMARY KEY (source, completed_interval_at, scanner_version, bar_minutes)
             );
         """)
         conn.execute("""
@@ -139,6 +158,84 @@ def init_binance_oi_db(db_path: str | Path | None = None):
                 error_message VARCHAR
             );
         """)
+
+        # One-time migration for pre-10m DBs: add column + backfill + recreate tables with widened PK to avoid cadence collisions at :00 boundaries.
+        def _has_column(table: str, col: str) -> bool:
+            try:
+                info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+                return any(r[1] == col for r in info)
+            except Exception:
+                return False
+
+        needs_migrate = (
+            not _has_column("binance_oi_rotation_scans", "bar_minutes")
+            or not _has_column("binance_oi_rotation_observations", "bar_minutes")
+            or not _has_column("binance_oi_rotation_events", "bar_minutes")
+        )
+        if needs_migrate:
+            # Add columns where missing (for raw too)
+            for tbl in ("binance_oi_rotation_observations", "binance_oi_rotation_events", "binance_oi_rotation_scans", "binance_oi_rotation_raw_oi_history"):
+                if not _has_column(tbl, "bar_minutes"):
+                    try:
+                        conn.execute(f"ALTER TABLE {tbl} ADD COLUMN bar_minutes INTEGER DEFAULT 60;")
+                    except Exception:
+                        pass
+            # Backfill legacy rows
+            for tbl in ("binance_oi_rotation_observations", "binance_oi_rotation_events", "binance_oi_rotation_scans", "binance_oi_rotation_raw_oi_history"):
+                try:
+                    conn.execute(f"UPDATE {tbl} SET bar_minutes = 60 WHERE bar_minutes IS NULL;")
+                except Exception:
+                    pass
+
+            # Recreate core identity tables with bar_minutes inside PK so 15m@12:00 and 60m@12:00 coexist.
+            # We copy data; drop old after.
+            for (old_name, create_sql, copy_sql) in [
+                ("binance_oi_rotation_scans",
+                 """CREATE TABLE binance_oi_rotation_scans_new (
+                        source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
+                        scanner_version VARCHAR, status VARCHAR, completed_at TIMESTAMP WITH TIME ZONE,
+                        bar_minutes INTEGER DEFAULT 60,
+                        PRIMARY KEY (source, completed_interval_at, scanner_version, bar_minutes)
+                    )""",
+                 """INSERT INTO binance_oi_rotation_scans_new SELECT source, completed_interval_at, scanner_version, status, completed_at, COALESCE(bar_minutes,60) FROM binance_oi_rotation_scans"""),
+                ("binance_oi_rotation_observations",
+                 """CREATE TABLE binance_oi_rotation_observations_new (
+                        source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
+                        scanner_version VARCHAR, symbol VARCHAR, asset VARCHAR,
+                        quote VARCHAR, contract_type VARCHAR, is_eligible BOOLEAN,
+                        rejection_reason VARCHAR, volume_24h_usd DOUBLE,
+                        open_interest_usd DOUBLE, oi_change_1h_pct DOUBLE,
+                        oi_change_1h_usd DOUBLE, price_change_1h DOUBLE,
+                        volume_1h_usd DOUBLE, volume_anomaly DOUBLE,
+                        oi_spike_percentile DOUBLE, observed_at TIMESTAMP WITH TIME ZONE,
+                        bar_minutes INTEGER DEFAULT 60,
+                        PRIMARY KEY (source, completed_interval_at, scanner_version, symbol, bar_minutes)
+                    )""",
+                 """INSERT INTO binance_oi_rotation_observations_new SELECT source, completed_interval_at, scanner_version, symbol, asset, quote, contract_type, is_eligible, rejection_reason, volume_24h_usd, open_interest_usd, oi_change_1h_pct, oi_change_1h_usd, price_change_1h, volume_1h_usd, volume_anomaly, oi_spike_percentile, observed_at, COALESCE(bar_minutes,60) FROM binance_oi_rotation_observations"""),
+                ("binance_oi_rotation_events",
+                 """CREATE TABLE binance_oi_rotation_events_new (
+                        source VARCHAR, asset VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
+                        scanner_version VARCHAR, symbol VARCHAR, rank INTEGER,
+                        metrics_json VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
+                        bar_minutes INTEGER DEFAULT 60,
+                        PRIMARY KEY (source, asset, completed_interval_at, scanner_version, bar_minutes)
+                    )""",
+                 """INSERT INTO binance_oi_rotation_events_new SELECT source, asset, completed_interval_at, scanner_version, symbol, rank, metrics_json, observed_at, COALESCE(bar_minutes,60) FROM binance_oi_rotation_events"""),
+            ]:
+                try:
+                    conn.execute(create_sql)
+                    conn.execute(copy_sql)
+                    conn.execute(f"DROP TABLE {old_name}")
+                    conn.execute(f"ALTER TABLE {old_name}_new RENAME TO {old_name}")
+                except Exception as e:
+                    # If anything fails, leave tables as-is (new columns added); worst case same-ts different-bar may need manual.
+                    print(f"OI schema migrate partial for {old_name}: {e}")
+
+            # Recreate indexes after possible recreate
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_observations_ts ON binance_oi_rotation_observations (completed_interval_at, symbol);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_raw_oi_history_interval ON binance_oi_rotation_raw_oi_history (completed_interval_at, symbol);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_watchlist_ts ON binance_oi_rotation_watchlist_history (asset, observed_at);")
+            conn.commit()
         conn.commit()
     finally:
         conn.close()
@@ -215,6 +312,36 @@ OPENMARKET_HTF_REFRESH_HOURS = int(os.getenv("OPENMARKET_HTF_REFRESH_HOURS", "4"
 OPENMARKET_REQUEST_DEADLINE_MS = int(os.getenv("OPENMARKET_REQUEST_DEADLINE_MS", "1500"))
 OPENMARKET_RETENTION_DAYS = int(os.getenv("OPENMARKET_RETENTION_DAYS", "30"))
 
+# CA + venue-aggregate failover for 15m backbone (specs/ca-truth-venue-agg-failover.md)
+# Shipped dark (enabled=false). Core=OPENMARKET_PERMANENT_ASSETS; hot expansion capped.
+MARKET_FAILOVER_ENABLED = os.getenv("MARKET_FAILOVER_ENABLED", "false").lower() == "true"
+
+# Emit classification (normative, see spec)
+PRICE_STRUCTURE_STRATEGY_IDS = {
+    "accumulation-base-v1", "accumulation-base-v2", "rsi-reclaim-v1",
+}
+MIXED_STRATEGY_IDS = {
+    "impulse-ignition-v1", "impulse-ignition-v2",
+    "continuation-breakout-balanced-v1", "continuation-breakout-v2",
+}
+
+FAILOVER_SOURCE_NAME = os.getenv("FAILOVER_SOURCE_NAME", "venue_agg_v1")
+FAILOVER_CATCHUP_HOURS = int(os.getenv("FAILOVER_CATCHUP_HOURS", "2"))
+FAILOVER_WATCHLIST_CAP = int(os.getenv("FAILOVER_WATCHLIST_CAP", "20"))
+FAILOVER_MAX_REQUESTS_PER_CYCLE = int(os.getenv("FAILOVER_MAX_REQUESTS_PER_CYCLE", "80"))
+FAILOVER_CIRCUIT_AGE_MIN = int(os.getenv("FAILOVER_CIRCUIT_AGE_MIN", "30"))
+FAILOVER_CIRCUIT_CLEAR_AGE_MIN = int(os.getenv("FAILOVER_CIRCUIT_CLEAR_AGE_MIN", "20"))
+FAILOVER_CIRCUIT_429_RATE = float(os.getenv("FAILOVER_CIRCUIT_429_RATE", "0.50"))
+FAILOVER_CIRCUIT_CLEAR_429_RATE = float(os.getenv("FAILOVER_CIRCUIT_CLEAR_429_RATE", "0.25"))
+FAILOVER_CIRCUIT_WINDOW_MIN = int(os.getenv("FAILOVER_CIRCUIT_WINDOW_MIN", "30"))
+
+# CA shaping when limited (specs/ca-limited-takeover.md) — reduces non-critical load to aid recovery + takeover
+CA_SHAPE_ON_CIRCUIT = os.getenv("CA_SHAPE_ON_CIRCUIT", "true").lower() == "true"
+CA_SHAPE_SKIP_SECONDARY = os.getenv("CA_SHAPE_SKIP_SECONDARY", "true").lower() == "true"
+
+# Failover data completeness (specs/ca-limited-takeover.md)
+FAILOVER_FUNDING_PRIORITY = os.getenv("FAILOVER_FUNDING_PRIORITY", "true").lower() == "true"
+
 # Rate limiting & budgeting (see specs/external-api-rate-limiting.md)
 COINANALYZE_RPS = float(os.getenv("COINANALYZE_RPS", "0.08"))
 COINANALYZE_MAX_CONCURRENT = int(os.getenv("COINANALYZE_MAX_CONCURRENT", "5"))
@@ -284,6 +411,7 @@ HMM_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 COINANALYZE_BASE_URL = "https://api.coinalyze.net/v1"
 DERIBIT_BASE_URL = "https://www.deribit.com/api/v2"
 BINANCE_FUTURES_BASE_URL = os.getenv("BINANCE_FUTURES_BASE_URL", "https://fapi.binance.com")
+BYBIT_LINEAR_BASE_URL = os.getenv("BYBIT_LINEAR_BASE_URL", "https://api.bybit.com")
 
 def get_db_connection(read_only: bool = False, db_path: str | Path | None = None):
     """

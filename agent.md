@@ -40,6 +40,8 @@ The orchestrator is the only writer of `DB_PATH`, the raw-market database. The p
 
 `orchestrator.py` obtains CoinAnalyze 15-minute perpetual market data and runs the scanner using Binance public contract metadata plus CoinAnalyze hourly observations. It writes point-in-time universe and broad-discovery snapshots, including rejected contracts, to make later research reproducible.
 
+CA rate limits are handled with automatic shaping of non-core calls and failover to Binance+Bybit venue_agg_v1 bars (OHLCV primary, OI/funding best-effort). See specs/ca-limited-takeover.md.
+
 The scanner ranks independent pools, each limited by `DISCOVERY_TOP_N`:
 
 | Pool | Thesis | Character |

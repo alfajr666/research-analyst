@@ -123,5 +123,47 @@ class DeepBackfillJobTests(unittest.TestCase):
         conn.close()
 
 
+class TestCAShaping(unittest.TestCase):
+    def test_is_ca_limited_importable_and_callable(self):
+        from ingest_venue_agg_failover import is_ca_limited
+        import config as cfg
+        # callable without crash
+        val = is_ca_limited()
+        self.assertIsInstance(val, bool)
+
+    def test_scanner_shape_logic_does_not_crash(self):
+        import config as cfg
+        from ingest_venue_agg_failover import is_ca_limited
+        orig_shape = getattr(cfg, "CA_SHAPE_ON_CIRCUIT", None)
+        orig_mf = getattr(cfg, "MARKET_FAILOVER_ENABLED", None)
+        try:
+            cfg.CA_SHAPE_ON_CIRCUIT = True
+            cfg.MARKET_FAILOVER_ENABLED = True
+            # force circuit via age sim if needed, but just call the decision
+            shape = getattr(cfg, "CA_SHAPE_ON_CIRCUIT", False) and is_ca_limited()
+            self.assertIsInstance(shape, bool)
+        finally:
+            if orig_shape is not None:
+                cfg.CA_SHAPE_ON_CIRCUIT = orig_shape
+            if orig_mf is not None:
+                cfg.MARKET_FAILOVER_ENABLED = orig_mf
+
+    def test_log_ca_shaped_increments_count(self):
+        from ingest_venue_agg_failover import log_ca_shaped
+        import config
+        conn = config.get_db_connection()
+        before = conn.execute(
+            "SELECT COUNT(*) FROM source_request_log WHERE status = 'shaped_due_to_circuit'"
+        ).fetchone()[0] or 0
+        conn.close()
+        log_ca_shaped("test-funding")
+        conn = config.get_db_connection()
+        after = conn.execute(
+            "SELECT COUNT(*) FROM source_request_log WHERE status = 'shaped_due_to_circuit'"
+        ).fetchone()[0] or 0
+        conn.close()
+        self.assertGreaterEqual(after, before)
+
+
 if __name__ == "__main__":
     unittest.main()

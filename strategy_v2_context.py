@@ -18,6 +18,20 @@ MAX_BAR_AGE = timedelta(minutes=20)
 LOOKBACK_DAYS = 16
 
 
+def _asset_from_symbol(symbol: str) -> str:
+    s = str(symbol or "")
+    if "_PERP" in s or "_PERP.A" in s or s.endswith(".A"):
+        base = s.split("_")[0].split("USDT")[0].split("USD")[0]
+        return base.upper() or "BTC"
+    if "-USDT-PERP" in s:
+        return s.split("-")[0].upper()
+    # fallback guess
+    for c in ("BTC", "ETH", "SOL", "PAXG", "XAUT"):
+        if c in s.upper():
+            return c
+    return s[:3].upper() or "BTC"
+
+
 def completed_cycle(now: datetime | None = None) -> datetime:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return now.replace(minute=now.minute - now.minute % 15, second=0, microsecond=0)
@@ -29,73 +43,119 @@ def _ensure_utc(ts: datetime) -> datetime:
     return ts.astimezone(timezone.utc)
 
 
-def load_15m_bars(conn, symbol: str, cutoff: datetime, lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
-    """Load completed 15m OHLCV (+OI/funding) bars strictly before cutoff."""
+def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: datetime) -> List[Dict]:
+    """Internal: raw rows with source for prefer logic."""
     cutoff = _ensure_utc(cutoff)
-    start = cutoff - timedelta(days=lookback_days)
     rows = conn.execute(
         """
-        SELECT
-            source_end as timestamp,
-            json_extract(payload_json, '$.open')::DOUBLE as open,
-            json_extract(payload_json, '$.high')::DOUBLE as high,
-            json_extract(payload_json, '$.low')::DOUBLE as low,
-            json_extract(payload_json, '$.close')::DOUBLE as close,
-            COALESCE(json_extract(payload_json, '$.volume')::DOUBLE, 0.0) as volume,
-            COALESCE(json_extract(payload_json, '$.open_interest')::DOUBLE, 0.0) as open_interest,
-            COALESCE(json_extract(payload_json, '$.funding_rate')::DOUBLE, 0.0) as funding_rate
-        FROM source_observations
-        WHERE native_symbol = ?
-          AND source_end < ?
-          AND source_end >= ?
-          AND json_extract(payload_json, '$.close')::DOUBLE > 0
-        ORDER BY source_end ASC
+        SELECT source_end, source,
+               json_extract(payload_json, '$.open')::DOUBLE,
+               json_extract(payload_json, '$.high')::DOUBLE,
+               json_extract(payload_json, '$.low')::DOUBLE,
+               json_extract(payload_json, '$.close')::DOUBLE,
+               COALESCE(json_extract(payload_json, '$.volume')::DOUBLE, 0.0),
+               json_extract(payload_json, '$.open_interest')::DOUBLE,
+               json_extract(payload_json, '$.funding_rate')::DOUBLE,
+               payload_json
+         FROM source_observations
+         WHERE asset = ? AND interval='15m'
+           AND source_end < ? AND source_end >= ?
+           AND json_extract(payload_json, '$.close')::DOUBLE > 0
+         ORDER BY source_end ASC
         """,
-        (symbol, cutoff, start),
+        (asset, cutoff, start),
     ).fetchall()
+    out = []
+    for r in rows:
+        out.append({
+            "timestamp": _ensure_utc(r[0]),
+            "source": r[1],
+            "open": float(r[2] or 0),
+            "high": float(r[3] or 0),
+            "low": float(r[4] or 0),
+            "close": float(r[5] or 0),
+            "volume": float(r[6] or 0),
+            "open_interest": float(r[7]) if r[7] is not None else None,
+            "funding_rate": float(r[8]) if r[8] is not None else None,
+            "payload": r[9],
+        })
+    return out
+
+
+def _prefer_rows(raw_rows: List[Dict]) -> List[Dict]:
+    """For each timestamp pick CA usable if present else venue_agg_v1."""
+    from collections import defaultdict
+    by_ts: Dict[datetime, List[Dict]] = defaultdict(list)
+    for r in raw_rows:
+        by_ts[r["timestamp"]].append(r)
+    preferred = []
+    for ts, lst in sorted(by_ts.items()):
+        ca = [x for x in lst if x["source"] == "coinalyze"]
+        if ca:
+            # take first (or last); assume one
+            preferred.append(ca[0])
+            continue
+        vagg = [x for x in lst if x["source"] == getattr(config, "FAILOVER_SOURCE_NAME", "venue_agg_v1")]
+        if vagg:
+            preferred.append(vagg[0])
+            continue
+        # fallback any
+        preferred.append(lst[0])
+    return preferred
+
+
+def load_preferred_15m_bars(conn, asset: Optional[str] = None, native_symbol: Optional[str] = None,
+                            cutoff: Optional[datetime] = None, lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
+    """Canonical preferred loader: usable CA wins over venue_agg_v1 for same bar end.
+    If native_symbol given and looks CA, resolve to asset.
+    """
+    if cutoff is None:
+        cutoff = _ensure_utc(datetime.now(timezone.utc))
+    else:
+        cutoff = _ensure_utc(cutoff)
+    start = cutoff - timedelta(days=lookback_days)
+    if asset is None and native_symbol:
+        asset = _asset_from_symbol(native_symbol)
+    if not asset:
+        asset = "BTC"
+    raw = _load_raw_observations_for_asset(conn, asset, cutoff, start)
+    rows = _prefer_rows(raw)
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(
+    df = pl.DataFrame(
         {
-            "timestamp": [_ensure_utc(r[0]) for r in rows],
-            "open": [float(r[1] or 0) for r in rows],
-            "high": [float(r[2] or 0) for r in rows],
-            "low": [float(r[3] or 0) for r in rows],
-            "close": [float(r[4] or 0) for r in rows],
-            "volume": [float(r[5] or 0) for r in rows],
-            "open_interest": [float(r[6] or 0) for r in rows],
-            "funding_rate": [float(r[7] or 0) for r in rows],
+            "timestamp": [r["timestamp"] for r in rows],
+            "open": [r["open"] for r in rows],
+            "high": [r["high"] for r in rows],
+            "low": [r["low"] for r in rows],
+            "close": [r["close"] for r in rows],
+            "volume": [r["volume"] for r in rows],
+            "open_interest": [r["open_interest"] for r in rows],
+            "funding_rate": [r["funding_rate"] for r in rows],
+            "source": [r["source"] for r in rows],
         },
         strict=False,
     )
+    if "open_interest" in df.columns:
+        df = df.with_columns(pl.col("open_interest").fill_null(0.0))
+    if "funding_rate" in df.columns:
+        df = df.with_columns(pl.col("funding_rate").fill_null(0.0))
+    return df
+
+
+def load_15m_bars(conn, symbol: str, cutoff: datetime, lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
+    """Backward compat: delegate to preferred by asset."""
+    asset = _asset_from_symbol(symbol)
+    return load_preferred_15m_bars(conn, asset=asset, cutoff=cutoff, lookback_days=lookback_days)
 
 
 def load_btc_15m(conn, cutoff: datetime, lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
+    """BTC preferred loader (delegates)."""
     cutoff = _ensure_utc(cutoff)
-    start = cutoff - timedelta(days=lookback_days)
-    rows = conn.execute(
-        """
-        SELECT
-            source_end as timestamp,
-            json_extract(payload_json, '$.close')::DOUBLE as close
-        FROM source_observations
-        WHERE asset = 'BTC'
-          AND source_end < ?
-          AND source_end >= ?
-          AND json_extract(payload_json, '$.close')::DOUBLE > 0
-        ORDER BY source_end ASC
-        """,
-        (cutoff, start),
-    ).fetchall()
-    if not rows:
-        return pl.DataFrame()
-    return pl.DataFrame(
-        {
-            "timestamp": [_ensure_utc(r[0]) for r in rows],
-            "close": [float(r[1] or 0) for r in rows],
-        },
-        strict=False,
-    )
+    df = load_preferred_15m_bars(conn, asset="BTC", cutoff=cutoff, lookback_days=lookback_days)
+    if df.is_empty():
+        return df
+    return df.select(["timestamp", "close"])
 
 
 def list_candidate_symbols(conn, cutoff: datetime) -> list[tuple[str, str]]:
