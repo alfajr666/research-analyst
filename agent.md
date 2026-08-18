@@ -109,4 +109,6 @@ pm2 start ecosystem.config.js
 
 Set `COINANALYZE_API_KEY` for collection and `TELEGRAM_BOT_TOKEN` plus `TELEGRAM_CHAT_ID` for Telegram delivery. Use `./venv/bin/python orchestrator.py --once` for one pipeline cycle, `pm2 status` for process state, and `pm2 logs orchestrator` or `pm2 logs signal-publisher` for diagnosis.
 
+CA rate limits trigger shaping (non-core calls skipped) + BY/BN failover (see health caLimited/failoverActive and "CA limited" in logs). Freshness is protected by venue_agg_v1. Set MARKET_FAILOVER_ENABLED=true and CA_SHAPE_ON_CIRCUIT=true (default).
+
 When an expected event is absent, inspect the chain in this order: universe/discovery snapshot, watchlist history, `deep_backfill_jobs`, fresh completed `source_observations`, evaluator outbox file, `alpha_events`, `signal_deliveries`, and (if enabled) `execution_deliveries`.

@@ -169,6 +169,7 @@ Run a one-off ingestion, discovery, and evaluation cycle with immediate event pu
 | No bot-inbox item | Target enablement/allowlist, event shape and expiry, then `execution_deliveries` |
 | DuckDB lock error | Stop duplicate processes; retain one market-data writer and one separate publisher-ledger writer |
 | No regime context | Retain enough 15-minute history for daily/hourly aggregation; the Feather archive does not populate live DuckDB |
+| CA rate limited / stale bars | Shaping active (see logs for "CA limited"), failover to venue_agg_v1; check caLimited in health.json; core CA still fetched lightly |
 
 ## Research Constraints
 
