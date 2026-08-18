@@ -72,7 +72,7 @@ STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
         "STRATEGY_ENABLED_IDS",
         "accumulation-base-v1,impulse-ignition-v1,continuation-breakout-balanced-v1,"
-        "accumulation-base-v2,impulse-ignition-v2"
+        "accumulation-base-v2,impulse-ignition-v2,continuation-breakout-v2"
     ).split(",") if s.strip()
 )
 
@@ -95,6 +95,21 @@ IGN_V2_E = float(os.getenv("IGN_V2_E", "0.50"))
 IGN_V2_R_MAX = float(os.getenv("IGN_V2_R_MAX", "3.0"))
 IGN_V2_S_MIN = float(os.getenv("IGN_V2_S_MIN", "0.40"))
 IGN_V2_N_TOP = int(os.getenv("IGN_V2_N_TOP", "5"))
+
+# continuation-breakout-v2 knobs (specs/strategy-continuation-breakout-v2.md)
+CONT_V2_P = int(os.getenv("CONT_V2_P", "12"))
+CONT_V2_T_MIN = float(os.getenv("CONT_V2_T_MIN", "0.75"))
+CONT_V2_N = int(os.getenv("CONT_V2_N", "16"))
+CONT_V2_K = float(os.getenv("CONT_V2_K", "3.0"))
+CONT_V2_RETR_MAX = float(os.getenv("CONT_V2_RETR_MAX", "0.50"))
+CONT_V2_G = float(os.getenv("CONT_V2_G", "0.35"))
+CONT_V2_E = float(os.getenv("CONT_V2_E", "0.50"))
+CONT_V2_X_BARS = int(os.getenv("CONT_V2_X_BARS", "96"))
+CONT_V2_X_MAX = float(os.getenv("CONT_V2_X_MAX", "4.0"))
+CONT_V2_R_MAX = float(os.getenv("CONT_V2_R_MAX", "3.0"))
+CONT_V2_S_MIN = float(os.getenv("CONT_V2_S_MIN", "0.40"))
+CONT_V2_N_TOP = int(os.getenv("CONT_V2_N_TOP", "5"))
+CONT_V2_WEIGHT_PROFILE = os.getenv("CONT_V2_WEIGHT_PROFILE", "balanced")
 
 # OpenMarket Free enrichment (optional, disabled until key; Bybit Perp only in phase 1)
 OPENMARKET_ENABLED = os.getenv("OPENMARKET_ENABLED", "false").lower() == "true"

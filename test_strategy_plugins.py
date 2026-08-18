@@ -35,7 +35,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         # We simulate by checking the registry does not list disabled
         all_known = {
             "accumulation-base-v1", "impulse-ignition-v1", "continuation-breakout-balanced-v1",
-            "accumulation-base-v2", "impulse-ignition-v2",
+            "accumulation-base-v2", "impulse-ignition-v2", "continuation-breakout-v2",
         }
         enabled = {p.id for p in plugins}
         self.assertTrue(all_known - enabled)

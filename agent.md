@@ -59,7 +59,7 @@ Current strategy families remain separate hypotheses:
 
 - `accumulation_base`: v1 legacy EMA99 pullback; **v2** (`accumulation-base-v2`) 1h compression + limit at 1h EMA99 with confluence score.
 - `impulse_ignition`: v1 compressed pre-breakout; **v2** (`impulse-ignition-v2`) armed breakout of 1h base lid (not chase after breach).
-- `continuation_breakout`: established move with re-acceleration evidence (still v1).
+- `continuation_breakout`: v1 balanced preset; **v2** (`continuation-breakout-v2`) 4h trend + 1h flag breakout (`armed_flag_breakout`).
 
 v2 plugins share the confluence scoring ADR (`confidence_status=uncalibrated`; LLM is post-emit booster only). Enable via `STRATEGY_ENABLED_IDS` (defaults include v1+v2 in parallel).
 
