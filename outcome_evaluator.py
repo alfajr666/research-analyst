@@ -196,7 +196,13 @@ def evaluate_expired_outcomes(
             # write using shared (ensures schema)
             alpha_write = config.get_db_connection(db_path=alpha_db_path)
             try:
+                # Outcomes FK alpha_candidates. Older events may lack a row after ledger splits.
+                _ensure_candidate_row(alpha_write, candidate_id, event)
                 record_outcome(alpha_write, candidate_id, outcome_rec)
+                alpha_write.commit()
+            except Exception as error:
+                print(f"Outcome write skipped for {candidate_id}: {error}")
+                continue
             finally:
                 alpha_write.close()
             recorded += 1
@@ -204,3 +210,42 @@ def evaluate_expired_outcomes(
         if close_market:
             market_conn.close()
     return recorded
+
+
+def _ensure_candidate_row(conn, candidate_id: str, event: dict) -> None:
+    """Insert a minimal alpha_candidates row when outcome evaluation needs the FK parent."""
+    exists = conn.execute(
+        "SELECT 1 FROM alpha_candidates WHERE candidate_id = ? LIMIT 1",
+        (candidate_id,),
+    ).fetchone()
+    if exists:
+        return
+    snapshot = event.get("feature_snapshot") or {}
+    conn.execute(
+        """
+        INSERT INTO alpha_candidates (
+            candidate_id, observed_at, asset, source_symbol, direction, setup_class,
+            phase, strategy_id, liquidity_tier, status, valid_until, entry_condition,
+            invalidation_price, targets, feature_snapshot, promoted_alpha_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (candidate_id) DO NOTHING
+        """,
+        (
+            candidate_id,
+            parse_timestamp(event["observed_at"]),
+            event.get("asset"),
+            snapshot.get("source_symbol"),
+            event.get("direction"),
+            event.get("setup_class"),
+            event.get("phase"),
+            event.get("strategy_id"),
+            snapshot.get("liquidity_tier", "unknown"),
+            event.get("status", "expired"),
+            parse_timestamp(event["valid_until"]) if event.get("valid_until") else None,
+            json.dumps(event.get("entry_condition") or {}, sort_keys=True),
+            event.get("invalidation_price"),
+            json.dumps(event.get("targets") or []),
+            json.dumps(snapshot, sort_keys=True, default=str),
+            candidate_id,
+        ),
+    )

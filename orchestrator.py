@@ -582,6 +582,10 @@ def _run_pipeline():
             "SELECT max(source_end) FROM source_observations WHERE interval='15m' AND source='coinalyze'"
         ).fetchone()[0]
         age = round((now - latest).total_seconds() / 60, 1) if latest else None
+        bars30 = conn.execute(
+            "SELECT count(*) FROM source_observations WHERE interval='15m' AND source='coinalyze' AND source_end > ?",
+            (now - timedelta(minutes=30),)
+        ).fetchone()[0] or 0
         ca = conn.execute(
             "SELECT status, count(*) FROM source_request_log WHERE source='coinalyze' AND requested_at > ? GROUP BY status",
             (now - timedelta(minutes=15),)
@@ -590,7 +594,36 @@ def _run_pipeline():
             "SELECT status, count(*) FROM source_request_log WHERE source='openmarket' AND requested_at > ? GROUP BY status",
             (now - timedelta(minutes=15),)
         ).fetchall()
-        print(f"Health: data_age={age}m ca={dict(ca) or {}} om={dict(om) or {}}")
+        latest_str = latest.strftime("%Y-%m-%d %H:%M UTC") if hasattr(latest, "strftime") else str(latest)
+        print(f"Health: age={age}m bars30={bars30} latest={latest_str} ca={dict(ca) or {}} om={dict(om) or {}}")
+
+        # Wire non-trading health to bot-health-watchdog (sketch implemented)
+        try:
+            health_dir = config.DEFAULT_DB_DIR
+            health_dir.mkdir(parents=True, exist_ok=True)
+            hpath = health_dir / "health.json"
+            latest_iso = latest.isoformat() if hasattr(latest, 'isoformat') else str(latest) if latest else None
+            h = {
+                "bot": "research-analyst",
+                "cycleIntervalMs": 900000,
+                "lastCycleAt": now.isoformat(),
+                "evalsLastCycle": bars30,
+                "dataLatestAt": latest_iso,
+                "dataFreshness": {
+                    "max15mSourceEnd": latest_iso,
+                    "ageMin": age,
+                    "barsLast30m": bars30,
+                },
+                "ca": dict(ca) or {},
+                "om": dict(om) or {},
+                "ts": now.isoformat(),
+            }
+            tmp = hpath.with_suffix(".tmp")
+            tmp.write_text(json.dumps(h, default=str, indent=2))
+            tmp.rename(hpath)
+        except Exception as hw:
+            print(f"Health json wire err: {hw}")
+
         conn.close()
     except Exception as he:
         print(f"Health summary err: {he}")

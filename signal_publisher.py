@@ -322,7 +322,11 @@ class SignalPublisher:
                 connection.execute("""
                     INSERT INTO alpha_event_status_history VALUES (?, ?, 'expired', ?, 'valid_until_elapsed')
                 """, (f"{alpha_id}:expired:{now.isoformat()}", alpha_id, now))
-            self._record_expired_outcomes(connection, self.now())
+            # Outcomes are advisory; never block outbox persistence or channel delivery.
+            try:
+                self._record_expired_outcomes(connection, self.now())
+            except Exception as error:
+                print(f"Outcome evaluator error: {error}", file=sys.stderr)
             valid_events = []
             for path in sorted(self.outbox_dir.glob("*.json")):
                 try:
