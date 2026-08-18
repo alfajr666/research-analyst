@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 from pathlib import Path
@@ -66,6 +67,52 @@ BINANCE_OI_ROTATION_MIN_VOLUME_ANOMALY = float(os.getenv("BINANCE_OI_ROTATION_MI
 BINANCE_OI_ROTATION_WATCHLIST_HOURS = int(os.getenv("BINANCE_OI_ROTATION_WATCHLIST_HOURS", "36"))
 BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS = int(os.getenv("BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS", "6"))
 BINANCE_OI_ROTATION_FEED_PATH = Path(os.getenv("BINANCE_OI_ROTATION_FEED_PATH", str(DEFAULT_DB_DIR / "binance_oi_rotation_feed.json")))
+
+STRATEGY_ENABLED_IDS = tuple(
+    s.strip() for s in os.getenv(
+        "STRATEGY_ENABLED_IDS",
+        "accumulation-base-v1,impulse-ignition-v1,continuation-breakout-balanced-v1,"
+        "accumulation-base-v2,impulse-ignition-v2"
+    ).split(",") if s.strip()
+)
+
+# accumulation-base-v2 knobs (specs/strategy-accumulation-base-v2.md)
+ACC_V2_N = int(os.getenv("ACC_V2_N", "16"))
+ACC_V2_K = float(os.getenv("ACC_V2_K", "3.0"))
+ACC_V2_G = float(os.getenv("ACC_V2_G", "0.35"))
+ACC_V2_D_MAX = float(os.getenv("ACC_V2_D_MAX", "0.75"))
+ACC_V2_R_MAX = float(os.getenv("ACC_V2_R_MAX", "3.0"))
+ACC_V2_S_MIN = float(os.getenv("ACC_V2_S_MIN", "0.40"))
+ACC_V2_N_TOP = int(os.getenv("ACC_V2_N_TOP", "5"))
+
+# impulse-ignition-v2 knobs (specs/strategy-impulse-ignition-v2.md)
+IGN_V2_N = int(os.getenv("IGN_V2_N", "16"))
+IGN_V2_K = float(os.getenv("IGN_V2_K", "3.0"))
+IGN_V2_P = int(os.getenv("IGN_V2_P", "24"))
+IGN_V2_C_RATIO = float(os.getenv("IGN_V2_C_RATIO", "0.90"))
+IGN_V2_G = float(os.getenv("IGN_V2_G", "0.35"))
+IGN_V2_E = float(os.getenv("IGN_V2_E", "0.50"))
+IGN_V2_R_MAX = float(os.getenv("IGN_V2_R_MAX", "3.0"))
+IGN_V2_S_MIN = float(os.getenv("IGN_V2_S_MIN", "0.40"))
+IGN_V2_N_TOP = int(os.getenv("IGN_V2_N_TOP", "5"))
+
+# OpenMarket Free enrichment (optional, disabled until key; Bybit Perp only in phase 1)
+OPENMARKET_ENABLED = os.getenv("OPENMARKET_ENABLED", "false").lower() == "true"
+OPENMARKET_API_KEY = os.getenv("OPENMARKET_API_KEY", "")
+OPENMARKET_REFERENCE_VENUE = os.getenv("OPENMARKET_REFERENCE_VENUE", "BYBIT")
+OPENMARKET_PERMANENT_ASSETS = tuple(s.strip().upper() for s in os.getenv("OPENMARKET_PERMANENT_ASSETS", "BTC,ETH,SOL,PAXG,XAUT").split(",") if s.strip())
+OPENMARKET_CANDIDATE_CAP = int(os.getenv("OPENMARKET_CANDIDATE_CAP", "30"))
+OPENMARKET_HTF_REFRESH_HOURS = int(os.getenv("OPENMARKET_HTF_REFRESH_HOURS", "4"))
+OPENMARKET_REQUEST_DEADLINE_MS = int(os.getenv("OPENMARKET_REQUEST_DEADLINE_MS", "1500"))
+OPENMARKET_RETENTION_DAYS = int(os.getenv("OPENMARKET_RETENTION_DAYS", "30"))
+
+# Rate limiting & budgeting (see specs/external-api-rate-limiting.md)
+COINANALYZE_RPS = float(os.getenv("COINANALYZE_RPS", "0.08"))
+COINANALYZE_MAX_CONCURRENT = int(os.getenv("COINANALYZE_MAX_CONCURRENT", "5"))
+COINANALYZE_DEFAULT_RETRY_AFTER = int(os.getenv("COINANALYZE_DEFAULT_RETRY_AFTER", "5"))
+
+OPENMARKET_DAILY_WEIGHT_BUDGET = int(os.getenv("OPENMARKET_DAILY_WEIGHT_BUDGET", "1000"))
+OPENMARKET_PER_CUTOFF_WEIGHT = int(os.getenv("OPENMARKET_PER_CUTOFF_WEIGHT", "50"))
 LLM_RESEARCH_ENABLED = os.getenv("LLM_RESEARCH_ENABLED", "false").lower() == "true"
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
@@ -153,9 +200,24 @@ def get_db_connection(read_only: bool = False, db_path: str | Path | None = None
             time.sleep(retry_delay)
 
 
-def init_db(db_path: str | Path | None = None):
-    """Initializes the database schema if it doesn't exist."""
+def init_market_db(db_path: str | Path | None = None):
+    """Orchestrator market schema (delegates to guarded init_db for compat)."""
+    init_db(db_path, force_market=True)
+
+
+def init_alpha_db(db_path: str | Path | None = None):
+    """Publisher alpha ledger schema (delegates to guarded init_db)."""
+    init_db(db_path, force_alpha=True)
+
+
+def init_db(db_path: str | Path | None = None, *, force_market: bool = False, force_alpha: bool = False):
+    """Initializes the database schema if it doesn't exist.
+    Guards prevent market tables from being created inside the alpha DB.
+    """
     conn = get_db_connection(read_only=False, db_path=db_path)
+    target = str(db_path or DB_PATH)
+    alpha_target = str(ALPHA_DB_PATH)
+    is_alpha = force_alpha or (not force_market and (target == alpha_target or Path(target).name == "alpha_events.db"))
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -163,28 +225,9 @@ def init_db(db_path: str | Path | None = None):
                 applied_at TIMESTAMP WITH TIME ZONE NOT NULL
             );
         """)
-        # Create futures_data table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS futures_data (
-                timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                underlying VARCHAR,
-                symbol VARCHAR,
-                open_interest DOUBLE,
-                funding_rate DOUBLE,
-                predicted_funding DOUBLE,
-                liquidation_long DOUBLE,
-                liquidation_short DOUBLE,
-                long_short_ratio DOUBLE,
-                open DOUBLE,
-                high DOUBLE,
-                low DOUBLE,
-                close DOUBLE,
-                volume DOUBLE
-            );
-        """)
-
-        # Create option_chains table (15-min snapshots)
-        conn.execute("""
+        if not is_alpha:
+            # Create option_chains table (15-min snapshots)
+            conn.execute("""
             CREATE TABLE IF NOT EXISTS option_chains (
                 timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 underlying VARCHAR,
@@ -328,13 +371,13 @@ def init_db(db_path: str | Path | None = None):
             );
         """)
         
-        # Create an index on timestamp/underlying for fast analysis
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_futures_ts ON futures_data (timestamp, underlying);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_options_ts ON option_chains (timestamp, underlying);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_ts ON brain_outputs (timestamp, underlying);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON confluence_alerts (alert_time, underlying);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_scanner_ts ON scanner_history (timestamp, symbol);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_universe_ts ON universe_snapshots (observed_at, binance_symbol);")
+        # Create indexes for fast analysis (market only; futures_data removed post-drop)
+        if not is_alpha:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_options_ts ON option_chains (timestamp, underlying);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_ts ON brain_outputs (timestamp, underlying);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON confluence_alerts (alert_time, underlying);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_scanner_ts ON scanner_history (timestamp, symbol);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_universe_ts ON universe_snapshots (observed_at, binance_symbol);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_ts ON alpha_candidates (observed_at, setup_class);")
 
         # Phase 0 event ledger migration. Keeping this DDL here, rather than in
@@ -658,9 +701,179 @@ def init_db(db_path: str | Path | None = None):
         for col in ["sl DOUBLE", "tp1 DOUBLE", "tp2 DOUBLE"]:
             conn.execute(f"ALTER TABLE regime_signals ADD COLUMN IF NOT EXISTS {col};")
         
+        if not is_alpha:
+            # Data platform v2 tables (append-only source layer + cutoff + features)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS source_observations (
+                    observation_id VARCHAR PRIMARY KEY,
+                    source VARCHAR NOT NULL,
+                    venue VARCHAR NOT NULL,
+                    native_symbol VARCHAR NOT NULL,
+                    asset VARCHAR NOT NULL,
+                    market_kind VARCHAR NOT NULL,
+                    interval VARCHAR NOT NULL,
+                    source_start TIMESTAMP WITH TIME ZONE NOT NULL,
+                    source_end TIMESTAMP WITH TIME ZONE NOT NULL,
+                    retrieved_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    retrieval_kind VARCHAR,
+                    payload_json VARCHAR NOT NULL
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_src_obs_range ON source_observations (asset, interval, source_end);")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS cutoff_runs (
+                    cutoff_id VARCHAR PRIMARY KEY,
+                    cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    status VARCHAR NOT NULL CHECK (status IN ('running','finalized','failed')),
+                    started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    finalized_at TIMESTAMP WITH TIME ZONE,
+                    source_observation_ids VARCHAR,
+                    error VARCHAR
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cutoff_at ON cutoff_runs (cutoff_at);")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS source_request_log (
+                    request_id VARCHAR PRIMARY KEY,
+                    cutoff_id VARCHAR,
+                    source VARCHAR NOT NULL,
+                    request_type VARCHAR NOT NULL,
+                    weight INTEGER,
+                    budget_remaining INTEGER,
+                    selected_universe_json VARCHAR,
+                    status VARCHAR NOT NULL,
+                    requested_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    completed_at TIMESTAMP WITH TIME ZONE,
+                    response_meta_json VARCHAR
+                );
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS feature_snapshots (
+                    snapshot_id VARCHAR PRIMARY KEY,
+                    cutoff_id VARCHAR NOT NULL,
+                    asset VARCHAR NOT NULL,
+                    feature_set VARCHAR NOT NULL,
+                    version VARCHAR NOT NULL,
+                    computed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    payload_json VARCHAR NOT NULL
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_feat_cut ON feature_snapshots (cutoff_id, asset, feature_set);")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS structure_zones (
+                    zone_id VARCHAR PRIMARY KEY,
+                    cutoff_id VARCHAR NOT NULL,
+                    asset VARCHAR NOT NULL,
+                    kind VARCHAR NOT NULL,
+                    direction VARCHAR,
+                    strength DOUBLE,
+                    low DOUBLE,
+                    high DOUBLE,
+                    state VARCHAR,
+                    source_evidence_ids VARCHAR,
+                    confidence_status VARCHAR,
+                    created_at TIMESTAMP WITH TIME ZONE
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_zones_cut ON structure_zones (cutoff_id, asset);")
+        
+        if is_alpha:
+            # Enforce split: drop any market tables (incl legacy futures) that may have been created by shared DDL paths.
+            for t in ("broad_discovery_snapshots", "discovery_watchlist_history",
+                      "deep_backfill_jobs", "scanner_history", "universe_snapshots",
+                      "binance_oi_rotation_observations", "binance_oi_rotation_events",
+                      "binance_oi_rotation_raw_oi_history", "binance_oi_rotation_scans",
+                      "binance_oi_rotation_watchlist_history", "option_chains",
+                      "brain_outputs", "confluence_alerts", "regime_signals"):
+                try:
+                    conn.execute(f"DROP TABLE IF EXISTS {t}")
+                except Exception:
+                    pass
+        else:
+            # One-shot legacy futures import to source_observations on first market init (idempotent, post-migration no-op)
+            try:
+                import_legacy_futures_as_source_observations(db_path)
+            except Exception:
+                pass
+        
         conn.commit()
     finally:
         conn.close()
+
+def import_legacy_futures_as_source_observations(db_path: str | Path | None = None) -> int:
+    """One-shot migration: append legacy futures_data rows into source_observations (idempotent).
+    Run once at cutover; subsequent inits are no-op. To be removed post futures_data drop.
+    """
+    conn = get_db_connection(read_only=False, db_path=db_path)
+    try:
+        # Only if we have legacy data and no legacy_import rows yet
+        already = conn.execute(
+            "SELECT 1 FROM source_observations WHERE retrieval_kind = 'legacy_import' LIMIT 1"
+        ).fetchone()
+        if already:
+            return 0
+        tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+        if "futures_data" not in tables:
+            return 0
+        rows = conn.execute("""
+            SELECT timestamp, underlying, symbol, open, high, low, close, volume
+            FROM futures_data
+            ORDER BY timestamp
+        """).fetchall()
+        if not rows:
+            return 0
+        imported = 0
+        for ts, underlying, symbol, o, h, l, c, v in rows:
+            obs_id = f"legacy:{underlying}:{ts}"
+            payload = {
+                "open": o, "high": h, "low": l, "close": c, "volume": v,
+                "open_interest": None, "funding_rate": None
+            }
+            try:
+                conn.execute("""
+                    INSERT INTO source_observations VALUES (?, 'coinalyze', 'aggregate_perp', ?, ?, 'perpetual', '15m', ?, ?, ?, 'legacy_import', ?)
+                    ON CONFLICT (observation_id) DO NOTHING
+                """, (obs_id, symbol, underlying or symbol.split("USDT")[0], ts, ts, ts, json.dumps(payload)))
+                imported += 1
+            except Exception:
+                pass
+        conn.commit()
+        return imported
+    finally:
+        conn.close()
+
+
+def drop_legacy_futures_data(db_path: str | Path | None = None) -> bool:
+    """Post-cutover drop of legacy futures_data table.
+    Verifies source_observations has data first. Returns True if dropped.
+    """
+    conn = get_db_connection(read_only=False, db_path=db_path)
+    try:
+        # Verify source has coverage
+        has_source = conn.execute("SELECT COUNT(*) FROM source_observations").fetchone()[0] > 0
+        if not has_source:
+            print("Refusing drop: no data in source_observations yet")
+            return False
+        # Check if futures still exists
+        tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+        if "futures_data" not in tables:
+            return False
+        conn.execute("DROP TABLE IF EXISTS futures_data")
+        # Also drop index if any
+        try:
+            conn.execute("DROP INDEX IF EXISTS idx_futures_ts")
+        except Exception:
+            pass
+        conn.commit()
+        print("Dropped legacy futures_data table (source_observations is now sole market source)")
+        return True
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     print(f"Initializing database at {DB_PATH}...")

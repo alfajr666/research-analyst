@@ -57,9 +57,11 @@ The producer is medium frequency: it evaluates completed 15-minute candles for a
 
 Current strategy families remain separate hypotheses:
 
-- `accumulation_base`: legacy EMA99 pullback and completed-bar confirmation.
-- `impulse_ignition`: compressed pre-breakout base with supporting activity/positioning.
-- `continuation_breakout`: established move with re-acceleration evidence.
+- `accumulation_base`: v1 legacy EMA99 pullback; **v2** (`accumulation-base-v2`) 1h compression + limit at 1h EMA99 with confluence score.
+- `impulse_ignition`: v1 compressed pre-breakout; **v2** (`impulse-ignition-v2`) armed breakout of 1h base lid (not chase after breach).
+- `continuation_breakout`: established move with re-acceleration evidence (still v1).
+
+v2 plugins share the confluence scoring ADR (`confidence_status=uncalibrated`; LLM is post-emit booster only). Enable via `STRATEGY_ENABLED_IDS` (defaults include v1+v2 in parallel).
 
 The HMM plus dual-VWAP evaluator provides macro context. Its historical results are not proof of alpha and must not be represented as calibrated or execution-authorizing.
 
@@ -104,4 +106,4 @@ pm2 start ecosystem.config.js
 
 Set `COINANALYZE_API_KEY` for collection and `TELEGRAM_BOT_TOKEN` plus `TELEGRAM_CHAT_ID` for Telegram delivery. Use `./venv/bin/python orchestrator.py --once` for one pipeline cycle, `pm2 status` for process state, and `pm2 logs orchestrator` or `pm2 logs signal-publisher` for diagnosis.
 
-When an expected event is absent, inspect the chain in this order: universe/discovery snapshot, watchlist history, `deep_backfill_jobs`, fresh completed `futures_data`, evaluator outbox file, `alpha_events`, `signal_deliveries`, and (if enabled) `execution_deliveries`.
+When an expected event is absent, inspect the chain in this order: universe/discovery snapshot, watchlist history, `deep_backfill_jobs`, fresh completed `source_observations`, evaluator outbox file, `alpha_events`, `signal_deliveries`, and (if enabled) `execution_deliveries`.
