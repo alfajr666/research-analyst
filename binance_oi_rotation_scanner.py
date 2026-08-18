@@ -243,11 +243,13 @@ def _persist(conn, interval: datetime, observations: list[dict], candidates: lis
         (SOURCE, interval, version, "complete" if scan_complete else "incomplete", observed_at))
 
 
-def _update_watchlist(conn, interval: datetime, candidates: list[dict]) -> None:
-    """Retain rotation research context without duplicating another pool's warmup."""
+def _update_watchlist(oi_conn, main_conn, interval: datetime, candidates: list[dict]) -> None:
+    """Rotation watchlist + cross-pool overlap using dedicated oi_conn for its tables.
+    main_conn used only briefly for discovery_watchlist/deep_backfill (shared state).
+    """
     expires_at = interval + timedelta(hours=config.BINANCE_OI_ROTATION_WATCHLIST_HOURS)
     selected_assets = {item["asset"] for item in candidates}
-    current = conn.execute("""
+    current = oi_conn.execute("""
         SELECT asset, symbol, state, expires_at
         FROM binance_oi_rotation_watchlist_history
         WHERE source = ?
@@ -255,10 +257,10 @@ def _update_watchlist(conn, interval: datetime, candidates: list[dict]) -> None:
     """, (SOURCE,)).fetchall()
     for asset, symbol, state, expiry in current:
         if state != "expired" and asset not in selected_assets and interval >= expiry:
-            conn.execute("""INSERT INTO binance_oi_rotation_watchlist_history VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            oi_conn.execute("""INSERT INTO binance_oi_rotation_watchlist_history VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT DO NOTHING""", (SOURCE, asset, symbol, interval, "expired", expiry, False, False))
     for item in candidates:
-        overlap = conn.execute("""
+        overlap = main_conn.execute("""
             SELECT 1 FROM (
                 SELECT state FROM discovery_watchlist_history
                 WHERE asset = ?
@@ -269,14 +271,14 @@ def _update_watchlist(conn, interval: datetime, candidates: list[dict]) -> None:
         prior = next((row for row in current if row[0] == item["asset"]), None)
         new_entry = prior is None or prior[2] == "expired"
         deep_backfill_required = new_entry and not overlap
-        conn.execute("""INSERT INTO binance_oi_rotation_watchlist_history VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        oi_conn.execute("""INSERT INTO binance_oi_rotation_watchlist_history VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT DO NOTHING""", (SOURCE, item["asset"], item["symbol"], interval, "entered" if new_entry else "active", expires_at, deep_backfill_required, overlap))
         if deep_backfill_required:
             coinalyze_symbol = coinalyze_symbol_from_binance(item["symbol"])
-            job_exists = conn.execute("SELECT 1 FROM deep_backfill_jobs WHERE symbol = ?", (coinalyze_symbol,)).fetchone()
+            job_exists = main_conn.execute("SELECT 1 FROM deep_backfill_jobs WHERE symbol = ?", (coinalyze_symbol,)).fetchone()
             if not job_exists:
                 from two_pool_discovery import enqueue_deep_backfill_jobs
-                enqueue_deep_backfill_jobs(conn, interval, [coinalyze_symbol])
+                enqueue_deep_backfill_jobs(main_conn, interval, [coinalyze_symbol])
 
 
 def run_scanner(now: datetime | None = None, client: BinanceClient | None = None) -> dict:
@@ -302,14 +304,25 @@ def run_scanner(now: datetime | None = None, client: BinanceClient | None = None
         except httpx.HTTPError:
             observations.append({"source": SOURCE, "symbol": market["symbol"], "asset": market["baseAsset"], "quote": market["quoteAsset"], "contract_type": market["contractType"].lower(), "volume_24h_usd": 0.0, "is_eligible": False, "rejection_reason": "market_data_request_failed"})
     candidates = qualify_and_rank(observations)
-    conn = config.get_db_connection()
+    config.init_binance_oi_db()
+    oi_conn = config.get_db_connection(db_path=config.BINANCE_OI_DB_PATH)
+    main_conn = config.get_db_connection(read_only=False)
     try:
         scan_complete = not any(item.get("rejection_reason") == "market_data_request_failed" for item in observations)
-        _persist(conn, interval, observations, candidates, raw_oi_history, observed_at, scan_complete)
-        _update_watchlist(conn, interval, candidates)
-        conn.commit()
+        _persist(oi_conn, interval, observations, candidates, raw_oi_history, observed_at, scan_complete)
+        _update_watchlist(oi_conn, main_conn, interval, candidates)
+        oi_conn.commit()
+        main_conn.commit()
     finally:
-        conn.close()
+        oi_conn.close()
+        main_conn.close()
     feed = build_feed(interval, candidates, observed_at)
     publish_feed_atomic(feed)
+    try:
+        from oi_discord_notify import notify_oi_feed
+        notify_result = notify_oi_feed(feed)
+        if any(value == "sent" for value in notify_result.values()):
+            print(f"Binance OI Discord notify: {notify_result}")
+    except Exception as error:
+        print(f"Binance OI Discord notify error: {error}")
     return feed

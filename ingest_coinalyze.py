@@ -1,38 +1,12 @@
-import random
+import json
 import time
-import httpx
 import duckdb
 from datetime import datetime, timezone
+
 import config
+from api_clients.coinalyze import CoinAnalyzeClient
 
-
-class RateLimiter:
-    """Adaptive rate limiter with global penalty window on 429 responses."""
-    def __init__(self, min_interval: float):
-        self.min_interval = min_interval
-        self.last_call = 0.0
-        self.blocked_until = 0.0
-
-    def wait(self):
-        now = time.time()
-        # Respect any active rate-limit penalty window first
-        if now < self.blocked_until:
-            time.sleep(self.blocked_until - now)
-        # Then enforce minimum inter-request spacing
-        now = time.time()
-        elapsed = now - self.last_call
-        if elapsed < self.min_interval:
-            time.sleep(self.min_interval - elapsed)
-        self.last_call = time.time()
-
-    def on_rate_limited(self, retry_after: float):
-        """Extend the global penalty window so subsequent calls also back off."""
-        block_until = time.time() + retry_after
-        if block_until > self.blocked_until:
-            self.blocked_until = block_until
-
-
-_rl = RateLimiter(min_interval=12.0)
+_coin_client = CoinAnalyzeClient()
 
 def load_symbols() -> list:
     """Loads symbols from symbols-for-dual-zone.md, merges with scanned pairs, and formats for CoinAnalyze."""
@@ -117,77 +91,10 @@ def load_symbols() -> list:
 
 
 
-def fetch_coinalyze_data(endpoint: str, params: dict = None, client: httpx.Client = None) -> list:
-    """Fetches data from a CoinAnalyze endpoint with rate-limit and error handling."""
-    if not config.COINANALYZE_API_KEY:
-        print("Warning: COINANALYZE_API_KEY is not configured in .env. Skipping CoinAnalyze ingestion.")
-        return []
-    
-    _rl.wait()
-    
-    url = f"{config.COINANALYZE_BASE_URL}/{endpoint}"
-    query_params = params.copy() if params else {}
-    query_params["api_key"] = config.COINANALYZE_API_KEY
-    
-    headers = {
-        "Accept": "application/json"
-    }
-    
-    retries = 3
-    for attempt in range(retries):
-        try:
-            if client is not None:
-                response = client.get(url, params=query_params, headers=headers, timeout=15.0)
-            else:
-                response = httpx.get(url, params=query_params, headers=headers, timeout=15.0)
-                
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 429:
-                retry_after = int(float(response.headers.get("Retry-After", 5)))
-                _rl.on_rate_limited(retry_after)
-                delay = retry_after * (2 ** attempt) + random.uniform(0, 5.0)
-                print(f"CoinAnalyze Rate limit (429) hit on {endpoint}. Sleeping for {delay:.1f}s (attempt {attempt + 1})...")
-                time.sleep(delay)
-            else:
-                print(f"Error fetching from CoinAnalyze {endpoint}: {response.status_code} - {response.text}")
-                return []
-        except Exception as e:
-            print(f"Exception during request to {endpoint}: {e}")
-            if attempt < retries - 1:
-                time.sleep(2 * (attempt + 1))
-            else:
-                return []
-    return []
-
-def fetch_coinalyze_data_batched(endpoint: str, params: dict = None, client: httpx.Client = None, batch_size: int = 15) -> list:
-    """Fetches data from a CoinAnalyze endpoint in batches of symbols to prevent 429 errors."""
-    if not config.COINANALYZE_API_KEY:
-        print("Warning: COINANALYZE_API_KEY is not configured in .env. Skipping CoinAnalyze ingestion.")
-        return []
-        
-    symbols_param = params.get("symbols", "") if params else ""
-    if not symbols_param:
-        return fetch_coinalyze_data(endpoint, params, client)
-        
-    symbols_list = symbols_param.split(",")
-    combined_result = []
-    
-    for i in range(0, len(symbols_list), batch_size):
-        batch = symbols_list[i:i + batch_size]
-        batch_str = ",".join(batch)
-        
-        batch_params = params.copy() if params else {}
-        batch_params["symbols"] = batch_str
-        
-        res = fetch_coinalyze_data(endpoint, batch_params, client)
-        if res:
-            if isinstance(res, list):
-                combined_result.extend(res)
-            else:
-                print(f"Warning: expected list from {endpoint}, got {type(res)}")
-            
-    return combined_result
+def fetch_coinalyze_data_batched(endpoint: str, params: dict = None, batch_size: int = 30) -> list:
+    """Delegates to the professional client (batching is handled inside)."""
+    symbols = (params or {}).get("symbols", "").split(",") if params else []
+    return _coin_client.fetch_batched(endpoint, symbols, other_params=params, batch_size=batch_size, cutoff_id="ingest")
 
 def get_latest_history_value(history_list: list, key: str, default=0.0) -> float:
     """Safely extracts the last value from a history list by trying multiple key candidates."""
@@ -208,106 +115,119 @@ def ingest_coinalyze():
     print("Starting CoinAnalyze ingestion...")
     symbols = load_symbols()
     symbols_str = ",".join(symbols)
+
+    # Gap-fill diagnostic (1 query to avoid lock thrash). Only log summary to keep logs clean.
+    db_conn = config.get_db_connection(read_only=True)
+    try:
+        have = {r[0] for r in db_conn.execute(
+            "SELECT DISTINCT native_symbol FROM source_observations WHERE source='coinalyze'"
+        ).fetchall()}
+        gap_count = sum(1 for sym in symbols if sym not in have)
+        if gap_count:
+            print(f"Gap-fill candidates: {gap_count} (new/missing coverage; backfills handle history)")
+    finally:
+        db_conn.close()
     
-    with httpx.Client() as client:
-        # 1. Fetch current Open Interest
-        oi_data = fetch_coinalyze_data_batched("open-interest", {"symbols": symbols_str}, client=client)
-        oi_map = {}
-        for item in oi_data:
-            sym = item.get("symbol")
-            val = item.get("openInterest", item.get("value", 0.0))
-            oi_map[sym] = float(val)
-            
-        # 2. Fetch current Funding Rate (sleep 2.0s first to avoid rate limit)
-        time.sleep(2.0)
-        funding_data = fetch_coinalyze_data_batched("funding-rate", {"symbols": symbols_str}, client=client)
-        funding_map = {}
-        for item in funding_data:
-            sym = item.get("symbol")
-            val = item.get("value", 0.0)
-            funding_map[sym] = float(val)
-            
-        # 3. Fetch current Predicted Funding Rate (sleep 2.0s first)
-        time.sleep(2.0)
-        pred_funding_data = fetch_coinalyze_data_batched("predicted-funding-rate", {"symbols": symbols_str}, client=client)
-        pred_funding_map = {}
-        for item in pred_funding_data:
-            sym = item.get("symbol")
-            val = item.get("value", 0.0)
-            pred_funding_map[sym] = float(val)
+    # Limit ohlcv-history to core assets only (freshness critical path).
+    # Avoids hammering the rate-limited endpoint for 90+ symbols every cycle.
+    # Core bars (used for cutoffs/materialization) keep max(source_end) advancing.
+    core_assets = getattr(config, "OPENMARKET_PERMANENT_ASSETS", ("BTC", "ETH", "SOL"))
+    ohlcv_syms = [s for s in symbols if any(s.upper().startswith(a) for a in core_assets)] or symbols[:5]
+    ohlcv_str = ",".join(ohlcv_syms)
     
-        # 4. Fetch OHLCV History (sleep 2.0s first)
-        time.sleep(2.0)
-        now_epoch = int(time.time())
-        from_epoch = now_epoch - 3600 * 2  # last 2 hours
-        ohlcv_data = fetch_coinalyze_data_batched("ohlcv-history", {
-            "symbols": symbols_str,
-            "interval": "15min",
-            "from": str(from_epoch),
-            "to": str(now_epoch)
-        }, client=client)
-        
-        ohlcv_map = {}
-        for item in ohlcv_data:
-            sym = item.get("symbol")
-            history = item.get("history", [])
-            if history:
-                last_candle = history[-1]
-                raw_ts = last_candle.get("t")
-                if raw_ts is not None:
-                    try:
-                        ts_val = float(raw_ts)
-                        if ts_val > 1e12:
-                            ts_val /= 1000.0
-                        candle_ts = datetime.fromtimestamp(ts_val, tz=timezone.utc)
-                    except (ValueError, TypeError, OSError):
-                        candle_ts = datetime.now(timezone.utc)
-                else:
+    # 1. Fetch OHLCV FIRST + larger batch for the (now small) set.
+    now_epoch = int(time.time())
+    from_epoch = now_epoch - 3600 * 2
+    ohlcv_data = fetch_coinalyze_data_batched("ohlcv-history", {
+        "symbols": ohlcv_str,
+        "interval": "15min",
+        "from": str(from_epoch),
+        "to": str(now_epoch)
+    }, batch_size=50)
+    
+    ohlcv_map = {}
+    for item in ohlcv_data:
+        sym = item.get("symbol")
+        history = item.get("history", [])
+        if history:
+            last_candle = history[-1]
+            raw_ts = last_candle.get("t")
+            if raw_ts is not None:
+                try:
+                    ts_val = float(raw_ts)
+                    if ts_val > 1e12:
+                        ts_val /= 1000.0
+                    candle_ts = datetime.fromtimestamp(ts_val, tz=timezone.utc)
+                except (ValueError, TypeError, OSError):
                     candle_ts = datetime.now(timezone.utc)
-                ohlcv_map[sym] = {
-                    "timestamp": candle_ts,
-                    "open": float(last_candle.get("o", 0.0)),
-                    "high": float(last_candle.get("h", 0.0)),
-                    "low": float(last_candle.get("l", 0.0)),
-                    "close": float(last_candle.get("c", 0.0)),
-                    "volume": float(last_candle.get("v", 0.0))
-                }
-    
-        # 5. Fetch Liquidation History (sleep 2.0s first)
-        time.sleep(2.0)
-        liq_data = fetch_coinalyze_data_batched("liquidation-history", {
-            "symbols": symbols_str,
-            "interval": "15min",
-            "from": str(from_epoch),
-            "to": str(now_epoch)
-        }, client=client)
+            else:
+                candle_ts = datetime.now(timezone.utc)
+            ohlcv_map[sym] = {
+                "timestamp": candle_ts,
+                "open": float(last_candle.get("o", 0.0)),
+                "high": float(last_candle.get("h", 0.0)),
+                "low": float(last_candle.get("l", 0.0)),
+                "close": float(last_candle.get("c", 0.0)),
+                "volume": float(last_candle.get("v", 0.0))
+            }
+
+    # 2. Fetch current Open Interest
+    oi_data = fetch_coinalyze_data_batched("open-interest", {"symbols": symbols_str}, batch_size=30)
+    oi_map = {}
+    for item in oi_data:
+        sym = item.get("symbol")
+        val = item.get("openInterest", item.get("value", 0.0))
+        oi_map[sym] = float(val)
         
-        liq_map = {}
-        for item in liq_data:
-            sym = item.get("symbol")
-            history = item.get("history", [])
-            if history:
-                last_liq = history[-1]
-                liq_map[sym] = {
-                    "long": float(last_liq.get("l", 0.0)),
-                    "short": float(last_liq.get("s", 0.0))
-                }
-    
-        # 6. Fetch Long/Short Ratio History (sleep 2.0s first)
-        time.sleep(2.0)
-        ls_data = fetch_coinalyze_data_batched("long-short-ratio-history", {
-            "symbols": symbols_str,
-            "interval": "15min",
-            "from": str(from_epoch),
-            "to": str(now_epoch)
-        }, client=client)
+    # 3. Fetch current Funding Rate (rate limiting handled by CoinAnalyzeClient)
+    funding_data = fetch_coinalyze_data_batched("funding-rate", {"symbols": symbols_str}, batch_size=30)
+    funding_map = {}
+    for item in funding_data:
+        sym = item.get("symbol")
+        val = item.get("value", 0.0)
+        funding_map[sym] = float(val)
         
-        ls_map = {}
-        for item in ls_data:
-            sym = item.get("symbol")
-            history = item.get("history", [])
-            if history:
-                ls_map[sym] = get_latest_history_value(history, "ratio", default=1.0)
+    # 4. Fetch current Predicted Funding Rate
+    pred_funding_data = fetch_coinalyze_data_batched("predicted-funding-rate", {"symbols": symbols_str}, batch_size=30)
+    pred_funding_map = {}
+    for item in pred_funding_data:
+        sym = item.get("symbol")
+        val = item.get("value", 0.0)
+        pred_funding_map[sym] = float(val)
+
+    # 5. Fetch Liquidation History (larger batch)
+    liq_data = fetch_coinalyze_data_batched("liquidation-history", {
+        "symbols": symbols_str,
+        "interval": "15min",
+        "from": str(from_epoch),
+        "to": str(now_epoch)
+    }, batch_size=40)
+    
+    liq_map = {}
+    for item in liq_data:
+        sym = item.get("symbol")
+        history = item.get("history", [])
+        if history:
+            last_liq = history[-1]
+            liq_map[sym] = {
+                "long": float(last_liq.get("l", 0.0)),
+                "short": float(last_liq.get("s", 0.0))
+            }
+
+    # 6. Fetch Long/Short Ratio History (larger batch)
+    ls_data = fetch_coinalyze_data_batched("long-short-ratio-history", {
+        "symbols": symbols_str,
+        "interval": "15min",
+        "from": str(from_epoch),
+        "to": str(now_epoch)
+    }, batch_size=40)
+    
+    ls_map = {}
+    for item in ls_data:
+        sym = item.get("symbol")
+        history = item.get("history", [])
+        if history:
+            ls_map[sym] = get_latest_history_value(history, "ratio", default=1.0)
 
     # 7. Write consolidated records to DuckDB
     db_conn = config.get_db_connection(read_only=False)
@@ -338,22 +258,24 @@ def ingest_coinalyze():
             
             row_ts = ohlcv.get("timestamp", datetime.now(timezone.utc))
             
-            # Dedup: remove any existing row for same symbol + timestamp before insert
-            db_conn.execute(
-                "DELETE FROM futures_data WHERE timestamp = ? AND symbol = ?",
-                (row_ts, sym)
-            )
-            
+            # No longer writing to legacy futures_data (dropped in post-cutover phase).
+            # All data goes to source_observations (append-only).
+
+            # Append-only source_observations (v2 platform, per spec)
+            obs_id = f"coinalyze:{sym}:{row_ts.isoformat()}"
+            payload = {
+                "open": ohlcv["open"], "high": ohlcv["high"], "low": ohlcv["low"], "close": ohlcv["close"],
+                "volume": ohlcv["volume"], "open_interest": oi, "funding_rate": fr,
+                "predicted_funding": pfr, "liquidation_long": liq["long"], "liquidation_short": liq["short"],
+                "long_short_ratio": ls_ratio
+            }
             db_conn.execute("""
-                INSERT INTO futures_data (
-                    timestamp, underlying, symbol, open_interest, funding_rate, predicted_funding,
-                    liquidation_long, liquidation_short, long_short_ratio,
-                    open, high, low, close, volume
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO source_observations (
+                    observation_id, source, venue, native_symbol, asset, market_kind, interval,
+                    source_start, source_end, retrieved_at, retrieval_kind, payload_json
+                ) VALUES (?, 'coinalyze', 'aggregate_perp', ?, ?, 'perpetual', '15m', ?, ?, ?, 'live', ?)
             """, (
-                row_ts, underlying, sym, oi, fr, pfr,
-                liq["long"], liq["short"], ls_ratio,
-                ohlcv["open"], ohlcv["high"], ohlcv["low"], ohlcv["close"], ohlcv["volume"]
+                obs_id, sym, underlying, row_ts, row_ts, row_ts, json.dumps(payload, default=str)
             ))
             inserted_count += 1
             print(f"CoinAnalyze Ingested {sym}: price={ohlcv['close']}, OI={oi}, FR={fr:.6f}, predicted_FR={pfr:.6f}")
