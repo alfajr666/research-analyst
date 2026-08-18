@@ -38,6 +38,12 @@ TELEGRAM_ALLOWED_CHAT_IDS = frozenset(
 TELEGRAM_ALLOWED_USER_IDS = frozenset(
     value.strip() for value in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").split(",") if value.strip()
 )
+# Discord incoming webhooks (optional). Empty URL disables that stream.
+DISCORD_ALPHA_WEBHOOK_URL = os.getenv("DISCORD_ALPHA_WEBHOOK_URL", "")
+DISCORD_OI_WEBHOOK_URL = os.getenv("DISCORD_OI_WEBHOOK_URL", "")
+BINANCE_OI_DISCORD_TOP_N = int(os.getenv("BINANCE_OI_DISCORD_TOP_N", "5"))
+BINANCE_OI_DISCORD_MULTI_HOUR_WINDOW = int(os.getenv("BINANCE_OI_DISCORD_MULTI_HOUR_WINDOW", "6"))
+BINANCE_OI_DISCORD_SKIP_EMPTY = os.getenv("BINANCE_OI_DISCORD_SKIP_EMPTY", "true").lower() == "true"
 
 # Config Settings
 DB_PATH = os.getenv("DB_PATH", str(DEFAULT_DB_DIR / "market_data.db"))
@@ -67,6 +73,75 @@ BINANCE_OI_ROTATION_MIN_VOLUME_ANOMALY = float(os.getenv("BINANCE_OI_ROTATION_MI
 BINANCE_OI_ROTATION_WATCHLIST_HOURS = int(os.getenv("BINANCE_OI_ROTATION_WATCHLIST_HOURS", "36"))
 BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS = int(os.getenv("BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS", "6"))
 BINANCE_OI_ROTATION_FEED_PATH = Path(os.getenv("BINANCE_OI_ROTATION_FEED_PATH", str(DEFAULT_DB_DIR / "binance_oi_rotation_feed.json")))
+BINANCE_OI_DB_PATH = os.getenv("BINANCE_OI_DB_PATH", str(DEFAULT_DB_DIR / "binance_oi.db"))
+
+
+def init_binance_oi_db(db_path: str | Path | None = None):
+    """Initialize the Binance OI rotation tables in a dedicated DB file.
+    This separates it from the main market DB to reduce lock contention.
+    """
+    conn = get_db_connection(read_only=False, db_path=db_path or BINANCE_OI_DB_PATH)
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS binance_oi_rotation_observations (
+                source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
+                scanner_version VARCHAR, symbol VARCHAR, asset VARCHAR,
+                quote VARCHAR, contract_type VARCHAR, is_eligible BOOLEAN,
+                rejection_reason VARCHAR, volume_24h_usd DOUBLE,
+                open_interest_usd DOUBLE, oi_change_1h_pct DOUBLE,
+                oi_change_1h_usd DOUBLE, price_change_1h DOUBLE,
+                volume_1h_usd DOUBLE, volume_anomaly DOUBLE,
+                oi_spike_percentile DOUBLE, observed_at TIMESTAMP WITH TIME ZONE,
+                PRIMARY KEY (source, completed_interval_at, scanner_version, symbol)
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS binance_oi_rotation_events (
+                source VARCHAR, asset VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
+                scanner_version VARCHAR, symbol VARCHAR, rank INTEGER,
+                metrics_json VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
+                PRIMARY KEY (source, asset, completed_interval_at, scanner_version)
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS binance_oi_rotation_watchlist_history (
+                source VARCHAR, asset VARCHAR, symbol VARCHAR,
+                observed_at TIMESTAMP WITH TIME ZONE, state VARCHAR,
+                expires_at TIMESTAMP WITH TIME ZONE, deep_backfill_required BOOLEAN,
+                overlap_annotated BOOLEAN, PRIMARY KEY (source, asset, observed_at)
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_observations_ts ON binance_oi_rotation_observations (completed_interval_at, symbol);")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS binance_oi_rotation_raw_oi_history (
+                source VARCHAR, symbol VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
+                open_interest_usd DOUBLE, completed_interval_at TIMESTAMP WITH TIME ZONE,
+                PRIMARY KEY (source, symbol, observed_at)
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_raw_oi_history_interval ON binance_oi_rotation_raw_oi_history (completed_interval_at, symbol);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_watchlist_ts ON binance_oi_rotation_watchlist_history (asset, observed_at);")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS binance_oi_rotation_scans (
+                source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
+                scanner_version VARCHAR, status VARCHAR, completed_at TIMESTAMP WITH TIME ZONE,
+                PRIMARY KEY (source, completed_interval_at, scanner_version)
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_oi_deliveries (
+                delivery_key VARCHAR PRIMARY KEY,
+                kind VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                attempted_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                completed_at TIMESTAMP WITH TIME ZONE,
+                response_body VARCHAR,
+                error_message VARCHAR
+            );
+        """)
+        conn.commit()
+    finally:
+        conn.close()
 
 STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
@@ -77,39 +152,58 @@ STRATEGY_ENABLED_IDS = tuple(
 )
 
 # accumulation-base-v2 knobs (specs/strategy-accumulation-base-v2.md)
-ACC_V2_N = int(os.getenv("ACC_V2_N", "16"))
-ACC_V2_K = float(os.getenv("ACC_V2_K", "3.0"))
-ACC_V2_G = float(os.getenv("ACC_V2_G", "0.35"))
-ACC_V2_D_MAX = float(os.getenv("ACC_V2_D_MAX", "0.75"))
-ACC_V2_R_MAX = float(os.getenv("ACC_V2_R_MAX", "3.0"))
-ACC_V2_S_MIN = float(os.getenv("ACC_V2_S_MIN", "0.40"))
-ACC_V2_N_TOP = int(os.getenv("ACC_V2_N_TOP", "5"))
+# Defaults grilled 2026-08-18 — independent prefixes; tighter coil / emit floor.
+ACC_V2_N = int(os.getenv("ACC_V2_N", "12"))
+ACC_V2_K = float(os.getenv("ACC_V2_K", "2.0"))
+ACC_V2_G = float(os.getenv("ACC_V2_G", "0.25"))
+ACC_V2_D_MAX = float(os.getenv("ACC_V2_D_MAX", "0.50"))
+ACC_V2_R_MAX = float(os.getenv("ACC_V2_R_MAX", "2.5"))
+ACC_V2_S_MIN = float(os.getenv("ACC_V2_S_MIN", "0.55"))
+ACC_V2_N_TOP = int(os.getenv("ACC_V2_N_TOP", "3"))
 
 # impulse-ignition-v2 knobs (specs/strategy-impulse-ignition-v2.md)
-IGN_V2_N = int(os.getenv("IGN_V2_N", "16"))
-IGN_V2_K = float(os.getenv("IGN_V2_K", "3.0"))
-IGN_V2_P = int(os.getenv("IGN_V2_P", "24"))
-IGN_V2_C_RATIO = float(os.getenv("IGN_V2_C_RATIO", "0.90"))
-IGN_V2_G = float(os.getenv("IGN_V2_G", "0.35"))
-IGN_V2_E = float(os.getenv("IGN_V2_E", "0.50"))
-IGN_V2_R_MAX = float(os.getenv("IGN_V2_R_MAX", "3.0"))
-IGN_V2_S_MIN = float(os.getenv("IGN_V2_S_MIN", "0.40"))
-IGN_V2_N_TOP = int(os.getenv("IGN_V2_N_TOP", "5"))
+IGN_V2_N = int(os.getenv("IGN_V2_N", "12"))
+IGN_V2_K = float(os.getenv("IGN_V2_K", "2.0"))
+IGN_V2_P = int(os.getenv("IGN_V2_P", "20"))
+IGN_V2_C_RATIO = float(os.getenv("IGN_V2_C_RATIO", "0.85"))
+IGN_V2_G = float(os.getenv("IGN_V2_G", "0.25"))
+IGN_V2_E = float(os.getenv("IGN_V2_E", "0.35"))
+IGN_V2_R_MAX = float(os.getenv("IGN_V2_R_MAX", "2.5"))
+IGN_V2_S_MIN = float(os.getenv("IGN_V2_S_MIN", "0.55"))
+IGN_V2_N_TOP = int(os.getenv("IGN_V2_N_TOP", "3"))
 
 # continuation-breakout-v2 knobs (specs/strategy-continuation-breakout-v2.md)
 CONT_V2_P = int(os.getenv("CONT_V2_P", "12"))
-CONT_V2_T_MIN = float(os.getenv("CONT_V2_T_MIN", "0.75"))
-CONT_V2_N = int(os.getenv("CONT_V2_N", "16"))
-CONT_V2_K = float(os.getenv("CONT_V2_K", "3.0"))
-CONT_V2_RETR_MAX = float(os.getenv("CONT_V2_RETR_MAX", "0.50"))
-CONT_V2_G = float(os.getenv("CONT_V2_G", "0.35"))
-CONT_V2_E = float(os.getenv("CONT_V2_E", "0.50"))
+CONT_V2_T_MIN = float(os.getenv("CONT_V2_T_MIN", "1.0"))
+CONT_V2_N = int(os.getenv("CONT_V2_N", "12"))
+CONT_V2_K = float(os.getenv("CONT_V2_K", "2.0"))
+CONT_V2_RETR_MAX = float(os.getenv("CONT_V2_RETR_MAX", "0.40"))
+CONT_V2_G = float(os.getenv("CONT_V2_G", "0.25"))
+CONT_V2_E = float(os.getenv("CONT_V2_E", "0.35"))
 CONT_V2_X_BARS = int(os.getenv("CONT_V2_X_BARS", "96"))
-CONT_V2_X_MAX = float(os.getenv("CONT_V2_X_MAX", "4.0"))
-CONT_V2_R_MAX = float(os.getenv("CONT_V2_R_MAX", "3.0"))
-CONT_V2_S_MIN = float(os.getenv("CONT_V2_S_MIN", "0.40"))
-CONT_V2_N_TOP = int(os.getenv("CONT_V2_N_TOP", "5"))
+CONT_V2_X_MAX = float(os.getenv("CONT_V2_X_MAX", "3.0"))
+CONT_V2_R_MAX = float(os.getenv("CONT_V2_R_MAX", "2.5"))
+CONT_V2_S_MIN = float(os.getenv("CONT_V2_S_MIN", "0.55"))
+CONT_V2_N_TOP = int(os.getenv("CONT_V2_N_TOP", "3"))
+# early | balanced | confirmed — snapshot/config only; not part of strategy_id
 CONT_V2_WEIGHT_PROFILE = os.getenv("CONT_V2_WEIGHT_PROFILE", "balanced")
+
+# rsi-reclaim-v1 knobs (specs/strategy-rsi-reclaim-v1.md)
+RSI_RECLAIM_EMA_FAST = int(os.getenv("RSI_RECLAIM_EMA_FAST", "20"))
+RSI_RECLAIM_EMA_MID = int(os.getenv("RSI_RECLAIM_EMA_MID", "50"))
+RSI_RECLAIM_RSI_LEN = int(os.getenv("RSI_RECLAIM_RSI_LEN", "14"))
+RSI_RECLAIM_RSI_MAX = float(os.getenv("RSI_RECLAIM_RSI_MAX", "45.0"))
+RSI_RECLAIM_RSI_MIN = float(os.getenv("RSI_RECLAIM_RSI_MIN", "55.0"))
+RSI_RECLAIM_PULLBACK_TOL = float(os.getenv("RSI_RECLAIM_PULLBACK_TOL", "0.0008"))
+RSI_RECLAIM_BODY_ATR_MIN = float(os.getenv("RSI_RECLAIM_BODY_ATR_MIN", "0.20"))
+RSI_RECLAIM_SEP_MIN = float(os.getenv("RSI_RECLAIM_SEP_MIN", "0.003"))
+RSI_RECLAIM_SEP_MAX = float(os.getenv("RSI_RECLAIM_SEP_MAX", "0.04"))
+RSI_RECLAIM_R_MAX = float(os.getenv("RSI_RECLAIM_R_MAX", "2.5"))
+RSI_RECLAIM_S_MIN = float(os.getenv("RSI_RECLAIM_S_MIN", "0.55"))
+RSI_RECLAIM_N_TOP = int(os.getenv("RSI_RECLAIM_N_TOP", "3"))
+
+# LLM delivery-order booster cap (ADR); does not alter event confidence
+LLM_BOOST_CAP = float(os.getenv("LLM_BOOST_CAP", "0.10"))
 
 # OpenMarket Free enrichment (optional, disabled until key; Bybit Perp only in phase 1)
 OPENMARKET_ENABLED = os.getenv("OPENMARKET_ENABLED", "false").lower() == "true"
@@ -140,9 +234,11 @@ LLM_MAX_INPUT_CHARS = int(os.getenv("LLM_MAX_INPUT_CHARS", "24000"))
 LLM_MAX_OUTPUT_CHARS = int(os.getenv("LLM_MAX_OUTPUT_CHARS", "6000"))
 LLM_MONTHLY_BUDGET_USD = float(os.getenv("LLM_MONTHLY_BUDGET_USD", "0"))
 LLM_INCLUDE_IN_TELEGRAM = os.getenv("LLM_INCLUDE_IN_TELEGRAM", "false").lower() == "true"
+LLM_INCLUDE_IN_DISCORD = os.getenv("LLM_INCLUDE_IN_DISCORD", os.getenv("LLM_INCLUDE_IN_TELEGRAM", "false")).lower() == "true"
 LLM_PRICING_VERSION = os.getenv("LLM_PRICING_VERSION", "openai-chat-2026-08-v1")
 LLM_INPUT_COST_PER_1K_USD = float(os.getenv("LLM_INPUT_COST_PER_1K_USD", "0"))
 LLM_OUTPUT_COST_PER_1K_USD = float(os.getenv("LLM_OUTPUT_COST_PER_1K_USD", "0"))
+# LLM_BOOST_CAP defined with strategy v2 knobs above (delivery priority only)
 
 # Research execution delivery is opt-in per target. Research never receives
 # exchange credentials; these paths are only shared inbox directories.
@@ -192,27 +288,33 @@ BINANCE_FUTURES_BASE_URL = os.getenv("BINANCE_FUTURES_BASE_URL", "https://fapi.b
 def get_db_connection(read_only: bool = False, db_path: str | Path | None = None):
     """
     Returns a connection to the DuckDB database.
-    Note: DuckDB allows only one writer process. If running multiple threads/scripts,
-    we must ensure sequential operations or use write locks.
-    We implement a retry mechanism to handle transient lock contention.
+    Enforces WAL + busy_timeout for better multi-process resilience.
+    Exponential backoff + jitter on contention.
+    Writers should be minimized; prefer read_only=True for non-orchestrator code.
     """
+    import random
     import time
     db_file = Path(db_path or DB_PATH)
     db_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    max_retries = 10
-    retry_delay = 2.0
+
+    max_retries = 12
+    base_delay = 1.5
     for attempt in range(max_retries):
         try:
             conn = duckdb.connect(str(db_file), read_only=read_only)
-            conn.execute("PRAGMA memory_limit='128MB';")
-            conn.execute("PRAGMA threads=2;")
+            # DuckDB 1.x does not support SQLite's busy_timeout / journal_mode pragmas.
+            for statement in ("PRAGMA memory_limit='128MB';", "PRAGMA threads=2;"):
+                try:
+                    conn.execute(statement)
+                except duckdb.Error:
+                    pass
             return conn
         except duckdb.Error as e:
             if attempt == max_retries - 1:
                 raise e
-            print(f"Database connection attempt {attempt + 1} failed (locked/busy). Retrying in {retry_delay}s... Error: {e}")
-            time.sleep(retry_delay)
+            delay = min(30.0, base_delay * (2 ** attempt) + random.uniform(0, 1))
+            print(f"Database connection attempt {attempt + 1} failed (locked/busy). Retrying in {delay:.1f}s... Error: {e}")
+            time.sleep(delay)
 
 
 def init_market_db(db_path: str | Path | None = None):
@@ -638,53 +740,8 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_deep_backfill_due ON deep_backfill_jobs (status, next_retry_at);")
 
-        # Binance-native, immutable observations and qualifying OI rotation events.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_observations (
-                source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                scanner_version VARCHAR, symbol VARCHAR, asset VARCHAR,
-                quote VARCHAR, contract_type VARCHAR, is_eligible BOOLEAN,
-                rejection_reason VARCHAR, volume_24h_usd DOUBLE,
-                open_interest_usd DOUBLE, oi_change_1h_pct DOUBLE,
-                oi_change_1h_usd DOUBLE, price_change_1h DOUBLE,
-                volume_1h_usd DOUBLE, volume_anomaly DOUBLE,
-                oi_spike_percentile DOUBLE, observed_at TIMESTAMP WITH TIME ZONE,
-                PRIMARY KEY (source, completed_interval_at, scanner_version, symbol)
-            );
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_events (
-                source VARCHAR, asset VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                scanner_version VARCHAR, symbol VARCHAR, rank INTEGER,
-                metrics_json VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
-                PRIMARY KEY (source, asset, completed_interval_at, scanner_version)
-            );
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_watchlist_history (
-                source VARCHAR, asset VARCHAR, symbol VARCHAR,
-                observed_at TIMESTAMP WITH TIME ZONE, state VARCHAR,
-                expires_at TIMESTAMP WITH TIME ZONE, deep_backfill_required BOOLEAN,
-                overlap_annotated BOOLEAN, PRIMARY KEY (source, asset, observed_at)
-            );
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_observations_ts ON binance_oi_rotation_observations (completed_interval_at, symbol);")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_raw_oi_history (
-                source VARCHAR, symbol VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
-                open_interest_usd DOUBLE, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                PRIMARY KEY (source, symbol, observed_at)
-            );
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_raw_oi_history_interval ON binance_oi_rotation_raw_oi_history (completed_interval_at, symbol);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_watchlist_ts ON binance_oi_rotation_watchlist_history (asset, observed_at);")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_scans (
-                source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                scanner_version VARCHAR, status VARCHAR, completed_at TIMESTAMP WITH TIME ZONE,
-                PRIMARY KEY (source, completed_interval_at, scanner_version)
-            );
-        """)
+        # Binance OI tables moved to dedicated BINANCE_OI_DB_PATH (see init_binance_oi_db)
+        # to reduce lock contention with main market data.
 
         # Create regime_signals table (HMM + dual VWAP daily signals)
         conn.execute("""

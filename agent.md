@@ -32,7 +32,7 @@ The downstream engine owns:
 | Process | Owns | Cadence |
 | --- | --- | --- |
 | `orchestrator` | Ingestion, discovery, backfill, market-data retention, regime and strategy evaluation | 15-minute loop; discovery scans hourly |
-| `signal-publisher` | Alpha-event persistence, optional research coordination, Telegram and configured execution-inbox delivery | Every 30 seconds |
+| `signal-publisher` | Alpha-event persistence, optional research coordination, Telegram + optional Discord webhook, and configured execution-inbox delivery | Every 30 seconds |
 
 The orchestrator is the only writer of `DB_PATH`, the raw-market database. The publisher is the only writer of `ALPHA_DB_PATH`, the alpha-event ledger. They must be distinct files. Do not run standalone evaluators or duplicate PM2/manual instances against these databases.
 
@@ -60,8 +60,9 @@ Current strategy families remain separate hypotheses:
 - `accumulation_base`: v1 legacy EMA99 pullback; **v2** (`accumulation-base-v2`) 1h compression + limit at 1h EMA99 with confluence score.
 - `impulse_ignition`: v1 compressed pre-breakout; **v2** (`impulse-ignition-v2`) armed breakout of 1h base lid (not chase after breach).
 - `continuation_breakout`: v1 balanced preset; **v2** (`continuation-breakout-v2`) 4h trend + 1h flag breakout (`armed_flag_breakout`).
+- `continuation_pullback`: **`rsi-reclaim-v1`** — 4h bias + 1h EMA200 mild extension + 15m RSI pullback/turn + fast-EMA touch/reclaim (`confirmed_rsi_reclaim`). Opt-in via `STRATEGY_ENABLED_IDS` (not in default allowlist).
 
-v2 plugins share the confluence scoring ADR (`confidence_status=uncalibrated`; LLM is post-emit booster only). Enable via `STRATEGY_ENABLED_IDS` (defaults include v1+v2 in parallel).
+v2 plugins (and rsi-reclaim-v1) share the confluence scoring ADR (`confidence_status=uncalibrated`; LLM is post-emit booster only). Enable via `STRATEGY_ENABLED_IDS` (defaults include v1+v2 in parallel).
 
 The HMM plus dual-VWAP evaluator provides macro context. Its historical results are not proof of alpha and must not be represented as calibrated or execution-authorizing.
 
@@ -79,7 +80,7 @@ invalidation_price, targets, feature_snapshot, dedupe_key
 
 `confidence` is a score-derived research value until it has been calibrated out of sample. Feature snapshots are immutable. Event statuses are `active`, `expired`, and `invalidated`.
 
-The publisher validates and persists an event before attempting delivery. `alpha_events` is authoritative; `signal_deliveries` records Telegram attempts and bounded retry state. Telegram failure must never delete or duplicate an event.
+The publisher validates and persists an event before attempting delivery. `alpha_events` is authoritative; `signal_deliveries` records per-channel attempts (`telegram`, `discord`) and bounded retry state. One channel failing must never delete, duplicate, or block the other. Optional Discord alpha delivery uses `DISCORD_ALPHA_WEBHOOK_URL`. Binance OI rotation posts 1h digests (and multi-hour digests every 6 completed hours) via `DISCORD_OI_WEBHOOK_URL` (falls back to the alpha webhook) after each completed scan.
 
 ## Optional Research and Bot Delivery
 

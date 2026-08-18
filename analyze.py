@@ -4,18 +4,26 @@ from datetime import datetime, timezone, timedelta
 import config
 
 def get_futures_summary(conn, underlying: str) -> dict:
-    """Computes futures metrics from the futures_data table."""
+    """Computes futures metrics from source_observations (post futures_data drop)."""
     # We want the latest record and a record from 24h ago
     now = datetime.now(timezone.utc)
     one_day_ago = now - timedelta(days=1)
     
     # 1. Fetch latest record
     latest_df = conn.execute(f"""
-        SELECT timestamp, open_interest, funding_rate, predicted_funding,
-               long_short_ratio, close, open, high, low, volume
-        FROM futures_data
-        WHERE underlying = '{underlying}'
-        ORDER BY timestamp DESC
+        SELECT source_end as timestamp,
+               json_extract(payload_json, '$.open_interest')::DOUBLE as open_interest,
+               json_extract(payload_json, '$.funding_rate')::DOUBLE as funding_rate,
+               json_extract(payload_json, '$.predicted_funding')::DOUBLE as predicted_funding,
+               json_extract(payload_json, '$.long_short_ratio')::DOUBLE as long_short_ratio,
+               json_extract(payload_json, '$.close')::DOUBLE as close,
+               json_extract(payload_json, '$.open')::DOUBLE as open,
+               json_extract(payload_json, '$.high')::DOUBLE as high,
+               json_extract(payload_json, '$.low')::DOUBLE as low,
+               json_extract(payload_json, '$.volume')::DOUBLE as volume
+        FROM source_observations
+        WHERE asset = '{underlying}'
+        ORDER BY source_end DESC
         LIMIT 1
     """).pl()
     
@@ -26,21 +34,23 @@ def get_futures_summary(conn, underlying: str) -> dict:
     
     # 2. Fetch record from 24h ago (or closest to it)
     past_df = conn.execute(f"""
-        SELECT open_interest, close
-        FROM futures_data
-        WHERE underlying = '{underlying}'
-          AND timestamp <= ?
-        ORDER BY timestamp DESC
+        SELECT json_extract(payload_json, '$.open_interest')::DOUBLE as open_interest,
+               json_extract(payload_json, '$.close')::DOUBLE as close
+        FROM source_observations
+        WHERE asset = '{underlying}'
+          AND source_end <= ?
+        ORDER BY source_end DESC
         LIMIT 1
     """, (one_day_ago,)).pl()
     
     if past_df.is_empty():
         # Fall back to the absolute oldest record in the database for the initial launch day
         past_df = conn.execute(f"""
-            SELECT open_interest, close
-            FROM futures_data
-            WHERE underlying = '{underlying}'
-            ORDER BY timestamp ASC
+            SELECT json_extract(payload_json, '$.open_interest')::DOUBLE as open_interest,
+                   json_extract(payload_json, '$.close')::DOUBLE as close
+            FROM source_observations
+            WHERE asset = '{underlying}'
+            ORDER BY source_end ASC
             LIMIT 1
         """).pl()
         
@@ -53,10 +63,11 @@ def get_futures_summary(conn, underlying: str) -> dict:
         
     # 3. Fetch accumulated liquidations in last 24h
     liq_df = conn.execute(f"""
-        SELECT SUM(liquidation_long) as total_long, SUM(liquidation_short) as total_short
-        FROM futures_data
-        WHERE underlying = '{underlying}'
-          AND timestamp >= ?
+        SELECT SUM(json_extract(payload_json, '$.liquidation_long')::DOUBLE) as total_long,
+               SUM(json_extract(payload_json, '$.liquidation_short')::DOUBLE) as total_short
+        FROM source_observations
+        WHERE asset = '{underlying}'
+          AND source_end >= ?
     """, (one_day_ago,)).pl()
     
     liq_long = 0.0
@@ -68,10 +79,11 @@ def get_futures_summary(conn, underlying: str) -> dict:
         
     # 4. Fetch 24h High and Low
     range_df = conn.execute(f"""
-        SELECT MAX(high) as high_24h, MIN(low) as low_24h
-        FROM futures_data
-        WHERE underlying = '{underlying}'
-          AND timestamp >= ?
+        SELECT MAX(json_extract(payload_json, '$.high')::DOUBLE) as high_24h,
+               MIN(json_extract(payload_json, '$.low')::DOUBLE) as low_24h
+        FROM source_observations
+        WHERE asset = '{underlying}'
+          AND source_end >= ?
     """, (one_day_ago,)).pl()
     
     high_24h = latest["close"]
@@ -104,11 +116,11 @@ def get_futures_summary(conn, underlying: str) -> dict:
 def get_structural_trend(conn, underlying: str, timeframe: str = "4h", lookback_days: int = 30) -> dict:
     """Computes the structural trend (EMA26 vs EMA99) on a higher timeframe (e.g., 4h or 1h)."""
     query = f"""
-        SELECT timestamp, close
-        FROM futures_data
-        WHERE underlying = '{underlying}'
-          AND timestamp >= CURRENT_TIMESTAMP - INTERVAL '{lookback_days} days'
-        ORDER BY timestamp ASC
+        SELECT source_end as timestamp, json_extract(payload_json, '$.close')::DOUBLE as close
+        FROM source_observations
+        WHERE asset = '{underlying}'
+          AND source_end >= CURRENT_TIMESTAMP - INTERVAL '{lookback_days} days'
+        ORDER BY source_end ASC
     """
     df = conn.execute(query).pl()
     if df.is_empty():
@@ -139,7 +151,7 @@ def get_structural_trend(conn, underlying: str, timeframe: str = "4h", lookback_
 def get_options_summary(conn, underlying: str) -> dict:
     """Computes options metrics (ATM IV, Skew, Term Structure, Max Pain) from option_chains."""
     # 1. Get spot price from latest futures data
-    spot_df = conn.execute(f"SELECT close FROM futures_data WHERE underlying = '{underlying}' ORDER BY timestamp DESC LIMIT 1").pl()
+    spot_df = conn.execute(f"SELECT json_extract(payload_json, '$.close')::DOUBLE as close FROM source_observations WHERE asset = '{underlying}' ORDER BY source_end DESC LIMIT 1").pl()
     if spot_df.is_empty():
         return {}
     spot = spot_df.to_dicts()[0]["close"]
@@ -385,12 +397,17 @@ def get_profile_summary(conn, underlying: str, lookback_days: int = 1) -> dict:
     """Computes TPO and Volume Profile metrics, including EMA26/99 calculations, nearness indicators, and profile shapes using Polars."""
     # 1. Fetch OHLCV data from DuckDB directly into Polars with 3 extra days for EMA warm-up
     query = f"""
-        SELECT timestamp, open, high, low, close, volume
-        FROM futures_data
-        WHERE underlying = '{underlying}'
-          AND low > 0.0
-          AND timestamp >= CURRENT_TIMESTAMP - INTERVAL '{lookback_days + 3} days'
-        ORDER BY timestamp ASC
+        SELECT source_end as timestamp,
+               json_extract(payload_json, '$.open')::DOUBLE as open,
+               json_extract(payload_json, '$.high')::DOUBLE as high,
+               json_extract(payload_json, '$.low')::DOUBLE as low,
+               json_extract(payload_json, '$.close')::DOUBLE as close,
+               json_extract(payload_json, '$.volume')::DOUBLE as volume
+        FROM source_observations
+        WHERE asset = '{underlying}'
+          AND json_extract(payload_json, '$.low')::DOUBLE > 0.0
+          AND source_end >= CURRENT_TIMESTAMP - INTERVAL '{lookback_days + 3} days'
+        ORDER BY source_end ASC
     """
     df = conn.execute(query).pl()
     

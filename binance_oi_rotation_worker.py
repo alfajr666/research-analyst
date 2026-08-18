@@ -12,8 +12,11 @@ from binance_oi_rotation_scanner import SOURCE, completed_hour, run_scanner
 
 def run_due_scan(now: datetime | None = None) -> bool:
     """Run only when the latest completed hour has no successful scan record."""
+    if not config.BINANCE_OI_ROTATION_ENABLED:
+        return False
     interval = completed_hour(now)
-    conn = config.get_db_connection(read_only=True)
+    config.init_binance_oi_db()  # ensure schema even for read
+    conn = config.get_db_connection(read_only=True, db_path=config.BINANCE_OI_DB_PATH)
     try:
         complete = conn.execute("""
             SELECT 1 FROM binance_oi_rotation_scans

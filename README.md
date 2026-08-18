@@ -162,7 +162,7 @@ Run a one-off ingestion, discovery, and evaluation cycle with immediate event pu
 | Symptom | Check |
 | --- | --- |
 | No ingestion or discovery | `COINANALYZE_API_KEY`, then `pm2 logs orchestrator` |
-| Selected asset has no event | `discovery_watchlist_history`, `deep_backfill_jobs`, fresh completed `futures_data`, then evaluator outbox files |
+| Selected asset has no event | `discovery_watchlist_history`, `deep_backfill_jobs`, fresh completed `source_observations`, then evaluator outbox files |
 | No Telegram signal | Credentials, `alpha_events`, `signal_deliveries`, then `pm2 logs signal-publisher` |
 | No bot-inbox item | Target enablement/allowlist, event shape and expiry, then `execution_deliveries` |
 | DuckDB lock error | Stop duplicate processes; retain one market-data writer and one separate publisher-ledger writer |

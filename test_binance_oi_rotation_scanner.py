@@ -14,6 +14,7 @@ from binance_oi_rotation_scanner import (
     qualify_and_rank,
     run_scanner,
 )
+from binance_oi_rotation_worker import run_due_scan
 
 
 INTERVAL = datetime(2026, 8, 16, 11, tzinfo=timezone.utc)
@@ -68,6 +69,13 @@ class BinanceOIRotationDiscoveryTests(unittest.TestCase):
 
     def test_completed_hour_never_uses_the_in_progress_bar(self):
         self.assertEqual(completed_hour(datetime(2026, 8, 16, 12, 59, tzinfo=timezone.utc)), INTERVAL)
+
+    def test_disabled_rotation_scanner_does_not_open_the_database(self):
+        with patch.object(config, "BINANCE_OI_ROTATION_ENABLED", False), patch(
+            "binance_oi_rotation_worker.config.get_db_connection"
+        ) as get_connection:
+            self.assertFalse(run_due_scan(INTERVAL + timedelta(hours=1)))
+        get_connection.assert_not_called()
 
     def test_liquidity_data_quality_and_feature_gates(self):
         oi, candles = _history()

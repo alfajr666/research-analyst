@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -23,10 +24,12 @@ class OperationalMetricsTests(unittest.TestCase):
         orchestrator._start_pipeline_run(run_id, datetime.now(timezone.utc))
         connection = config.get_db_connection()
         try:
-            connection.execute("""
-                INSERT INTO futures_data (timestamp, underlying, symbol, close)
-                VALUES (?, 'SOL', 'SOLUSDT_PERP.A', 100)
-            """, (datetime.now(timezone.utc),))
+            ts = datetime.now(timezone.utc)
+            payload = json.dumps({"close": 100})
+            connection.execute(
+                "INSERT OR IGNORE INTO source_observations (observation_id, source, venue, native_symbol, asset, market_kind, interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json) VALUES (?, 'coinalyze', 'agg', 'SOLUSDT_PERP.A', 'SOL', 'perpetual', '15m', ?, ?, ?, 'live', ?)",
+                (f"op-{ts.isoformat()}", ts, ts, ts, payload)
+            )
         finally:
             connection.close()
 

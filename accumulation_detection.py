@@ -24,10 +24,14 @@ def completed_cycle(now: datetime | None = None) -> datetime:
 def get_hourly_buckets(conn, symbol: str, cutoff: datetime) -> list[dict]:
     """Aggregate only completed 15-minute bars into completed hourly buckets."""
     rows = conn.execute("""
-        SELECT timestamp, volume, close, open_interest
-        FROM futures_data
-        WHERE symbol = ? AND timestamp < ? AND timestamp >= ? - INTERVAL '30 hours'
-        ORDER BY timestamp ASC
+        SELECT 
+            source_end as timestamp,
+            json_extract(payload_json, '$.volume')::DOUBLE as volume,
+            json_extract(payload_json, '$.close')::DOUBLE as close,
+            json_extract(payload_json, '$.open_interest')::DOUBLE as open_interest
+        FROM source_observations
+        WHERE native_symbol = ? AND source_end < ? AND source_end >= ? - INTERVAL '30 hours'
+        ORDER BY source_end ASC
     """, (symbol, cutoff, cutoff)).fetchall()
     buckets: OrderedDict[datetime, dict] = OrderedDict()
     for timestamp, volume, close, open_interest in rows:
@@ -67,10 +71,13 @@ def check_accumulation(hourly: list[dict]) -> dict | None:
 def confluence(conn, symbol: str, cutoff: datetime) -> dict | None:
     """Return EMA pullback and candle confirmation from fresh completed bars."""
     rows = conn.execute("""
-        SELECT timestamp, open, close
-        FROM futures_data
-        WHERE symbol = ? AND timestamp < ? AND timestamp >= ? - INTERVAL '7 days'
-        ORDER BY timestamp ASC
+        SELECT 
+            source_end as timestamp,
+            json_extract(payload_json, '$.open')::DOUBLE as open,
+            json_extract(payload_json, '$.close')::DOUBLE as close
+        FROM source_observations
+        WHERE native_symbol = ? AND source_end < ? AND source_end >= ? - INTERVAL '7 days'
+        ORDER BY source_end ASC
     """, (symbol, cutoff, cutoff)).fetchall()
     if len(rows) < 100:
         return None

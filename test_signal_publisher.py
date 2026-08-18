@@ -11,6 +11,7 @@ import duckdb
 
 import config
 from alpha_outbox import dedupe_key
+from discord_format import format_discord_signal
 from signal_publisher import RETRY_BASE_SECONDS, SignalPublisher, format_signal
 
 
@@ -65,7 +66,7 @@ class SignalPublisherTests(unittest.TestCase):
         (self.outbox / f"{payload['dedupe_key']}.json").write_text(json.dumps(payload))
 
     def publisher(self, transport):
-        return SignalPublisher(self.db, self.outbox, transport, now=lambda: self.current_time)
+        return SignalPublisher(self.db, self.outbox, transport, now=lambda: self.current_time, market_db_path=self.db)
 
     def test_default_ledger_is_separate_from_market_data_database(self):
         self.assertNotEqual(Path(config.ALPHA_DB_PATH).resolve(), Path(config.DB_PATH).resolve())
@@ -209,7 +210,7 @@ class SignalPublisherTests(unittest.TestCase):
         self.assertEqual(self.rows("SELECT status FROM alpha_events"), [("expired",)])
 
     def test_expired_outcome_records_target_after_a_triggered_bar(self):
-        payload = event(self.current_time - timedelta(minutes=30), self.current_time - timedelta(minutes=15))
+        payload = event(self.current_time - timedelta(minutes=30), self.current_time + timedelta(minutes=30))
         payload["feature_snapshot"] = {"source_symbol": "SOLUSDT_PERP.A"}
         payload["entry_condition"]["price"] = 100
         payload["invalidation_price"] = 90
@@ -219,32 +220,40 @@ class SignalPublisherTests(unittest.TestCase):
         publisher.run_once()
         connection = duckdb.connect(str(self.db))
         try:
-            connection.executemany("""
-                INSERT INTO futures_data (timestamp, underlying, symbol, open, high, low, close, volume)
-                VALUES (?, 'SOL', 'SOLUSDT_PERP.A', 100, ?, ?, ?, 100)
-            """, [
+            # seed source_observations (sole source post-drop)
+            for ts, h, l, c in [
                 (self.current_time - timedelta(minutes=30), 101, 99, 100),
                 (self.current_time - timedelta(minutes=15), 149, 101, 148),
-            ])
+            ]:
+                payload = json.dumps({"open": 100, "high": h, "low": l, "close": c, "volume": 100})
+                connection.execute(
+                    "INSERT OR IGNORE INTO source_observations (observation_id, source, venue, native_symbol, asset, market_kind, interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json) VALUES (?, 'coinalyze', 'agg', 'SOLUSDT_PERP.A', 'SOL', 'perpetual', '15m', ?, ?, ?, 'live', ?)",
+                    (f"sig-{ts.isoformat()}", ts, ts, ts, payload)
+                )
         finally:
             connection.close()
+        self.current_time += timedelta(minutes=45)  # make it expired for record
+        publisher.now = lambda: self.current_time
         publisher.run_once()
         self.assertEqual(self.rows("SELECT outcome FROM alpha_outcomes"), [("target",)])
 
     def test_same_bar_barrier_crossing_is_not_reported_as_trade_quality(self):
-        payload = event(self.current_time - timedelta(minutes=30), self.current_time - timedelta(minutes=15))
+        payload = event(self.current_time - timedelta(minutes=30), self.current_time + timedelta(minutes=30))
         payload["feature_snapshot"] = {"source_symbol": "SOLUSDT_PERP.A"}
         self.write(payload)
         publisher = self.publisher(FakeTransport())
         publisher.run_once()
         connection = duckdb.connect(str(self.db))
         try:
-            connection.execute("""
-                INSERT INTO futures_data (timestamp, underlying, symbol, open, high, low, close, volume)
-                VALUES (?, 'SOL', 'SOLUSDT_PERP.A', 100, 149, 99, 145, 100)
-            """, (self.current_time - timedelta(minutes=30),))
+            payload = json.dumps({"open": 100, "high": 149, "low": 99, "close": 145, "volume": 100})
+            connection.execute(
+                "INSERT OR IGNORE INTO source_observations (observation_id, source, venue, native_symbol, asset, market_kind, interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json) VALUES (?, 'coinalyze', 'agg', 'SOLUSDT_PERP.A', 'SOL', 'perpetual', '15m', ?, ?, ?, 'live', ?)",
+                (f"sig2-{self.current_time.isoformat()}", self.current_time - timedelta(minutes=30), self.current_time - timedelta(minutes=30), self.current_time - timedelta(minutes=30), payload)
+            )
         finally:
             connection.close()
+        self.current_time += timedelta(minutes=45)
+        publisher.now = lambda: self.current_time
         publisher.run_once()
         self.assertEqual(self.rows("SELECT outcome FROM alpha_outcomes"), [("ambiguous_same_bar",)])
 
@@ -253,6 +262,54 @@ class SignalPublisherTests(unittest.TestCase):
         message = format_signal(payload)
         for value in ("Continuation", "SOL", "LONG", "confirmed_expansion", "67%", "breakout above", "142.7", "148.1, 151", "2026-08-16 11:30 UTC", "2026-08-16 10:30 UTC"):
             self.assertIn(value, message)
+
+    def test_delivers_telegram_and_discord_independently(self):
+        payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
+        self.write(payload)
+        telegram = FakeTransport()
+        discord = FakeTransport()
+        publisher = SignalPublisher(
+            self.db,
+            self.outbox,
+            transports={"telegram": telegram, "discord": discord},
+            now=lambda: self.current_time,
+            market_db_path=self.db,
+        )
+        self.assertEqual(publisher.run_once(), {"persisted": 1, "sent": 2, "failed": 0, "invalid": 0})
+        self.assertEqual(publisher.run_once(), {"persisted": 0, "sent": 0, "failed": 0, "invalid": 0})
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertEqual(len(discord.messages), 1)
+        self.assertIn("ALPHA SIGNAL", telegram.messages[0])
+        self.assertIn("**ALPHA · LONG · SOL**", discord.messages[0])
+        channels = sorted(row[0] for row in self.rows("SELECT channel FROM signal_deliveries"))
+        self.assertEqual(channels, ["discord", "telegram"])
+
+    def test_discord_failure_does_not_block_telegram(self):
+        payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
+        self.write(payload)
+        telegram = FakeTransport()
+        discord = FakeTransport(failures=1)
+        publisher = SignalPublisher(
+            self.db,
+            self.outbox,
+            transports={"telegram": telegram, "discord": discord},
+            now=lambda: self.current_time,
+            market_db_path=self.db,
+        )
+        result = publisher.run_once()
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertEqual(self.rows(
+            "SELECT channel, status FROM signal_deliveries ORDER BY channel"
+        ), [("discord", "failed"), ("telegram", "sent")])
+
+    def test_discord_format_matches_style_a(self):
+        payload = event(self.current_time, self.current_time + timedelta(hours=1))
+        message = format_discord_signal(payload)
+        self.assertIn("**ALPHA · LONG · SOL**", message)
+        self.assertIn("Continuation", message)
+        self.assertIn("**67%**", message)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,9 @@ import time
 from datetime import datetime, timezone
 
 import config
-from ingest_coinalyze import fetch_coinalyze_data_batched, load_symbols
+from api_clients.coinalyze import CoinAnalyzeClient
+
+_coin_client = CoinAnalyzeClient()
 
 
 def _timestamp(raw_timestamp) -> datetime:
@@ -64,9 +66,9 @@ def bootstrap(symbols: list[str], days: int):
         "to": str(now_epoch),
     }
     print(f"Fetching {days} days of 15m OHLCV, OI, and funding for {len(symbols)} symbols...")
-    ohlcv = _ohlcv_map(fetch_coinalyze_data_batched("ohlcv-history", params, batch_size=20))
-    oi = _history_map(fetch_coinalyze_data_batched("open-interest-history", params, batch_size=20))
-    funding = _history_map(fetch_coinalyze_data_batched("funding-rate-history", params, batch_size=20))
+    ohlcv = _ohlcv_map(_coin_client.fetch_batched("ohlcv-history", symbols, other_params={"interval": "15min", "from": str(from_epoch), "to": str(now_epoch)}, cutoff_id="bootstrap"))
+    oi = _history_map(_coin_client.fetch_batched("open-interest-history", symbols, other_params={"interval": "15min", "from": str(from_epoch), "to": str(now_epoch)}, cutoff_id="bootstrap"))
+    funding = _history_map(_coin_client.fetch_batched("funding-rate-history", symbols, other_params={"interval": "15min", "from": str(from_epoch), "to": str(now_epoch)}, cutoff_id="bootstrap"))
 
     rows = []
     for symbol, candles in ohlcv.items():
@@ -93,18 +95,17 @@ def bootstrap(symbols: list[str], days: int):
 
     conn = config.get_db_connection(read_only=False)
     try:
-        symbols_sql = ", ".join("?" for _ in symbols)
-        conn.execute(
-            f"DELETE FROM futures_data WHERE symbol IN ({symbols_sql}) AND timestamp >= ?",
-            [*symbols, datetime.fromtimestamp(from_epoch, tz=timezone.utc)],
-        )
-        conn.executemany("""
-            INSERT INTO futures_data (
-                timestamp, underlying, symbol, open_interest, funding_rate, predicted_funding,
-                liquidation_long, liquidation_short, long_short_ratio,
-                open, high, low, close, volume
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
+        # Bootstrap now writes ONLY to source_observations (legacy futures_data dropped)
+        for row in rows:
+            ts, und, sym, _, _, _, _, _, _, o, h, l, c, v = row
+            obs_id = f"coinalyze:{sym}:{ts.isoformat()}"
+            payload = {"open": o, "high": h, "low": l, "close": c, "volume": v, "open_interest": row[3], "funding_rate": row[4]}
+            conn.execute("""
+                INSERT OR IGNORE INTO source_observations (
+                    observation_id, source, venue, native_symbol, asset, market_kind, interval,
+                    source_start, source_end, retrieved_at, retrieval_kind, payload_json
+                ) VALUES (?, 'coinalyze', 'aggregate_perp', ?, ?, 'perpetual', '15m', ?, ?, ?, 'bootstrap', ?)
+            """, (obs_id, sym, und, ts, ts, ts, json.dumps(payload, default=str)))
         conn.commit()
     finally:
         conn.close()

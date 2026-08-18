@@ -40,15 +40,15 @@ PLUGIN_VERSION = "v2"
 
 @dataclass(frozen=True)
 class IgnV2Config:
-    n: int = 16
-    k: float = 3.0
-    p: int = 24
-    c_ratio: float = 0.90
-    g: float = 0.35
-    e: float = 0.50
-    r_max: float = 3.0
-    s_min: float = 0.40
-    n_top: int = 5
+    n: int = 12
+    k: float = 2.0
+    p: int = 20
+    c_ratio: float = 0.85
+    g: float = 0.25
+    e: float = 0.35
+    r_max: float = 2.5
+    s_min: float = 0.55
+    n_top: int = 3
     target_r: float = 1.5
     horizon_hours: int = 4
     weights: dict[str, float] | None = None
@@ -77,15 +77,15 @@ class IgnV2Config:
 
 def load_config() -> IgnV2Config:
     return IgnV2Config(
-        n=int(getattr(config, "IGN_V2_N", 16)),
-        k=float(getattr(config, "IGN_V2_K", 3.0)),
-        p=int(getattr(config, "IGN_V2_P", 24)),
-        c_ratio=float(getattr(config, "IGN_V2_C_RATIO", 0.90)),
-        g=float(getattr(config, "IGN_V2_G", 0.35)),
-        e=float(getattr(config, "IGN_V2_E", 0.50)),
-        r_max=float(getattr(config, "IGN_V2_R_MAX", 3.0)),
-        s_min=float(getattr(config, "IGN_V2_S_MIN", 0.40)),
-        n_top=int(getattr(config, "IGN_V2_N_TOP", 5)),
+        n=int(getattr(config, "IGN_V2_N", 12)),
+        k=float(getattr(config, "IGN_V2_K", 2.0)),
+        p=int(getattr(config, "IGN_V2_P", 20)),
+        c_ratio=float(getattr(config, "IGN_V2_C_RATIO", 0.85)),
+        g=float(getattr(config, "IGN_V2_G", 0.25)),
+        e=float(getattr(config, "IGN_V2_E", 0.35)),
+        r_max=float(getattr(config, "IGN_V2_R_MAX", 2.5)),
+        s_min=float(getattr(config, "IGN_V2_S_MIN", 0.55)),
+        n_top=int(getattr(config, "IGN_V2_N_TOP", 3)),
     )
 
 

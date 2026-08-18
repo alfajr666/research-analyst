@@ -25,6 +25,8 @@ module.exports = {
       max_restarts: 10,
       restart_delay: 5000,
     },
+    // Binance OI rotation is owned by the orchestrator (single market-DB writer).
+    // The feed file is still published for bot consumption; see orchestrator.py.
     // {
     //   name: "telegram-bot",
     //   interpreter: "./venv/bin/python",

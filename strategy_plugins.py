@@ -23,6 +23,7 @@ KNOWN_STRATEGIES = {
     "accumulation-base-v2",
     "impulse-ignition-v2",
     "continuation-breakout-v2",
+    "rsi-reclaim-v1",
 }
 
 
@@ -112,6 +113,7 @@ def _load_builtin_plugins():
     from accumulation_base_v2 import run_plugin as acc_v2_run
     from impulse_ignition_v2 import run_plugin as ign_v2_run
     from continuation_breakout_v2 import run_plugin as cont_v2_run
+    from rsi_reclaim_v1 import run_plugin as rsi_reclaim_run
 
     register(StrategyPlugin("accumulation-base-v1", "v1", ("bars_15m",), ("fvg_1h",), _acc_run))
     register(StrategyPlugin("impulse-ignition-v1", "v1", ("bars_15m",), ("vp",), _ign_run))
@@ -119,6 +121,7 @@ def _load_builtin_plugins():
     register(StrategyPlugin("accumulation-base-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), acc_v2_run))
     register(StrategyPlugin("impulse-ignition-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), ign_v2_run))
     register(StrategyPlugin("continuation-breakout-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), cont_v2_run))
+    register(StrategyPlugin("rsi-reclaim-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), rsi_reclaim_run))
 
 
 _load_builtin_plugins()

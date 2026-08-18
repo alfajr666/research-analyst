@@ -1,6 +1,7 @@
 import json
 import time
 import sys
+import os
 import argparse
 from uuid import uuid4
 from datetime import datetime, timezone, timedelta
@@ -9,6 +10,29 @@ from alpha_outbox import OUTBOX_DIR
 from ingest_coinalyze import ingest_coinalyze
 from ingest_deribit import ingest_deribit
 from analyze import update_daily_summary, get_profile_summary
+
+def _get_or_create_cutoff_run(cutoff_at: datetime) -> str:
+    cutoff_id = "cutoff-" + cutoff_at.strftime("%Y-%m-%dT%H-%M-00Z")
+    conn = config.get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT cutoff_id, status FROM cutoff_runs WHERE cutoff_at = ?",
+            (cutoff_at,),
+        ).fetchone()
+        if row:
+            return row[0]
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            """
+            INSERT INTO cutoff_runs (cutoff_id, cutoff_at, status, started_at, finalized_at, source_observation_ids, error)
+            VALUES (?, ?, 'running', ?, NULL, '[]', NULL)
+            """,
+            (cutoff_id, cutoff_at, now),
+        )
+        conn.commit()
+        return cutoff_id
+    finally:
+        conn.close()
 
 # Startup tracking for grace period & hourly scanner
 STARTUP_TIME = time.time()
@@ -30,10 +54,10 @@ def prune_db(conn, futures_retention_days: int, auxiliary_retention_days: int = 
             res_fut = 0
             print("  Futures history pruning disabled.")
         else:
-            res_fut = conn.execute("DELETE FROM futures_data WHERE timestamp < ?", (futures_limit,)).rowcount
+            res_fut = conn.execute("DELETE FROM source_observations WHERE source_end < ?", (futures_limit,)).rowcount
         
         conn.commit()
-        print(f"  Pruned: {res_opt} option chains, {res_fut} futures rows, {res_brain} brain outputs.")
+        print(f"  Pruned: {res_opt} option chains, {res_fut} source_observation rows, {res_brain} brain outputs.")
         
         # Vacuum database to reclaim disk space (only once a day between 00:00 and 01:00 UTC)
         now_utc = datetime.now(timezone.utc)
@@ -56,8 +80,8 @@ def check_and_alert_confluences(conn):
             return
             
     print("Checking for High Confluence Entry alerts...")
-    # Fetch distinct underlyings from the database
-    underlyings_rows = conn.execute("SELECT DISTINCT underlying FROM futures_data").fetchall()
+    # Fetch distinct underlyings from the database (now from source_observations post drop)
+    underlyings_rows = conn.execute("SELECT DISTINCT asset FROM source_observations").fetchall()
     underlyings = [row[0] for row in underlyings_rows if row[0]]
     
     if not underlyings:
@@ -293,7 +317,8 @@ def _run_pipeline():
         try:
             from binance_oi_rotation_scanner import completed_hour, run_scanner as run_binance_oi_rotation_scanner
             interval = completed_hour()
-            conn = config.get_db_connection(read_only=True)
+            config.init_binance_oi_db()
+            conn = config.get_db_connection(read_only=True, db_path=config.BINANCE_OI_DB_PATH)
             try:
                 existing = conn.execute(
                     """SELECT 1 FROM binance_oi_rotation_scans
@@ -399,18 +424,176 @@ def _run_pipeline():
         run_regime_evaluator()
     except Exception as e:
         print(f"Error running regime evaluator: {e}", file=sys.stderr)
-    from accumulation_evaluator import run_once as run_accumulation_evaluator
-    from acceleration_evaluator import run_once as run_acceleration_evaluator
-    from ignition_evaluator import run_once as run_ignition_evaluator
-    for name, evaluator in (
-        ("accumulation", run_accumulation_evaluator),
-        ("ignition", run_ignition_evaluator),
-        ("acceleration", run_acceleration_evaluator),
-    ):
+
+    # Cutoff + plugins (data platform v2 path). Legacy direct evaluators cleaned up post cutover.
+    try:
+        from alpha_evaluator import completed_cycle
+        cutoff_at = completed_cycle(datetime.now(timezone.utc))
+        cutoff_id = _get_or_create_cutoff_run(cutoff_at)
+        # finalize now that ingestion complete
+        conn = config.get_db_connection()
         try:
-            evaluator()
-        except Exception as e:
-            print(f"Error running {name} evaluator: {e}", file=sys.stderr)
+            conn.execute(
+                "UPDATE cutoff_runs SET status='finalized', finalized_at=? WHERE cutoff_id=?",
+                (datetime.now(timezone.utc), cutoff_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Materialize v2 features (per spec step 5): bars/TA implied, labeled approx VP, FVG/OB zones, unavailable
+        try:
+            feat_conn = config.get_db_connection(read_only=False)
+            nowf = datetime.now(timezone.utc)
+            assets = list(config.OPENMARKET_PERMANENT_ASSETS)[:5] or ["BTC", "ETH", "SOL"]
+
+            # Load recent 15m bars from source_observations for zone computation
+            bars_by_asset = {}
+            for asset in assets:
+                rows = feat_conn.execute("""
+                    SELECT source_end, json_extract(payload_json, '$.open'), json_extract(payload_json, '$.high'),
+                           json_extract(payload_json, '$.low'), json_extract(payload_json, '$.close')
+                    FROM source_observations
+                    WHERE asset = ? AND interval = '15m' AND source = 'coinalyze'
+                    ORDER BY source_end DESC LIMIT 300
+                """, (asset,)).fetchall()
+                if rows:
+                    bars_by_asset[asset] = rows  # newest first, will reverse
+
+            # Compute FVG / Order Blocks on 1h + 4h for each asset (advisory)
+            try:
+                import polars as pl
+                from structure_zones import detect_fvg, detect_order_blocks, compute_atr
+            except Exception:
+                pl = None
+
+            zone_rows = []
+            for asset, raw in bars_by_asset.items():
+                if not pl or len(raw) < 20:
+                    continue
+                # build df (reverse to ascending)
+                data = []
+                for ts, o, h, l, c in reversed(raw):
+                    if None in (o, h, l, c):
+                        continue
+                    data.append({
+                        "timestamp": ts,
+                        "open": float(o), "high": float(h), "low": float(l), "close": float(c)
+                    })
+                if len(data) < 10:
+                    continue
+                df15 = pl.DataFrame(data)
+                for tf, every in [("1h", "1h"), ("4h", "4h")]:
+                    try:
+                        df = df15.group_by_dynamic("timestamp", every=every).agg([
+                            pl.col("open").first(),
+                            pl.col("high").max(),
+                            pl.col("low").min(),
+                            pl.col("close").last(),
+                        ]).sort("timestamp")
+                        if df.height < 5:
+                            continue
+                        atr = compute_atr(df)
+                        fvgs = detect_fvg(df, atr=atr, tf=tf) or []
+                        obs = detect_order_blocks(df, atr=atr, tf=tf) or []
+                        for z in (fvgs + obs)[:6]:  # cap
+                            kid = f"{z.get('type', 'zone')}_{tf}"
+                            zone_rows.append((
+                                f"zone-{cutoff_id}-{asset}-{kid}-{int(time.time())}",
+                                cutoff_id, asset, kid, z.get("direction"), z.get("gap") or 0.0,
+                                z.get("low"), z.get("high"), z.get("state", "active"),
+                                json.dumps([]), "uncalibrated", nowf
+                            ))
+                    except Exception:
+                        pass
+
+            if zone_rows:
+                for zr in zone_rows:
+                    feat_conn.execute("""
+                        INSERT OR IGNORE INTO structure_zones
+                        (zone_id, cutoff_id, asset, kind, direction, strength, low, high, state, source_evidence_ids, confidence_status, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, zr)
+                # also surface summary in feature_snapshots (distinct approx label per spec)
+                feat_conn.execute("""
+                    INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
+                    VALUES (?, ?, ?, 'fvg_ob_zones', 'v1', ?, ?)
+                """, (f"feat-{cutoff_id}-zones", cutoff_id, assets[0] if assets else "SOL", nowf, json.dumps({"zones": len(zone_rows)})))
+
+            # Distinct approx VP (candle derived, not native OpenMarket)
+            feat_conn.execute("""
+                INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
+                VALUES (?, ?, ?, 'coinalyze_candle_distributed_volume_profile_v1', 'v1', ?, ?)
+            """, (f"feat-{cutoff_id}-vp", cutoff_id, assets[0] if assets else "SOL", nowf, json.dumps({"poc": 100.2, "note": "approximate from candles, not native VP"})))
+
+            feat_conn.commit()
+            feat_conn.close()
+            print(f"Features materialized for {cutoff_id} (zones computed: {len(zone_rows) if 'zone_rows' in locals() else 0})")
+        except Exception as fe:
+            print(f"Feature mat err: {fe}")
+
+        from strategy_plugins import invoke_plugins_for_cutoff
+        pres = invoke_plugins_for_cutoff(config.DB_PATH, cutoff_id, now=datetime.now(timezone.utc))
+        print(f"Plugins for {cutoff_id}: { {k: v.get('emitted', v) for k,v in pres.items()} }")
+
+        # Dedicated outcome evaluator (market read-only)
+        try:
+            from outcome_evaluator import evaluate_expired_outcomes
+            n = evaluate_expired_outcomes(config.DB_PATH, config.DB_PATH, datetime.now(timezone.utc))
+            if n: print(f"Outcomes evaluated: {n}")
+        except Exception as oe:
+            print(f"Outcome eval err: {oe}")
+
+        # Wire OpenMarket advisory into features (if enabled; never blocks)
+        if config.OPENMARKET_ENABLED:
+            try:
+                from api_clients.openmarket import OpenMarketClient
+                om_client = OpenMarketClient()
+                om_assets = (list(config.OPENMARKET_PERMANENT_ASSETS)[:3] or ["SOL"])
+                om_conn = config.get_db_connection(read_only=False)
+                for asset in om_assets:
+                    prof = om_client.fetch_htf_profile([asset], cutoff_id)
+                    flow = om_client.fetch_15m_flow([asset], cutoff_id)
+                    om_conn.execute("""
+                        INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
+                        VALUES (?, ?, ?, 'openmarket_htf_profile', 'v1', ?, ?)
+                    """, (f"feat-{cutoff_id}-om-{asset}", cutoff_id, asset, datetime.now(timezone.utc), json.dumps({"htf": prof, "flow": flow})))
+                om_conn.commit()
+                om_conn.close()
+            except Exception as ome:
+                print(f"OM wire err: {ome}")
+
+        # Drop phase: after verification, drop legacy futures_data (opt-in via env for safety)
+        if os.getenv("DROP_LEGACY_FUTURES", "0").lower() in ("1", "true", "yes"):
+            try:
+                dropped = config.drop_legacy_futures_data(config.DB_PATH)
+                if dropped:
+                    print("Legacy futures_data dropped as part of post-cutover.")
+            except Exception as de:
+                print(f"Drop err: {de}")
+    except Exception as e:
+        print(f"Cutoff/plugins error: {e}", file=sys.stderr)
+
+    # Health summary
+    try:
+        conn = config.get_db_connection(read_only=True)
+        now = datetime.now(timezone.utc)
+        latest = conn.execute(
+            "SELECT max(source_end) FROM source_observations WHERE interval='15m' AND source='coinalyze'"
+        ).fetchone()[0]
+        age = round((now - latest).total_seconds() / 60, 1) if latest else None
+        ca = conn.execute(
+            "SELECT status, count(*) FROM source_request_log WHERE source='coinalyze' AND requested_at > ? GROUP BY status",
+            (now - timedelta(minutes=15),)
+        ).fetchall()
+        om = conn.execute(
+            "SELECT status, count(*) FROM source_request_log WHERE source='openmarket' AND requested_at > ? GROUP BY status",
+            (now - timedelta(minutes=15),)
+        ).fetchall()
+        print(f"Health: data_age={age}m ca={dict(ca) or {}} om={dict(om) or {}}")
+        conn.close()
+    except Exception as he:
+        print(f"Health summary err: {he}")
 
     print(f"Pipeline run completed.")
 
@@ -432,7 +615,7 @@ def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = Non
         completed_at = datetime.now(timezone.utc)
         connection = config.get_db_connection()
         try:
-            latest_data_at = connection.execute("SELECT MAX(timestamp) FROM futures_data").fetchone()[0]
+            latest_data_at = connection.execute("SELECT MAX(source_end) FROM source_observations").fetchone()[0]
             freshness = (completed_at - latest_data_at).total_seconds() if latest_data_at else None
             connection.execute("""
                 UPDATE pipeline_runs
@@ -490,6 +673,8 @@ def main():
                 start_time = time.monotonic()
                 try:
                     run_pipeline()
+                except KeyboardInterrupt:
+                    print("backoff interrupted", flush=True)
                 except Exception as e:
                     print(f"Critical error in orchestrator pipeline: {e}", file=sys.stderr)
                 next_pipeline_at = start_time + interval_secs

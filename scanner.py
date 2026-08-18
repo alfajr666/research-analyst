@@ -7,9 +7,11 @@ import httpx
 import duckdb
 import config
 from alpha_research import classify_liquidity_tier, record_universe_snapshot
-from ingest_coinalyze import fetch_coinalyze_data, fetch_coinalyze_data_batched
+from api_clients.coinalyze import CoinAnalyzeClient
 import bootstrap_trend_history
 import two_pool_discovery
+
+_coin_client = CoinAnalyzeClient()
 
 def map_binance_to_coinalyze(symbol: str) -> str:
     """Maps Binance symbol to Coinalyze symbol format."""
@@ -267,7 +269,7 @@ def run_scanner():
     
     # 2. Fetch the broad data required by both discovery and detailed rankings.
     print("Fetching Open Interest from Coinalyze...")
-    oi_data = fetch_coinalyze_data_batched("open-interest", {"symbols": symbols_str}, batch_size=20)
+    oi_data = _coin_client.fetch_batched("open-interest", symbols_list, cutoff_id="scanner")
     oi_map = {
         item["symbol"]: float(item.get("openInterest", item.get("value", 0.0)))
         for item in oi_data
@@ -279,15 +281,15 @@ def run_scanner():
     now_epoch = int(time.time())
     from_epoch = now_epoch - 3600 * 24 * 7  # 7 days ago
     
-    ohlcv_data = fetch_coinalyze_data_batched(
+    ohlcv_data = _coin_client.fetch_batched(
         "ohlcv-history",
-        {
-            "symbols": symbols_str,
+        symbols_list,
+        other_params={
             "interval": "1hour",
             "from": str(from_epoch),
             "to": str(now_epoch)
         },
-        batch_size=20
+        cutoff_id="scanner"
     )
     
     ohlcv_map = {
@@ -295,15 +297,15 @@ def run_scanner():
         for item in ohlcv_data
         if item.get("symbol")
     }
-    oi_history_data = fetch_coinalyze_data_batched(
+    oi_history_data = _coin_client.fetch_batched(
         "open-interest-history",
-        {
-            "symbols": symbols_str,
+        symbols_list,
+        other_params={
             "interval": "1hour",
             "from": str(from_epoch),
             "to": str(now_epoch),
         },
-        batch_size=20,
+        cutoff_id="scanner",
     )
     oi_history_map = {
         item["symbol"]: item.get("history", [])
@@ -311,7 +313,7 @@ def run_scanner():
         if item.get("symbol")
     }
     print("Fetching current funding rates from Coinalyze...")
-    funding_data = fetch_coinalyze_data_batched("funding-rate", {"symbols": symbols_str}, batch_size=20)
+    funding_data = _coin_client.fetch_batched("funding-rate", symbols_list, cutoff_id="scanner")
     funding_map = {
         item["symbol"]: float(item.get("value", 0.0))
         for item in funding_data

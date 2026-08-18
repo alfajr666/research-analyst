@@ -147,20 +147,24 @@ hard emit/suppress gate.
 
 ## Tracer families
 
-Implementations of this ADR (design-locked; implementation deferred until chosen):
+Design-locked implementations of this ADR (code deferred until chosen):
 
 | `strategy_id` | Spec |
 |---------------|------|
 | **`accumulation-base-v2`** | `specs/strategy-accumulation-base-v2.md` — limit at 1h EMA inside compression |
-| **`impulse-ignition-v2`** | `specs/strategy-impulse-ignition-v2.md` — breakout of 1h base lid |
+| **`impulse-ignition-v2`** | `specs/strategy-impulse-ignition-v2.md` — breakout of 1h base lid (no prior trend required) |
+| **`continuation-breakout-v2`** | `specs/strategy-continuation-breakout-v2.md` — breakout of 1h flag after established 4h trend |
 
 - Predecessors `*-v1` run in parallel briefly, then disable
-- **`continuation-breakout`** still pending grill/clone
-- Do not merge families into one strategy; share scoring/bias libraries only
+- Share scoring/bias/zone libraries; do not merge into one strategy
+- No cross-family emit mutex (research separation; portfolio rules stay downstream)
 
 ## Related
 
-- `specs/strategy-accumulation-base-v2.md` — tracer family rewrite
+- `specs/strategy-v2-shared-library.md` — module map and shared API sketch
+- `specs/strategy-accumulation-base-v2.md`
+- `specs/strategy-impulse-ignition-v2.md`
+- `specs/strategy-continuation-breakout-v2.md`
 - `specs/data-platform-strategy-plugins.md` — cutoff, zones, plugin isolation
 - `specs/llm-research-agent.md` — advisory LLM boundaries
 - `specs/alpha-outcome-policy.md` — descriptive outcomes for future calibration

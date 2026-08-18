@@ -55,10 +55,12 @@ class AccumulationEvaluatorTests(unittest.TestCase):
             for index in range(100):
                 timestamp = latest - timedelta(minutes=15 * (99 - index))
                 close = 100.0 + index * 0.005
-                conn.execute("""
-                    INSERT INTO futures_data (timestamp, underlying, symbol, open, close, volume)
-                    VALUES (?, 'SOL', 'SOLUSDT_PERP.A', ?, ?, 10)
-                """, (timestamp, close - 0.02, close))
+                # source_observations only (post-drop)
+                payload = json.dumps({"open": close-0.02, "close": close, "volume": 10})
+                conn.execute(
+                    "INSERT OR IGNORE INTO source_observations (observation_id, source, venue, native_symbol, asset, market_kind, interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json) VALUES (?, 'coinalyze', 'agg', 'SOLUSDT_PERP.A', 'SOL', 'perpetual', '15m', ?, ?, ?, 'live', ?)",
+                    (f"acc-{timestamp.isoformat()}", timestamp, timestamp, timestamp, payload)
+                )
             conn.commit()
             self.assertIsNotNone(confluence(conn, "SOLUSDT_PERP.A", datetime(2026, 8, 16, 12, 15, tzinfo=timezone.utc)))
             self.assertIsNone(confluence(conn, "SOLUSDT_PERP.A", datetime(2026, 8, 16, 13, tzinfo=timezone.utc)))

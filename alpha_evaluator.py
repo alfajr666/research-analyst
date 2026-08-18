@@ -43,10 +43,21 @@ def _frames_for_watchlist(conn, watchlist: list[tuple[str, str]], cutoff: dateti
         return {}, pd.DataFrame()
     placeholders = ", ".join("?" for _ in symbols)
     data = conn.execute(f"""
-        SELECT timestamp, underlying, symbol, open_interest, funding_rate, open, high, low, close, volume
-        FROM futures_data
-        WHERE timestamp < ? AND (symbol IN ({placeholders}) OR underlying = 'BTC') AND close > 0
-        ORDER BY underlying, timestamp
+        SELECT 
+            source_end as timestamp,
+            asset as underlying,
+            native_symbol as symbol,
+            json_extract(payload_json, '$.open_interest')::DOUBLE as open_interest,
+            json_extract(payload_json, '$.funding_rate')::DOUBLE as funding_rate,
+            json_extract(payload_json, '$.open')::DOUBLE as open,
+            json_extract(payload_json, '$.high')::DOUBLE as high,
+            json_extract(payload_json, '$.low')::DOUBLE as low,
+            json_extract(payload_json, '$.close')::DOUBLE as close,
+            json_extract(payload_json, '$.volume')::DOUBLE as volume
+        FROM source_observations
+        WHERE source_end < ? AND (native_symbol IN ({placeholders}) OR asset = 'BTC') 
+          AND json_extract(payload_json, '$.close')::DOUBLE > 0
+        ORDER BY asset, source_end
     """, (cutoff, *symbols)).fetchdf()
     if data.empty:
         return {}, data

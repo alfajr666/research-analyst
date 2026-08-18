@@ -66,20 +66,20 @@ HMM_FEATURES = ["log_return", "realized_vol", "vwap_dev", "vol_zscore", "hl_rang
 
 def load_daily_bars(conn, symbol: str) -> Optional[pl.DataFrame]:
     """
-    Loads 1d OHLCV from the futures_data table, aggregated from 15m candles.
+    Loads 1d OHLCV from source_observations (post futures_data drop), aggregated from 15m candles.
     Returns a Polars DataFrame sorted ascending by date, or None if no data.
     """
     query = """
         SELECT
-            DATE(timestamp)                                         AS timestamp,
-            FIRST(open)                                             AS open,
-            MAX(high)                                               AS high,
-            MIN(low)                                                AS low,
-            LAST(close)                                             AS close,
-            SUM(volume)                                             AS volume
-        FROM futures_data
-        WHERE underlying = ?
-        GROUP BY DATE(timestamp)
+            DATE(source_end)                                        AS timestamp,
+            FIRST(json_extract(payload_json, '$.open')::DOUBLE)     AS open,
+            MAX(json_extract(payload_json, '$.high')::DOUBLE)       AS high,
+            MIN(json_extract(payload_json, '$.low')::DOUBLE)        AS low,
+            LAST(json_extract(payload_json, '$.close')::DOUBLE)     AS close,
+            SUM(json_extract(payload_json, '$.volume')::DOUBLE)     AS volume
+        FROM source_observations
+        WHERE asset = ?
+        GROUP BY DATE(source_end)
         ORDER BY timestamp
     """
     try:
@@ -113,16 +113,16 @@ def load_xh_bars(conn, symbol: str, bar_hours: int, min_bars: int = 1) -> Option
     query = f"""
         SELECT
             TO_TIMESTAMP(
-                FLOOR(EPOCH(timestamp) / {interval_secs}) * {interval_secs}
+                FLOOR(EPOCH(source_end) / {interval_secs}) * {interval_secs}
             )                                                       AS timestamp,
-            FIRST(open)                                             AS open,
-            MAX(high)                                               AS high,
-            MIN(low)                                                AS low,
-            LAST(close)                                             AS close,
-            SUM(volume)                                             AS volume
-        FROM futures_data
-        WHERE underlying = ?
-        GROUP BY FLOOR(EPOCH(timestamp) / {interval_secs})
+            FIRST(json_extract(payload_json, '$.open')::DOUBLE)     AS open,
+            MAX(json_extract(payload_json, '$.high')::DOUBLE)       AS high,
+            MIN(json_extract(payload_json, '$.low')::DOUBLE)        AS low,
+            LAST(json_extract(payload_json, '$.close')::DOUBLE)     AS close,
+            SUM(json_extract(payload_json, '$.volume')::DOUBLE)     AS volume
+        FROM source_observations
+        WHERE asset = ?
+        GROUP BY FLOOR(EPOCH(source_end) / {interval_secs})
         ORDER BY timestamp
     """
     label = f"{bar_hours}h"
@@ -606,9 +606,9 @@ def _round_safe(v, decimals=6):
 
 def _get_universe(conn) -> list[str]:
     """
-    Returns all distinct underlyings available in futures_data table.
+    Returns all distinct underlyings available in source_observations table (post futures_data drop).
     """
-    rows = conn.execute("SELECT DISTINCT underlying FROM futures_data ORDER BY underlying").fetchall()
+    rows = conn.execute("SELECT DISTINCT asset FROM source_observations ORDER BY asset").fetchall()
     return [r[0] for r in rows if r[0]]
 
 

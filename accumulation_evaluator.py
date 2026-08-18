@@ -16,7 +16,6 @@ from alpha_outbox import write_event
 EVALUATOR_INTERVAL_SECONDS = 15 * 60
 SCANNER_MAX_AGE = timedelta(minutes=75)
 STATE_FILE = config.DEFAULT_DB_DIR / "accumulation_evaluator_state.json"
-LEGACY_STATE_FILE = config.DEFAULT_DB_DIR / "accumulation_state.json"
 PENDING_FILE = config.DEFAULT_DB_DIR / "scanner_pending_accums.json"
 
 
@@ -57,18 +56,6 @@ def load_state(path: Path = STATE_FILE) -> dict:
         state = json.loads(path.read_text(encoding="utf-8"))
         return state if isinstance(state.get("active"), dict) else {"active": {}}
     except (OSError, ValueError, json.JSONDecodeError):
-        # Carry forward legacy alert suppression once without allowing the old
-        # monitor to own or mutate this evaluator's state thereafter.
-        if path == STATE_FILE:
-            try:
-                legacy = json.loads(LEGACY_STATE_FILE.read_text(encoding="utf-8"))
-                return {"active": {
-                    symbol: {"entered_at": details.get("first_detected"), "source": details.get("source", "duckdb"),
-                             "observed_at": details.get("last_alerted")}
-                    for symbol, details in legacy.get("alerted", {}).items()
-                }}
-            except (OSError, ValueError, json.JSONDecodeError):
-                pass
         return {"active": {}}
 
 
@@ -153,8 +140,8 @@ def evaluate(conn, now: datetime, pending_path: Path = PENDING_FILE) -> dict[str
             setups[symbol] = {"asset": meta.get("underlying", symbol.split("_")[0]), "source": "scanner",
                               "accumulation": accumulation, "setup": confirmed}
     rows = conn.execute("""
-        SELECT DISTINCT symbol, underlying FROM futures_data
-        WHERE timestamp < ? AND timestamp >= ? - INTERVAL '28 hours'
+        SELECT DISTINCT native_symbol, asset FROM source_observations
+        WHERE source_end < ? AND source_end >= ? - INTERVAL '28 hours'
     """, (cutoff, cutoff)).fetchall()
     for symbol, asset in rows:
         if symbol in setups:

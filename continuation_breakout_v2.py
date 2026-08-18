@@ -34,23 +34,76 @@ PHASE = "armed_flag_breakout"
 PLUGIN_VERSION = "v2"
 
 
+# Snapshot/config only — never part of strategy_id (specs grill).
+WEIGHT_PROFILES: dict[str, dict[str, float]] = {
+    "early": {
+        "ltf_inside_htf": 0.08,
+        "zone_stack_tightness": 0.08,
+        "vp_proximity": 0.05,
+        "flag_compression_quality": 0.14,
+        "edge_proximity": 0.14,
+        "trend_quality": 0.10,
+        "retrace_quality": 0.12,
+        "acceptance": 0.04,
+        "participation": 0.08,
+        "relative_strength": 0.08,
+        "funding_neutral": 0.04,
+        "extension_penalty": 0.06,
+        "candle_quality": 0.05,
+        "contradiction_penalty": 0.05,
+    },
+    "balanced": {
+        "ltf_inside_htf": 0.10,
+        "zone_stack_tightness": 0.10,
+        "vp_proximity": 0.05,
+        "flag_compression_quality": 0.12,
+        "edge_proximity": 0.12,
+        "trend_quality": 0.14,
+        "retrace_quality": 0.10,
+        "acceptance": 0.06,
+        "participation": 0.08,
+        "relative_strength": 0.07,
+        "funding_neutral": 0.04,
+        "extension_penalty": 0.08,
+        "candle_quality": 0.04,
+        "contradiction_penalty": 0.05,
+    },
+    "confirmed": {
+        "ltf_inside_htf": 0.10,
+        "zone_stack_tightness": 0.10,
+        "vp_proximity": 0.05,
+        "flag_compression_quality": 0.08,
+        "edge_proximity": 0.10,
+        "trend_quality": 0.12,
+        "retrace_quality": 0.08,
+        "acceptance": 0.14,
+        "participation": 0.12,
+        "relative_strength": 0.07,
+        "funding_neutral": 0.04,
+        "extension_penalty": 0.10,
+        "candle_quality": 0.04,
+        "contradiction_penalty": 0.05,
+    },
+}
+
+
 @dataclass(frozen=True)
 class ContV2Config:
     # 4h trend
     p: int = 12  # completed 4h bars for min trend print
-    t_min: float = 0.75  # min signed return / ATR_4h
+    t_min: float = 1.0  # min signed return / ATR_4h
     # 1h flag
-    n: int = 16
-    k: float = 3.0
-    retr_max: float = 0.50  # max pullback vs prior impulse
-    g: float = 0.35
-    e: float = 0.50
+    n: int = 12
+    k: float = 2.0
+    retr_max: float = 0.40  # max pullback vs prior impulse
+    g: float = 0.25
+    e: float = 0.35
     # extension (15m window in bars; default ~1d)
     x_bars: int = 96
-    x_max: float = 4.0  # max signed move / ATR_1h
-    r_max: float = 3.0
-    s_min: float = 0.40
-    n_top: int = 5
+    x_max: float = 3.0  # max signed move / ATR_1h
+    r_max: float = 2.5
+    s_min: float = 0.55
+    n_top: int = 3
     target_r: float = 1.5
     horizon_hours: int = 4
     weight_profile: str = "balanced"
@@ -58,42 +111,24 @@ class ContV2Config:
 
     def __post_init__(self):
         if self.weights is None:
-            object.__setattr__(
-                self,
-                "weights",
-                {
-                    "ltf_inside_htf": 0.10,
-                    "zone_stack_tightness": 0.10,
-                    "vp_proximity": 0.05,
-                    "flag_compression_quality": 0.12,
-                    "edge_proximity": 0.12,
-                    "trend_quality": 0.14,
-                    "retrace_quality": 0.10,
-                    "acceptance": 0.06,
-                    "participation": 0.08,
-                    "relative_strength": 0.07,
-                    "funding_neutral": 0.04,
-                    "extension_penalty": 0.08,
-                    "candle_quality": 0.04,
-                    "contradiction_penalty": 0.05,
-                },
-            )
+            profile = self.weight_profile if self.weight_profile in WEIGHT_PROFILES else "balanced"
+            object.__setattr__(self, "weights", dict(WEIGHT_PROFILES[profile]))
 
 
 def load_config() -> ContV2Config:
     return ContV2Config(
         p=int(getattr(config, "CONT_V2_P", 12)),
-        t_min=float(getattr(config, "CONT_V2_T_MIN", 0.75)),
-        n=int(getattr(config, "CONT_V2_N", 16)),
-        k=float(getattr(config, "CONT_V2_K", 3.0)),
-        retr_max=float(getattr(config, "CONT_V2_RETR_MAX", 0.50)),
-        g=float(getattr(config, "CONT_V2_G", 0.35)),
-        e=float(getattr(config, "CONT_V2_E", 0.50)),
+        t_min=float(getattr(config, "CONT_V2_T_MIN", 1.0)),
+        n=int(getattr(config, "CONT_V2_N", 12)),
+        k=float(getattr(config, "CONT_V2_K", 2.0)),
+        retr_max=float(getattr(config, "CONT_V2_RETR_MAX", 0.40)),
+        g=float(getattr(config, "CONT_V2_G", 0.25)),
+        e=float(getattr(config, "CONT_V2_E", 0.35)),
         x_bars=int(getattr(config, "CONT_V2_X_BARS", 96)),
-        x_max=float(getattr(config, "CONT_V2_X_MAX", 4.0)),
-        r_max=float(getattr(config, "CONT_V2_R_MAX", 3.0)),
-        s_min=float(getattr(config, "CONT_V2_S_MIN", 0.40)),
-        n_top=int(getattr(config, "CONT_V2_N_TOP", 5)),
+        x_max=float(getattr(config, "CONT_V2_X_MAX", 3.0)),
+        r_max=float(getattr(config, "CONT_V2_R_MAX", 2.5)),
+        s_min=float(getattr(config, "CONT_V2_S_MIN", 0.55)),
+        n_top=int(getattr(config, "CONT_V2_N_TOP", 3)),
         weight_profile=str(getattr(config, "CONT_V2_WEIGHT_PROFILE", "balanced")),
     )
 

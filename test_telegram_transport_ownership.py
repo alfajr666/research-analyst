@@ -5,7 +5,6 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 LEGACY_AUTOMATION_MODULES = (
     "orchestrator.py",
-    "accumulation_monitor.py",
     "regime_signal.py",
 )
 

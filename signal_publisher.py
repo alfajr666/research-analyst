@@ -1,4 +1,4 @@
-"""Persist and deliver venue-neutral alpha events to Telegram only."""
+"""Persist and deliver venue-neutral alpha events to Telegram and optional Discord."""
 
 from __future__ import annotations
 
@@ -7,23 +7,29 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 import httpx
 
 import config
 from alpha_outbox import OUTBOX_DIR, dedupe_key
+from discord_format import format_discord_research_note, format_discord_signal
 
 
 POLL_INTERVAL_SECONDS = 30
 MAX_DELIVERY_ATTEMPTS = 5
 RETRY_BASE_SECONDS = 30
+CLAIM_LEASE_SECONDS = 60
 REQUIRED_FIELDS = {
     "schema_version", "alpha_id", "strategy_id", "asset", "direction",
     "setup_class", "phase", "observed_at", "valid_until", "horizon_minutes",
     "confidence", "entry_condition", "invalidation_price", "targets",
     "feature_snapshot", "dedupe_key",
 }
+
+
+class MessageTransport(Protocol):
+    def send(self, text: str) -> str: ...
 
 
 def utc_now() -> datetime:
@@ -71,20 +77,36 @@ def format_signal(event: dict) -> str:
     targets = ", ".join(f"{target:g}" for target in event["targets"])
     expiry = parse_timestamp(event["valid_until"]).strftime("%Y-%m-%d %H:%M UTC")
     observed = parse_timestamp(event["observed_at"]).strftime("%Y-%m-%d %H:%M UTC")
-    return (
+    text = (
         "ALPHA SIGNAL\n"
         f"Strategy family: {family}\n"
         f"Strategy: {event['strategy_id']}\n"
         f"Asset: {event['asset']}\n"
         f"Direction: {event['direction'].upper()}\n"
         f"Phase: {event['phase']}\n"
-        f"Confidence: {event['confidence']:.0%}\n"
+        f"Confidence: {event['confidence']:.0%} ({event.get('confidence_status', 'uncalibrated')})\n"
         f"Trigger: {trigger_text}\n"
         f"Invalidation: {event['invalidation_price']:g}\n"
         f"Targets: {targets}\n"
         f"Expiry: {expiry}\n"
         f"Observed: {observed}"
     )
+    # Compact Context from persisted feature snapshot; omit any unavailable items
+    snap = event.get("feature_snapshot") or {}
+    parts = []
+    for k, label in (
+        ("fvg_4h", "4h FVG"),
+        ("order_block_4h", "4h OB"),
+        ("profile", "profile"),
+        ("flow_15m", "15m flow"),
+        ("coinalyze_candle_distributed_volume_profile_v1", "approx VP"),
+    ):
+        v = snap.get(k)
+        if v and str(v).lower() != "unavailable":
+            parts.append(f"{label}:{v}")
+    if parts:
+        text += "\nContext: " + "; ".join(parts)
+    return text
 
 
 def format_research_note(report: dict) -> str:
@@ -94,6 +116,19 @@ def format_research_note(report: dict) -> str:
     if limitations:
         note += f"\nLimitations: {limitations}"
     return note[:900]
+
+
+def default_transports(
+    transport: MessageTransport | None = None,
+) -> dict[str, MessageTransport]:
+    """Build the active channel map. Explicit transport keeps tests on a single channel."""
+    if transport is not None:
+        return {"telegram": transport}
+    channels: dict[str, MessageTransport] = {"telegram": TelegramTransport()}
+    if config.DISCORD_ALPHA_WEBHOOK_URL:
+        from discord_transport import DiscordWebhookTransport
+        channels["discord"] = DiscordWebhookTransport(config.DISCORD_ALPHA_WEBHOOK_URL)
+    return channels
 
 
 class TelegramTransport:
@@ -119,12 +154,17 @@ class SignalPublisher:
         self,
         db_path: str | Path | None = None,
         outbox_dir: Path = OUTBOX_DIR,
-        transport: TelegramTransport | None = None,
+        transport: MessageTransport | None = None,
+        transports: dict[str, MessageTransport] | None = None,
         now: Callable[[], datetime] = utc_now,
+        market_db_path: str | Path | None = None,
     ):
         self.db_path = str(db_path or config.ALPHA_DB_PATH)
+        self.market_db_path = str(market_db_path or config.DB_PATH)
         self.outbox_dir = Path(outbox_dir)
-        self.transport = transport or TelegramTransport()
+        self.transports = dict(transports) if transports is not None else default_transports(transport)
+        # Backward-compatible single-transport handle used by older tests/callers.
+        self.transport = self.transports.get("telegram") or next(iter(self.transports.values()), TelegramTransport())
         self.now = now
 
     def _connect(self):
@@ -183,45 +223,72 @@ class SignalPublisher:
         ))
         return True
 
-    def _next_attempt(self, connection, key: str, now: datetime) -> int | None:
+    def _next_attempt(self, connection, key: str, now: datetime, channel: str) -> int | None:
         row = connection.execute("""
             SELECT attempt_number, status, next_retry_at
-            FROM signal_deliveries WHERE dedupe_key = ? AND channel = 'telegram'
+            FROM signal_deliveries WHERE dedupe_key = ? AND channel = ?
             ORDER BY attempt_number DESC LIMIT 1
-        """, (key,)).fetchone()
+        """, (key, channel)).fetchone()
         if row is None:
             return 1
         attempt, status, next_retry_at = row
         if status == "sent" or attempt >= MAX_DELIVERY_ATTEMPTS:
             return None
+        if status == "claimed":
+            if next_retry_at is None or next_retry_at <= now:
+                # lease expired, allow reclaim (reuse attempt)
+                return attempt
+            return None
         if next_retry_at is not None and next_retry_at > now:
             return None
         return attempt + 1
 
-    def _deliver(self, connection, event: dict, now: datetime) -> str | None:
+    def _render_message(self, connection, event: dict, channel: str) -> str:
+        if channel == "discord":
+            message = format_discord_signal(event)
+            include_research = config.LLM_INCLUDE_IN_DISCORD
+            note_formatter = format_discord_research_note
+        else:
+            message = format_signal(event)
+            include_research = config.LLM_INCLUDE_IN_TELEGRAM
+            note_formatter = format_research_note
+        if include_research:
+            from research_repository import latest_event_report
+            report = latest_event_report(connection, event["alpha_id"])
+            if report is not None:
+                message += note_formatter(report)
+        return message
+
+    def _deliver(self, connection, event: dict, now: datetime, channel: str, transport: MessageTransport) -> str | None:
         row = connection.execute("SELECT status, valid_until FROM alpha_events WHERE dedupe_key = ?", (event["dedupe_key"],)).fetchone()
         if row is None or row[0] != "active" or row[1] <= now:
             return None
-        attempt = self._next_attempt(connection, event["dedupe_key"], now)
+        attempt = self._next_attempt(connection, event["dedupe_key"], now, channel)
         if attempt is None:
             return None
+        claim_id = f"{event['dedupe_key']}:{channel}:{attempt}"
+        lease_until = now + timedelta(seconds=CLAIM_LEASE_SECONDS)
+        # claim (idempotent on conflict for this attempt)
+        connection.execute("""
+            INSERT INTO signal_deliveries (delivery_id, dedupe_key, channel, attempt_number, status, attempted_at, next_retry_at)
+            VALUES (?, ?, ?, ?, 'claimed', ?, ?)
+            ON CONFLICT (dedupe_key, channel, attempt_number) DO UPDATE SET
+                status = 'claimed', attempted_at = ?, next_retry_at = ?
+        """, (claim_id, event["dedupe_key"], channel, attempt, now, lease_until, now, lease_until))
         try:
-            message = format_signal(event)
-            if config.LLM_INCLUDE_IN_TELEGRAM:
-                from research_repository import latest_event_report
-                report = latest_event_report(connection, event["alpha_id"])
-                if report is not None:
-                    message += format_research_note(report)
-            response = self.transport.send(message)
+            message = self._render_message(connection, event, channel)
+            response = transport.send(message)
         except Exception as error:
             delay = RETRY_BASE_SECONDS * 2 ** (attempt - 1)
             connection.execute("""
-                INSERT INTO signal_deliveries VALUES (?, ?, 'telegram', ?, 'failed', ?, NULL, ?, NULL, ?)
-            """, (f"{event['dedupe_key']}:telegram:{attempt}", event["dedupe_key"], attempt, now, now + timedelta(seconds=delay), str(error)))
+                UPDATE signal_deliveries SET status='failed', completed_at=?, next_retry_at=?, error_message=?
+                WHERE delivery_id=?
+            """, (now, now + timedelta(seconds=delay), str(error), claim_id))
             return "failed"
         connection.execute("""
-            INSERT INTO signal_deliveries VALUES (?, ?, 'telegram', ?, 'sent', ?, ?, NULL, ?, NULL)
-        """, (f"{event['dedupe_key']}:telegram:{attempt}", event["dedupe_key"], attempt, now, now, str(response)))
+            UPDATE signal_deliveries SET status='sent', completed_at=?, response_body=?
+            WHERE delivery_id=?
+        """, (now, str(response), claim_id))
         return "sent"
 
     def _research_ready_for_delivery(self, connection, event: dict) -> bool:
@@ -232,102 +299,11 @@ class SignalPublisher:
         return event_review_status(connection, event["alpha_id"]) in {"completed", "failed", "skipped"}
 
     def _record_expired_outcomes(self, connection, now: datetime) -> None:
-        """Evaluate expired events from the immutable local bar history once."""
-        rows = connection.execute("""
-            SELECT alpha_id, event_json FROM alpha_events
-            WHERE status = 'expired'
-              AND alpha_id NOT IN (SELECT candidate_id FROM alpha_outcomes)
-        """).fetchall()
-        for candidate_id, serialized_event in rows:
-            event = json.loads(serialized_event)
-            snapshot = event["feature_snapshot"]
-            symbol = snapshot.get("source_symbol")
-            if not symbol:
-                continue
-            observed_at = parse_timestamp(event["observed_at"])
-            valid_until = parse_timestamp(event["valid_until"])
-            bars = connection.execute("""
-                SELECT timestamp, high, low, close FROM futures_data
-                WHERE symbol = ? AND timestamp >= ? AND timestamp <= ? AND close > 0
-                ORDER BY timestamp
-            """, (symbol, observed_at, valid_until)).fetchall()
-            if not bars:
-                continue
-            entry = float(event["entry_condition"].get("price", bars[0][3]))
-            direction = event["direction"]
-            trigger = event["entry_condition"]["type"]
-
-            def triggered(bar) -> bool:
-                _, high, low, _ = bar
-                if trigger == "breakout_above":
-                    return high >= entry
-                if trigger == "breakout_below":
-                    return low <= entry
-                return low <= entry if direction == "long" else high >= entry
-
-            entry_index = next((index for index, bar in enumerate(bars) if triggered(bar)), None)
-            if entry_index is None:
-                outcome = "not_triggered"
-                entry_at = None
-                returns = (None, None, None)
-                favorable = adverse = None
-                outcome_bars = []
-            else:
-                entry_at = bars[entry_index][0]
-                later_bars = bars[entry_index:]
-                target = min(event["targets"]) if direction == "long" else max(event["targets"])
-                invalidation = float(event["invalidation_price"])
-
-                def barrier_status(bar) -> tuple[bool, bool]:
-                    _, high, low, _ = bar
-                    if direction == "long":
-                        return high >= target, low <= invalidation
-                    return low <= target, high >= invalidation
-
-                terminal_index = None
-                for index, bar in enumerate(later_bars):
-                    target_hit, invalidated = barrier_status(bar)
-                    # OHLC cannot establish which condition came first inside a bar.
-                    if index == 0 and (target_hit or invalidated):
-                        outcome = "ambiguous_same_bar"
-                        terminal_index = index
-                        break
-                    if target_hit and invalidated:
-                        outcome = "ambiguous_same_bar"
-                        terminal_index = index
-                        break
-                    if target_hit:
-                        outcome = "target"
-                        terminal_index = index
-                        break
-                    if invalidated:
-                        outcome = "invalidated"
-                        terminal_index = index
-                        break
-                else:
-                    outcome = "expired"
-                outcome_bars = later_bars if terminal_index is None else later_bars[:terminal_index + 1]
-
-                def return_at(minutes: int) -> float | None:
-                    target_at = entry_at + timedelta(minutes=minutes)
-                    bar = next((item for item in outcome_bars if item[0] >= target_at), None)
-                    if bar is None:
-                        return None
-                    raw_return = float(bar[3]) / entry - 1
-                    return raw_return if direction == "long" else -raw_return
-
-                returns = (return_at(15), return_at(60), return_at(240))
-                highs = [float(bar[1]) / entry - 1 for bar in outcome_bars]
-                lows = [float(bar[2]) / entry - 1 for bar in outcome_bars]
-                favorable = max(highs) if direction == "long" else -min(lows)
-                adverse = min(lows) if direction == "long" else -max(highs)
-            connection.execute("""
-                INSERT INTO alpha_outcomes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
-            """, (
-                candidate_id, now, entry_at, entry if entry_index is not None else None, outcome,
-                valid_until, *returns, favorable, adverse,
-                json.dumps({"bars_observed": len(bars), "same_bar_policy": "ambiguous"}, sort_keys=True),
-            ))
+        """Delegate to dedicated evaluator (market read-only from source_observations -> alpha). Post futures_data drop."""
+        from outcome_evaluator import evaluate_expired_outcomes
+        market = getattr(self, "market_db_path", config.DB_PATH)
+        alpha = getattr(self, "db_path", config.DB_PATH)
+        evaluate_expired_outcomes(market, alpha, now, market_conn=connection if market == alpha else None)
 
     def run_once(self) -> dict[str, int]:
         results = {"persisted": 0, "sent": 0, "failed": 0, "invalid": 0}
@@ -375,9 +351,10 @@ class SignalPublisher:
             for event in valid_events:
                 if not self._research_ready_for_delivery(connection, event):
                     continue
-                outcome = self._deliver(connection, event, self.now())
-                if outcome:
-                    results[outcome] += 1
+                for channel, transport in self.transports.items():
+                    outcome = self._deliver(connection, event, self.now(), channel, transport)
+                    if outcome:
+                        results[outcome] += 1
             # Execution delivery is independent of Telegram and alpha persistence.
             # Its failures are durable in execution_deliveries and never abort this loop.
             try:

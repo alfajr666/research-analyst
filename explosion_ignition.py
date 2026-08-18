@@ -83,8 +83,14 @@ def score_ignition(frame: pd.DataFrame, btc: pd.DataFrame) -> dict | None:
 
 def rank_ignition(conn, include_core: bool = False) -> list[dict]:
     data = conn.execute("""
-        SELECT timestamp, underlying, symbol, open_interest, funding_rate, high, low, close, volume
-        FROM futures_data WHERE close > 0 ORDER BY underlying, timestamp
+        SELECT source_end as timestamp, asset as underlying, native_symbol as symbol,
+               json_extract(payload_json, '$.open_interest')::DOUBLE as open_interest,
+               json_extract(payload_json, '$.funding_rate')::DOUBLE as funding_rate,
+               json_extract(payload_json, '$.high')::DOUBLE as high,
+               json_extract(payload_json, '$.low')::DOUBLE as low,
+               json_extract(payload_json, '$.close')::DOUBLE as close,
+               json_extract(payload_json, '$.volume')::DOUBLE as volume
+        FROM source_observations WHERE json_extract(payload_json, '$.close')::DOUBLE > 0 ORDER BY asset, source_end
     """).fetchdf()
     latest = data["timestamp"].max()
     btc = data[data["underlying"] == "BTC"]
