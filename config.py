@@ -75,6 +75,25 @@ BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS = int(os.getenv("BINANCE_OI_ROTATION_FEED_
 BINANCE_OI_ROTATION_FEED_PATH = Path(os.getenv("BINANCE_OI_ROTATION_FEED_PATH", str(DEFAULT_DB_DIR / "binance_oi_rotation_feed.json")))
 BINANCE_OI_DB_PATH = os.getenv("BINANCE_OI_DB_PATH", str(DEFAULT_DB_DIR / "binance_oi.db"))
 
+# ADR-013 / retention: hard prune of aged research tables (worker-owned)
+BINANCE_OI_PRUNE_ENABLED = os.getenv("BINANCE_OI_PRUNE_ENABLED", "1").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
+BINANCE_OI_WATCHLIST_HISTORY_RETENTION_DAYS = int(
+    os.getenv("BINANCE_OI_WATCHLIST_HISTORY_RETENTION_DAYS", "14")
+)
+BINANCE_OI_OBSERVATIONS_RETENTION_DAYS = int(
+    os.getenv("BINANCE_OI_OBSERVATIONS_RETENTION_DAYS", "30")
+)
+BINANCE_OI_RAW_OI_RETENTION_DAYS = int(os.getenv("BINANCE_OI_RAW_OI_RETENTION_DAYS", "30"))
+BINANCE_OI_EVENTS_RETENTION_DAYS = int(os.getenv("BINANCE_OI_EVENTS_RETENTION_DAYS", "90"))
+BINANCE_OI_SCANS_RETENTION_DAYS = int(os.getenv("BINANCE_OI_SCANS_RETENTION_DAYS", "30"))
+# P1: skip entered/active membership for forever-static bases
+BINANCE_OI_STATIC_MEMBERSHIP_SKIP = os.getenv(
+    "BINANCE_OI_STATIC_MEMBERSHIP_SKIP", "1"
+).strip().lower() not in ("0", "false", "no", "off", "")
+BINANCE_OI_STATIC_SEED_PATH = os.getenv("BINANCE_OI_STATIC_SEED_PATH", "").strip()
+
 # 10m/15m liquid-tier fast path (additive cadence; see specs/binance-oi-rotation-10m-fast-path.md)
 BINANCE_OI_10M_ENABLED = os.getenv("BINANCE_OI_10M_ENABLED", "true").lower() == "true"
 BINANCE_OI_10M_BAR_MINUTES = int(os.getenv("BINANCE_OI_10M_BAR_MINUTES", "15"))
@@ -244,7 +263,8 @@ STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
         "STRATEGY_ENABLED_IDS",
         "accumulation-base-v1,impulse-ignition-v1,continuation-breakout-balanced-v1,"
-        "accumulation-base-v2,impulse-ignition-v2,continuation-breakout-v2"
+        "accumulation-base-v2,impulse-ignition-v2,continuation-breakout-v2,"
+        "liquidity-sweep-reversal-v1"
     ).split(",") if s.strip()
 )
 
@@ -299,6 +319,23 @@ RSI_RECLAIM_R_MAX = float(os.getenv("RSI_RECLAIM_R_MAX", "2.5"))
 RSI_RECLAIM_S_MIN = float(os.getenv("RSI_RECLAIM_S_MIN", "0.55"))
 RSI_RECLAIM_N_TOP = int(os.getenv("RSI_RECLAIM_N_TOP", "3"))
 
+# liquidity-sweep-reversal-v1 (LSR) — per specs/strategy-liquidity-sweep-reversal-v1.md
+# All LSR_V1_* are opt-in via STRATEGY_ENABLED_IDS
+LSR_V1_S_MIN = float(os.getenv("LSR_V1_S_MIN", "0.55"))
+LSR_V1_N_TOP = int(os.getenv("LSR_V1_N_TOP", "3"))
+LSR_V1_R_MAX = float(os.getenv("LSR_V1_R_MAX", "3.0"))
+LSR_V1_SWEEP_MIN_ATR = float(os.getenv("LSR_V1_SWEEP_MIN_ATR", "0.10"))
+LSR_V1_SWEEP_MAX_ATR = float(os.getenv("LSR_V1_SWEEP_MAX_ATR", "1.00"))
+LSR_V1_STOP_ATR_BUF = float(os.getenv("LSR_V1_STOP_ATR_BUF", "0.15"))
+LSR_V1_RETRACE_PCT = float(os.getenv("LSR_V1_RETRACE_PCT", "0.50"))
+LSR_V1_BOS_WINDOW = int(os.getenv("LSR_V1_BOS_WINDOW", "8"))
+LSR_V1_ENTRY_HORIZON_MIN = int(os.getenv("LSR_V1_ENTRY_HORIZON_MIN", "120"))
+LSR_V1_TARGET_R = float(os.getenv("LSR_V1_TARGET_R", "2.0"))
+LSR_V1_REQUIRE_DISPLACEMENT = os.getenv("LSR_V1_REQUIRE_DISPLACEMENT", "false").lower() == "true"
+LSR_V1_REQUIRE_CLOSE_LOCATION = os.getenv("LSR_V1_REQUIRE_CLOSE_LOCATION", "false").lower() == "true"
+LSR_V1_FVG_SNAP_ATR = float(os.getenv("LSR_V1_FVG_SNAP_ATR", "0.25"))
+LSR_V1_USE_15M_EPHEMERAL_FVG = os.getenv("LSR_V1_USE_15M_EPHEMERAL_FVG", "true").lower() == "true"
+
 # LLM delivery-order booster cap (ADR); does not alter event confidence
 LLM_BOOST_CAP = float(os.getenv("LLM_BOOST_CAP", "0.10"))
 
@@ -319,6 +356,7 @@ MARKET_FAILOVER_ENABLED = os.getenv("MARKET_FAILOVER_ENABLED", "false").lower() 
 # Emit classification (normative, see spec)
 PRICE_STRUCTURE_STRATEGY_IDS = {
     "accumulation-base-v1", "accumulation-base-v2", "rsi-reclaim-v1",
+    "liquidity-sweep-reversal-v1",
 }
 MIXED_STRATEGY_IDS = {
     "impulse-ignition-v1", "impulse-ignition-v2",

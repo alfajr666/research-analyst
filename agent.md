@@ -27,14 +27,17 @@ The downstream engine owns:
 
 ## Runtime Topology
 
-`ecosystem.config.js` defines two PM2 applications:
+`ecosystem.config.js` historically defines orchestrator + signal-publisher. **NT cutover (live):** those are **stopped**. Do not restart them for Nautilus deploys.
 
-| Process | Owns | Cadence |
+| Process | Owns | Live status |
 | --- | --- | --- |
-| `orchestrator` | Ingestion, discovery, backfill, market-data retention, regime and strategy evaluation | 15-minute loop; discovery scans hourly |
-| `signal-publisher` | Alpha-event persistence, optional research coordination, Telegram + optional Discord webhook, and configured execution-inbox delivery | Every 30 seconds |
+| `binance-oi-rotation-scanner` | BN USDT-perp OI discovery, feed, membership TTL (~36h), **DB hard prune**, optional static membership skip | **Keep online** — sole RA process NT needs |
+| `orchestrator` | Legacy ingestion / discovery / alpha path | **Stopped** |
+| `signal-publisher` | Legacy alpha delivery | **Stopped** |
 
-The orchestrator is the only writer of `DB_PATH`, the raw-market database. The publisher is the only writer of `ALPHA_DB_PATH`, the alpha-event ledger. They must be distinct files. Do not run standalone evaluators or duplicate PM2/manual instances against these databases.
+OI retention / static skip: [`specs/binance-oi-rotation-retention.md`](specs/binance-oi-rotation-retention.md). NT consumer static-subtract: nautilus-trading-os `ADR-013`.
+
+When orchestrator is running (research-only, not NT path): it is the only writer of `DB_PATH`. The publisher is the only writer of `ALPHA_DB_PATH`. They must be distinct files.
 
 ## Data and Discovery
 

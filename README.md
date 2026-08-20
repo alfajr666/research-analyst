@@ -28,14 +28,26 @@ Binance 24h contract metadata + CoinAnalyze 15m/hourly market data
           alpha ledger     Telegram       enabled bot inboxes
 ```
 
-PM2 runs two applications:
+### Live topology (Nautilus cutover)
+
+**Production for NT keeps only the OI scanner.** Do not restart `orchestrator` / `signal-publisher` for Nautilus deploys.
+
+| Process | Responsibility | Live |
+| --- | --- | --- |
+| `binance-oi-rotation-scanner` | BN OI qualify/rank, feed, membership TTL (~36h), hard prune, static membership skip | **Online** |
+| `orchestrator` | Legacy full research pipeline | **Stopped** |
+| `signal-publisher` | Legacy alpha delivery | **Stopped** |
+
+Retention + static skip: [`specs/binance-oi-rotation-retention.md`](specs/binance-oi-rotation-retention.md). NT consumes via `data-oi` static-subtract ([ADR-013](../nautilus-trading-os/specs/ADR-013-oi-rotating-static-subtract-and-ttl.md)).
+
+### Historical PM2 apps (research path)
 
 | Process | Responsibility | Schedule |
 | --- | --- | --- |
 | `orchestrator` | Ingestion, universe snapshots, two-pool discovery, durable backfill, retention, regime and strategy evaluation | Every 15 minutes; discovery hourly |
 | `signal-publisher` | Event validation/persistence, optional local-evidence research, Telegram and configured bot-inbox delivery | Every 30 seconds |
 
-`orchestrator` is the sole writer of the raw market database (`DB_PATH`). `signal-publisher` is the sole writer of the separate alpha-event ledger (`ALPHA_DB_PATH`). Keep these paths distinct, and do not start duplicate PM2 or manual evaluator processes against them.
+When those apps run, `orchestrator` is the sole writer of `DB_PATH` and `signal-publisher` of `ALPHA_DB_PATH`. Keep paths distinct; do not duplicate writers.
 
 When CoinAnalyze is rate-limited (high 429s or stale 15m bars), non-critical CA calls are shaped and the system automatically fails over to Binance USDM + Bybit Linear (venue_agg_v1) for OHLCV + best-effort OI/funding. Core CA ohlcv continues for recovery detection. See specs/ca-limited-takeover.md, MARKET_FAILOVER_ENABLED, CA_SHAPE_ON_CIRCUIT. Preferred loader and purity stamps preserve strategy correctness.
 
