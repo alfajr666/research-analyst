@@ -48,16 +48,22 @@ def _norm_direction(d: str) -> str:
 def build_executor_intent(event: dict, *, source=None, exchange_id=None,
                           account_id=None, order_type=None, take_profit_mode=None,
                           validity_minutes=None) -> dict:
-    """Convert an internal alpha event into a bybit-executor TradeIntent envelope."""
-    source = source or getattr(config, "INTENT_SOURCE", "research-analyst")
-    exchange_id = exchange_id or getattr(config, "INTENT_EXCHANGE_ID", "bybit")
-    account_id = account_id or getattr(config, "INTENT_ACCOUNT_ID", "account_a")
-    order_type = (order_type or event.get("order_type")
+    """Convert an internal alpha event into a bybit-executor TradeIntent envelope.
+
+    Precedence for routing fields: explicit argument > per-strategy INTENT_ROUTING
+    entry > global INTENT_* default. This lets different strategies target different
+    executor profiles (e.g. one -> bybit/account_y, another -> binance/account_b).
+    """
+    route = (getattr(config, "INTENT_ROUTING", {}) or {}).get(event.get("strategy_id"), {}) or {}
+    source = source or route.get("source") or getattr(config, "INTENT_SOURCE", "research-analyst")
+    exchange_id = exchange_id or route.get("exchange_id") or getattr(config, "INTENT_EXCHANGE_ID", "bybit")
+    account_id = account_id or route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "account_a")
+    order_type = (order_type or route.get("order_type") or event.get("order_type")
                   or getattr(config, "INTENT_ORDER_TYPE", "limit")).lower()
-    take_profit_mode = take_profit_mode or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
+    take_profit_mode = take_profit_mode or route.get("take_profit_mode") or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
     validity_minutes = (
         validity_minutes if validity_minutes is not None
-        else getattr(config, "INTENT_VALIDITY_MINUTES", 5)
+        else route.get("validity_minutes", getattr(config, "INTENT_VALIDITY_MINUTES", 5))
     )
 
     asset = event["asset"]

@@ -93,6 +93,7 @@ One-off evaluation cycle:
 | `INTENT_EXCHANGE_ID` / `INTENT_ACCOUNT_ID` | Executor profile | `bybit` / `account_a` |
 | `INTENT_ORDER_TYPE` | `limit` (IOC) / `market` | `limit` |
 | `INTENT_VALIDITY_MINUTES` | Entry validity window | `5` |
+| `INTENT_ROUTING` | Per-strategy `exchange_id`/`account_id` overrides (JSON) | *(empty)* |
 | `PM_SIDECAR_ENABLED` | Emit-only PM advice | `false` |
 | `PRUNE_1M_DAYS`…`PRUNE_4H_DAYS` | Tiered `source_observations` retention | `7/30/90/365/365` |
 | `ROTATION_FEED_ENABLED` | Export OI rotation members to universe | `false` |

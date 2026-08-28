@@ -374,6 +374,18 @@ INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "account_a")
 INTENT_ORDER_TYPE = os.getenv("INTENT_ORDER_TYPE", "limit")  # limit (IOC) | market
 INTENT_TAKE_PROFIT_MODE = os.getenv("INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
 INTENT_VALIDITY_MINUTES = int(os.getenv("INTENT_VALIDITY_MINUTES", "5"))
+# Per-strategy routing to executor profiles (exchange/account). JSON map keyed by
+# strategy_id; each value may override any of: exchange_id, account_id, source,
+# order_type, take_profit_mode, validity_minutes. Strategies not listed fall back to
+# the INTENT_* defaults above. Enables e.g. one strategy -> bybit/account_y while
+# another -> binance/account_b.
+_INTENT_ROUTING_RAW = os.getenv("INTENT_ROUTING", "{}")
+try:
+    INTENT_ROUTING = json.loads(_INTENT_ROUTING_RAW) if isinstance(_INTENT_ROUTING_RAW, str) else _INTENT_ROUTING_RAW
+    if not isinstance(INTENT_ROUTING, dict):
+        INTENT_ROUTING = {}
+except (ValueError, TypeError):
+    INTENT_ROUTING = {}
 
 # accumulation-base-v2 knobs (specs/strategy-accumulation-base-v2.md)
 # Defaults grilled 2026-08-18 — independent prefixes; tighter coil / emit floor.

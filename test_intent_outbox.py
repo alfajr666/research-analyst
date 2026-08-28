@@ -66,6 +66,25 @@ class IntentBuildTests(unittest.TestCase):
         # non-sizing metadata still passes through
         self.assertEqual(intent["metadata"].get("strategy_id"), "impulse-ignition-v1")
 
+    def test_per_strategy_routing_to_different_accounts(self):
+        # Two strategies on the same asset can target different executor profiles.
+        config.INTENT_ROUTING = {
+            "impulse-ignition-v2": {"exchange_id": "bybit", "account_id": "account_y", "order_type": "market"},
+            "rsi-reclaim-v1": {"exchange_id": "binance", "account_id": "account_b"},
+        }
+        try:
+            a = build_executor_intent(_alpha_event(strategy_id="impulse-ignition-v2", alpha_id=None))
+            b = build_executor_intent(_alpha_event(strategy_id="rsi-reclaim-v1", alpha_id=None))
+            self.assertEqual(a["exchange_id"], "bybit")
+            self.assertEqual(a["account_id"], "account_y")
+            self.assertEqual(a["order_type"], "market")
+            self.assertEqual(b["exchange_id"], "binance")
+            self.assertEqual(b["account_id"], "account_b")
+            # distinct delivery_ids -> executor treats them independently
+            self.assertNotEqual(a["delivery_id"], b["delivery_id"])
+        finally:
+            config.INTENT_ROUTING = {}
+
     def test_symbol_helper(self):
         self.assertEqual(to_ccxt_perp_symbol("eth"), "ETH/USDT:USDT")
 

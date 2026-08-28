@@ -144,6 +144,15 @@ do not add `quantity`/`risk_amount` to the analyst intent.
 > *PM Decision Contract* (`POSITION_DECISION_DIR` files: `HOLD`/`REDUCE`/`EXIT`)
 > is a separate surface not yet wired. Until then `pm_advice` is advisory-only.
 
+**Per-strategy routing (multiple accounts/exchanges).** `INTENT_ROUTING` is a JSON
+map keyed by `strategy_id` that overrides `exchange_id` / `account_id` (and
+optionally `order_type`, `take_profit_mode`, `validity_minutes`, `source`) per
+strategy. Strategies not listed fall back to the `INTENT_*` defaults. This makes
+e.g. `impulse-ignition-v2` → `bybit/account_y` while `rsi-reclaim-v1` →
+`binance/account_b` possible from one analyst process. Distinct `delivery_id`s keep
+the executor profiles independent. The executor must have each referenced
+`exchange/account` configured in `EXECUTION_ACCOUNTS_JSON`.
+
 ## Operations
 
 ```bash
