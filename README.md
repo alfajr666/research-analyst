@@ -95,6 +95,10 @@ One-off evaluation cycle:
 | `INTENT_VALIDITY_MINUTES` | Entry validity window | `5` |
 | `INTENT_ROUTING` | Per-strategy `exchange_id`/`account_id` overrides (JSON) | *(empty)* |
 | `PM_SIDECAR_ENABLED` | Emit-only PM advice | `false` |
+| `EXECUTOR_SNAPSHOT_DIR` | Executor 1m position snapshots consumed by PM | derived from `BYBIT_EXECUTOR_DIR` |
+| `EXECUTOR_DECISION_DIR` | PMDecision files consumed by executor | derived from `BYBIT_EXECUTOR_DIR` |
+| `PM_REDUCE_FRACTION` | Fraction used for `REDUCE` decisions | `0.5` |
+| `PM_DECISION_VALIDITY_MINUTES` | Executor PM decision validity window | `30` |
 | `PRUNE_1M_DAYS`…`PRUNE_4H_DAYS` | Tiered `source_observations` retention | `7/30/90/365/365` |
 | `ROTATION_FEED_ENABLED` | Export OI rotation members to universe | `false` |
 
@@ -103,6 +107,7 @@ One-off evaluation cycle:
 | Symptom | Check |
 | --- | --- |
 | No intents delivered | `INTENT_DELIVERY_ENABLED`, `BYBIT_EXECUTOR_DIR`/`INTENT_INBOX` matches executor, `STRATEGY_ACTIVE_IDS`, geometry valid |
+| PM has no positions/decisions | Executor snapshot and decision directories match `POSITION_SNAPSHOT_DIR`/`POSITION_DECISION_DIR`; `PM_SIDECAR_ENABLED=true` |
 | No advisory signal | `DISCORD_ALPHA_WEBHOOK_URL`, `alpha_events`, `INTENT_INBOX` not relevant |
 | Stale/empty bars | `ws_gateway` running & sole writer; fresh completed `source_observations` |
 | Duplicate writers | Only one `ws_gateway`, one `orchestrator` per DB |

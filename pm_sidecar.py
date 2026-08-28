@@ -1,8 +1,12 @@
 """LLM position-management sidecar (phase 7, specs/llm-position-sidecar.md).
 
-Emit-only: reads `positions_feed` (executor-owned) + the originating trade-intent +
-HTF bias + swings + RR + 5m TA, and emits `hold|exit|reduce` with a one-liner to
-`pm_advice`. It never holds credentials, sizes, selects a venue, or places orders.
+Emit-only: reads open positions (bybit-executor 1m snapshots via
+EXECUTOR_SNAPSHOT_DIR, or the local positions_feed table as legacy fallback) + the
+originating trade-intent + HTF bias + swings + RR + 5m TA, and emits
+`hold|exit|reduce` with a one-liner to `pm_advice`. When EXECUTOR_DECISION_DIR is
+set, each advice is also exported as a PMDecision JSON file the executor consumes
+(HOLD/REDUCE/EXIT). It never holds credentials, sizes, selects a venue, or places
+orders.
 
 Disabled by default (`PM_SIDECAR_ENABLED=false`). On any LLM failure/timeout/parse
 error it emits `hold` (do no harm).
@@ -13,7 +17,8 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
@@ -42,7 +47,59 @@ def _load_open_positions(conn) -> List[Dict[str, Any]]:
     ).fetchall()
     cols = ["position_id", "symbol", "asset", "side", "entry", "size",
             "opened_at", "strategy_id", "current_pnl", "status"]
-    return [dict(zip(cols, r)) for r in rows]
+    out = [dict(zip(cols, r)) for r in rows]
+    # Carry the default profile so the decision writer knows where to deliver.
+    for p in out:
+        p.setdefault("exchange_id", getattr(config, "INTENT_EXCHANGE_ID", "bybit"))
+        p.setdefault("account_id", getattr(config, "INTENT_ACCOUNT_ID", "account_a"))
+    return out
+
+
+def _load_open_positions_from_snapshots(snapshot_dir) -> List[Dict[str, Any]]:
+    """Read open positions from bybit-executor 1m snapshots.
+
+    Expects ``<snapshot_dir>/<exchange_id>/<account_id>/latest.json`` whose
+    ``positions`` array carries the executor's position rows (keys: symbol, side,
+    status, position_id, quantity, entry_price, original_json). The originating
+    trade-intent lives in ``original_json`` (which holds strategy_id + asset).
+    """
+    base = Path(snapshot_dir or "")
+    if not base.exists():
+        return []
+    out: List[Dict[str, Any]] = []
+    for latest in base.glob("*/*/latest.json"):
+        exchange_id = latest.parent.parent.name
+        account_id = latest.parent.name
+        try:
+            data = json.loads(latest.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for p in data.get("positions", []):
+            if str(p.get("status")) not in ("OPEN", "PENDING", "open", "pending"):
+                continue
+            original: Dict[str, Any] = {}
+            try:
+                original = json.loads(p.get("original_json") or "{}")
+            except Exception:
+                original = {}
+            asset = original.get("asset")
+            if not asset and p.get("symbol"):
+                asset = str(p["symbol"]).split("/")[0]
+            out.append({
+                "position_id": p.get("position_id"),
+                "symbol": p.get("symbol"),
+                "asset": asset,
+                "side": p.get("side"),
+                "entry": p.get("entry_price"),
+                "size": p.get("quantity"),
+                "opened_at": p.get("updated_at"),
+                "strategy_id": original.get("strategy_id"),
+                "current_pnl": None,
+                "status": p.get("status"),
+                "exchange_id": exchange_id,
+                "account_id": account_id,
+            })
+    return out
 
 
 def _get_active_intent(conn, strategy_id: str, asset: str) -> Optional[Dict[str, Any]]:
@@ -175,9 +232,10 @@ def call_pm_llm(prompt: str) -> Optional[Dict[str, str]]:
     model = getattr(config, "LLM_MODEL", "") or os.getenv("LLM_MODEL", "") or "gpt-4o-mini"
     retries = max(0, getattr(config, "PM_LLM_RETRIES", 1))
     timeout = getattr(config, "PM_LLM_TIMEOUT_S", 20)
+    base_url = getattr(config, "LLM_BASE_URL", "") or None
     for _ in range(retries + 1):
         try:
-            client = OpenAI(api_key=api_key)
+            client = OpenAI(api_key=api_key, base_url=base_url)
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
@@ -219,8 +277,57 @@ def _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, observed_at) -
         return False
 
 
+def _write_decision_file(pos: Dict[str, Any], action: str, reason: str,
+                         cutoff: datetime, observed_at: datetime) -> bool:
+    """Export an advice as a PMDecision file for bybit-executor to consume.
+
+    Writes ``<EXECUTOR_DECISION_DIR>/<decision_id>.json`` matching the executor's
+    PMDecision contract (HOLD/REDUCE/EXIT). No-op when EXECUTOR_DECISION_DIR is
+    unset, so legacy (DB-only) operation is unaffected.
+    """
+    decision_dir = getattr(config, "EXECUTOR_DECISION_DIR", "") or ""
+    if not decision_dir:
+        return False
+    decision_dir = Path(decision_dir)
+    decision_dir.mkdir(parents=True, exist_ok=True)
+    action_up = str(action).upper()
+    if action_up not in ("HOLD", "EXIT", "REDUCE"):
+        action_up = "HOLD"
+    fraction = None
+    if action_up == "REDUCE":
+        fraction = float(getattr(config, "PM_REDUCE_FRACTION", 0.5))
+    validity = int(getattr(config, "PM_DECISION_VALIDITY_MINUTES", 30))
+    valid_until = observed_at + timedelta(minutes=validity)
+    decision_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"{pos.get('position_id')}|{cutoff.isoformat()}"))
+    payload = {
+        "schema_version": 1,
+        "decision_id": decision_id,
+        "exchange_id": pos.get("exchange_id") or getattr(config, "INTENT_EXCHANGE_ID", "bybit"),
+        "account_id": pos.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "account_a"),
+        "position_id": pos.get("position_id") or "",
+        "symbol": pos.get("symbol"),
+        "action": action_up,
+        "reduce_fraction": fraction,
+        "issued_at": observed_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reason": reason,
+    }
+    dest = decision_dir / f"{decision_id}.json"
+    try:
+        dest.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict[str, Any]:
     """One PM sidecar pass. No-op when disabled or no open positions.
+
+    Positions are read from bybit-executor 1m snapshots when EXECUTOR_SNAPSHOT_DIR
+    is set, otherwise from the local positions_feed table (legacy). Each emitted
+    advice is written to pm_advice and, when EXECUTOR_DECISION_DIR is set, exported
+    as a PMDecision file the executor consumes.
 
     Cadence is enforced by the 5m cutoff + deterministic advice_id (one advice per
     position per cutoff). Safe to call every tick.
@@ -231,8 +338,14 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
     cutoff = completed_cycle_for(now, f"{getattr(config, 'PM_CADENCE_MINUTES', 5)}m")
     conn = config.get_db_connection(read_only=False, db_path=db_path)
     try:
-        positions = _load_open_positions(conn)
+        positions: List[Dict[str, Any]] = []
+        snapshot_dir = getattr(config, "EXECUTOR_SNAPSHOT_DIR", "") or ""
+        if snapshot_dir:
+            positions = _load_open_positions_from_snapshots(snapshot_dir)
+        if not positions:
+            positions = _load_open_positions(conn)
         advices = 0
+        written = 0
         for pos in positions:
             asset = pos["asset"]
             intent = _get_active_intent(conn, pos["strategy_id"], asset)
@@ -251,7 +364,10 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
                 action, reason = decision["action"], decision["reason"]
             if _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, now):
                 advices += 1
-        return {"enabled": True, "positions": len(positions), "advices": advices}
+                if _write_decision_file(pos, action, reason, cutoff, now):
+                    written += 1
+        return {"enabled": True, "positions": len(positions),
+                "advices": advices, "decisions_written": written}
     finally:
         conn.close()
 

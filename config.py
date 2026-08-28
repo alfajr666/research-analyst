@@ -387,6 +387,24 @@ try:
 except (ValueError, TypeError):
     INTENT_ROUTING = {}
 
+# PM sidecar <-> bybit-executor handoff (the executor's PM Decision Contract).
+# EXECUTOR_SNAPSHOT_DIR: where the executor writes its 1m position snapshots
+#   (<dir>/<exchange_id>/<account_id>/latest.json). When set, the PM sidecar reads
+#   OPEN/PENDING positions from there instead of the local positions_feed table.
+# EXECUTOR_DECISION_DIR: the executor's POSITION_DECISION_DIR — the PM sidecar
+#   writes one PMDecision file (<decision_id>.json) per advice there. If unset, the
+#   sidecar stays DB-only (no executor delivery).
+if BYBIT_EXECUTOR_DIR:
+    _default_exec_snapshots = Path(BYBIT_EXECUTOR_DIR) / "data" / "position-snapshots"
+    _default_exec_decisions = Path(BYBIT_EXECUTOR_DIR) / "data" / "position-decisions"
+else:
+    _default_exec_snapshots = ""
+    _default_exec_decisions = ""
+EXECUTOR_SNAPSHOT_DIR = os.getenv("EXECUTOR_SNAPSHOT_DIR", str(_default_exec_snapshots)) if _default_exec_snapshots else os.getenv("EXECUTOR_SNAPSHOT_DIR", "")
+EXECUTOR_DECISION_DIR = os.getenv("EXECUTOR_DECISION_DIR", str(_default_exec_decisions)) if _default_exec_decisions else os.getenv("EXECUTOR_DECISION_DIR", "")
+PM_REDUCE_FRACTION = float(os.getenv("PM_REDUCE_FRACTION", "0.5"))
+PM_DECISION_VALIDITY_MINUTES = int(os.getenv("PM_DECISION_VALIDITY_MINUTES", "30"))
+
 # accumulation-base-v2 knobs (specs/strategy-accumulation-base-v2.md)
 # Defaults grilled 2026-08-18 — independent prefixes; tighter coil / emit floor.
 ACC_V2_N = int(os.getenv("ACC_V2_N", "12"))
@@ -510,6 +528,8 @@ LLM_RESEARCH_ENABLED = os.getenv("LLM_RESEARCH_ENABLED", "false").lower() == "tr
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+# Base URL for OpenAI-compatible routers (e.g. local 9router). Empty -> api.openai.com.
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
 LLM_MAX_REPORTS_PER_CYCLE = int(os.getenv("LLM_MAX_REPORTS_PER_CYCLE", "2"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
