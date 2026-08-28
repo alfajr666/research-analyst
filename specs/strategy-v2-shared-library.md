@@ -21,28 +21,26 @@ contracts in the per-family specs.
 ## Module map (current → target)
 
 ```text
-                    finalized cutoff snapshot
-                              │
-              ┌───────────────┼───────────────┐
-              v               v               v
-     strategy_v2_context   structure_zones   (optional VP snapshot)
-         bars/resample         FVG/OB
-         bias/compression
-         re-arm / zones
-              │
-              v
-        confluence_scoring
-         proximity bins
-         weighted_confluence
-         confidence_from_confluence
-              │
-     ┌────────┼────────┐
-     v        v        v
-  accum_v2  ign_v2  cont_v2     ← thesis + entry_condition only
-     │        │        │
-     └────────┼────────┘
-              v
-         alpha_outbox
+                     finalized cutoff snapshot
+                               │
+               ┌───────────────┼───────────────┐
+               v               v               v
+      strategy_v2_context   structure_zones   (optional VP snapshot)
+          bars/resample         FVG/OB
+          bias/compression
+          re-arm / zones
+               │
+               v
+         confluence_scoring
+               │
+   ┌─────┬─────┼─────┬──────────┐
+   v     v     v     v          v
+ accum  ign  cont  rsi-reclaim  LSR (+ session_levels,
+                                    market_structure,
+                                    liquidity_sweep)
+   └─────┴─────┴─────┴──────────┘
+               v
+          alpha_outbox
 ```
 
 | Module | Role | Owns today |
@@ -54,6 +52,10 @@ contracts in the per-family specs.
 | `impulse_ignition_v2.py` | Base lid breakout thesis | Family plugin |
 | `continuation_breakout_v2.py` | Trend+flag breakout thesis | Family plugin |
 | `rsi_reclaim_v1.py` | RSI pullback + EMA reclaim thesis | Family plugin |
+| `session_levels.py` (**must build**) | UTC PDH/PDL from completed 15m | Shared structure primitive |
+| `market_structure.py` (**must build**) | Confirmed 2-left/2-right pivots | Shared structure primitive |
+| `liquidity_sweep.py` (**must build**) | Sweep+reclaim, freeze, BOS, impulse, invalidation | Shared structure primitive |
+| `liquidity_sweep_reversal_v1.py` (**must build**, after helpers) | Counter-context sweep → BOS → impulse midpoint limit | Family plugin — `specs/strategy-liquidity-sweep-reversal-v1.md` |
 | `strategy_plugins.py` | Registry + cutoff invoke | Wiring only |
 
 ## Shared API surface (canonical)
@@ -103,27 +105,65 @@ weighted_confluence(components, weights) -> (score, weighted_parts)
 confidence_from_confluence(score) -> (confidence, "uncalibrated")
 ```
 
-### Emit ops
+### Emit ops (shipped vs backlog)
 
 ```text
+# SHIPPED
 has_active_event(strategy_id, asset, direction, ...) -> bool
-# target extract (if not already pure):
-select_top_n(candidates, s_min, n_top) -> list   # score ≥ s_min then top N
+
+# BACKLOG only (each plugin still inlines today — do not assume these exist)
+select_top_n(candidates, s_min, n_top) -> list
 build_1_5r_target(entry, inv, direction) -> price
+# LSR uses 2.0R inline: entry ± target_r * |entry - inv|
 ```
 
-Plugins should call these rather than reimplementing ATR bins, bias tables, or
-re-arm file scans.
+### Session levels / market structure / liquidity sweep (**must build** for LSR)
+
+Normative contracts: `specs/strategy-liquidity-sweep-reversal-v1.md`
+§ Shared modules + § Implementation contract.
+
+Ship M1–M3 **before** enabling `liquidity-sweep-reversal-v1`. Plugin must import
+these; no inline PDH/pivot/sweep duplicates. M3 is pure geometry (takes pdh/pdl
+and structure level as args); plugin wires M1+M2→M3.
+
+```text
+# session_levels.py
+pdh_pdl(bars_15m, asof_ts) -> {pdh, pdl, prior_utc_day, bar_count} | None
+
+# market_structure.py
+confirmed_pivot_highs(bars_15m, left=2, right=2) -> list[pivot]
+confirmed_pivot_lows(bars_15m, left=2, right=2) -> list[pivot]
+latest_confirmed_pivot_high(bars_15m, asof_index, left=2, right=2) -> pivot | None
+latest_confirmed_pivot_low(bars_15m, asof_index, left=2, right=2) -> pivot | None
+
+# liquidity_sweep.py
+qualify_bullish_sweep / qualify_bearish_sweep
+arm_long_sweep / arm_short_sweep
+advance_sweep_state(state, bars, through_index, bos_window=8)
+bos_long / bos_short
+impulse_long / impulse_short
+entry_mid / invalidation_long / invalidation_short
+```
+
+Also planned plugin-local (may later lift): `emitted_today(...)` UTC-day side cap
+for LSR (broader than `has_active_event`).
+
+Plugins should call shared helpers rather than reimplementing ATR bins, bias
+tables, or re-arm file scans.
 
 ## Per-plugin responsibility (only)
 
-| Concern | accum | ignition | continuation | rsi-reclaim |
-|---------|-------|----------|--------------|-------------|
-| Extra hard gates | `d_max` to EMA99_1h | edge `e`, no breach, `c_ratio` | 4h `t_min`, flag `retr_max`, `x_max` | 1h sep band, RSI turn, touch/reclaim, body floor |
-| Entry type | `limit_at_ema_context` | `breakout_above/below` @ base | `breakout_*` @ flag | `breakout_*` @ reclaim close |
-| Invalidation | worse-of EMA band vs base | opposite base | opposite flag | worse-of bar extreme vs mid EMA |
-| Weight map | ema/volume-centric | OI/funding/RS/impulse | trend/retrace/acceptance | RSI/reclaim/extension-centric |
-| Config prefix | `ACC_V2_*` | `IGN_V2_*` | `CONT_V2_*` | `RSI_RECLAIM_*` |
+| Concern | accum | ignition | continuation | rsi-reclaim | liq-sweep-rev |
+|---------|-------|----------|--------------|-------------|---------------|
+| Extra hard gates | `d_max` to EMA99_1h | edge `e`, no breach, `c_ratio` | 4h `t_min`, flag `retr_max`, `x_max` | 1h sep band, RSI turn, touch/reclaim, body floor | reverse-of-4h-bias, PDH/PDL sweep, pivot BOS, impulse mid |
+| Entry type | `limit_at_ema_context` | `breakout_above/below` @ base | `breakout_*` @ flag | `breakout_*` @ reclaim close | `limit_at_impulse_mid` (+ FVG snap) |
+| Invalidation | worse-of EMA band vs base | opposite base | opposite flag | worse-of bar extreme vs mid EMA | sweep extreme ± 0.15 SweepATR |
+| Weight map | ema/volume-centric | OI/funding/RS/impulse | trend/retrace/acceptance | RSI/reclaim/extension-centric | FVG magnet + sweep/displacement quality |
+| Shared deps | context/zones/score | same | same | same | **+ session_levels + market_structure + liquidity_sweep** |
+| Config prefix | `ACC_V2_*` | `IGN_V2_*` | `CONT_V2_*` | `RSI_RECLAIM_*` | **`LSR_V1_*`** |
+| Purity class | PRICE_STRUCTURE | MIXED | MIXED | PRICE_STRUCTURE | **PRICE_STRUCTURE** |
+| Default enabled | yes | yes | yes | opt-in | **opt-in** |
+| Target R / horizon | 1.5 / 4h | 1.5 / 4h | 1.5 / 4h | 1.5 / 4h | **2.0 / 2h** |
 
 ## Extraction backlog (optional deepenings)
 
@@ -143,25 +183,33 @@ Do not extract thesis-specific retrace/extension math into a god-module.
 
 ## Config layout
 
-Independent env prefixes (grilled): `ACC_V2_*`, `IGN_V2_*`, `CONT_V2_*`, `RSI_RECLAIM_*`.
-Plus global `LLM_BOOST_CAP` (delivery-order only).
+Independent env prefixes (grilled): `ACC_V2_*`, `IGN_V2_*`, `CONT_V2_*`,
+`RSI_RECLAIM_*`, **`LSR_V1_*`**. Plus global `LLM_BOOST_CAP` (delivery-order only).
 
-### Locked defaults (2026-08-18 grill)
+LSR must also be listed in `PRICE_STRUCTURE_STRATEGY_IDS` (with accumulation +
+rsi-reclaim) so `alpha_outbox.write_event` allows the OHLCV-only path.
 
-| Knob | Acc | Ign | Cont |
-|------|-----|-----|------|
-| `N` | 12 | 12 | 12 |
-| `k` | 2.0 | 2.0 | 2.0 |
-| `g` | 0.25 | 0.25 | 0.25 |
-| `d_max` | 0.50 | — | — |
-| `e` | — | 0.35 | 0.35 |
-| `r_max` | 2.5 | 2.5 | 2.5 |
-| `S_min` | 0.55 | 0.55 | 0.55 |
-| `N_top` | 3 | 3 | 3 |
-| `P` / `c_ratio` | — | 20 / 0.85 | — |
-| `P` / `t_min` | — | — | 12 / 1.0 |
-| `retr_max` | — | — | 0.40 |
-| `x_max` / `x_bars` | — | — | 3.0 / 96 |
+### Locked defaults (2026-08-18 grill + LSR lock)
+
+| Knob | Acc | Ign | Cont | RSI | **LSR** |
+|------|-----|-----|------|-----|---------|
+| `N` | 12 | 12 | 12 | — | — |
+| `k` | 2.0 | 2.0 | 2.0 | — | — |
+| `g` | 0.25 | 0.25 | 0.25 | — | — |
+| `d_max` | 0.50 | — | — | — | — |
+| `e` | — | 0.35 | 0.35 | — | — |
+| `r_max` | 2.5 | 2.5 | 2.5 | 2.5 | **3.0** |
+| `S_min` | 0.55 | 0.55 | 0.55 | 0.55 | **0.55** |
+| `N_top` | 3 | 3 | 3 | 3 | **3** |
+| target R | 1.5 | 1.5 | 1.5 | 1.5 | **2.0** |
+| horizon_min | 240 | 240 | 240 | 240 | **120** |
+| `P` / `c_ratio` | — | 20 / 0.85 | — | — | — |
+| `P` / `t_min` | — | — | 12 / 1.0 | — | — |
+| `retr_max` | — | — | 0.40 | — | — |
+| `x_max` / `x_bars` | — | — | 3.0 / 96 | — | — |
+| sweep band ATR | — | — | — | — | **0.10–1.00** |
+| bos_window | — | — | — | — | **8** |
+| stop buf ATR | — | — | — | — | **0.15** |
 | `WEIGHT_PROFILE` | — | — | `balanced` (`early`\|`balanced`\|`confirmed`) |
 | `LLM_BOOST_CAP` | 0.10 (global) | | |
 

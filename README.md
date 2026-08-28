@@ -1,188 +1,116 @@
-# Alpha Producer
+# Research Analyst
 
-Alpha Producer is a research-grade, medium-frequency source of venue-neutral crypto-perpetual trade theses. It identifies and records a portable market thesis, then delivers it to Telegram and, only when explicitly enabled, target-bot inboxes. It does not place orders.
+A discovery + strategy-evaluation engine for crypto USDT perpetuals. It turns warmed
+market data into **advisory alpha events** (Discord) and **executor trade-intent
+envelopes** (`schema_version=1` JSON consumed by `bybit-executor`). It never holds
+exchange credentials, sizes, or places orders — those are the executor's domain.
 
 ```text
-Producer: market data -> discovery -> evaluation -> alpha event -> delivery
-Engine:                                                    event -> risk -> execution
+Analyst:  market data -> discovery -> strategy eval -> alpha event  (Discord, advisory)
+                                                 \-> trade intent (shared inbox -> bybit-executor)
+Executor:                                         intent -> risk -> sizing -> order -> position lifecycle
 ```
-
-The producer owns candidate selection, direction, setup class, phase, entry condition, invalidation, targets, expiry, feature snapshot, and research confidence. A consuming engine owns venue mapping, live tradeability, liquidity and cost checks, portfolio conflicts, sizing, leverage, order selection, and position lifecycle.
 
 ## Architecture
 
 ```text
-Binance 24h contract metadata + CoinAnalyze 15m/hourly market data
-                              |
-                              v
-                    orchestrator (DB_PATH)
-      snapshots -> discovery -> watchlists -> backfill -> evaluators
-                              |
-                              v
-              data/alpha_outbox/*.json (atomic, deduplicated)
-                              |
-                              v
-                 signal-publisher (ALPHA_DB_PATH)
-                 /              |               \
-                v               v                v
-          alpha ledger     Telegram       enabled bot inboxes
+Bybit WS (on) / Binance WS (off): 1m + 5m kline + markPrice
+                               |
+                               v
+                     ws_gateway  (resamples 15m/1h/4h from 5m)
+                               |   source_observations  (single writer)
+                               v
+                  orchestrator  (sole writer of DB_PATH)
+       strategy plugins -> alpha_outbox (advisory) -- Discord
+                        \-> intent_outbox -- INTENT_INBOX -- bybit-executor
+       + pruning (tiered per-interval), rotation feed, PM sidecar (emit-only)
 ```
 
-### Live topology (Nautilus cutover)
+- **Universe:** static 97-symbol list (`symbols/static_universe.json`); optional
+  Binance OI rotation members via `WS_SYMBOL_SOURCE=rotated|both`.
+- **Ingestion:** WebSocket (`ws_gateway`), Bybit on / Binance off; `1m`+`5m` streamed,
+  `15m/1h/4h` resampled locally. Bars stamped `data_purity=pure_ws`.
+- **Strategies:** v2 plugins (`accumulation-base-v2`, `impulse-ignition-v2`,
+  `continuation-breakout-v2`) + `rsi-reclaim-v1` + `liquidity-sweep-reversal-v1`
+  (opt-in). Evaluated on `1m/5m/15m`; `1h/4h` are enrichment only. Enabled via
+  `STRATEGY_ENABLED_IDS` (registry) and `STRATEGY_ACTIVE_IDS` (runtime toggle).
+- **Outboxes:** advisory alpha event → `data/alpha_outbox/` → Discord; trade intent
+  → `INTENT_INBOX` → `bybit-executor`.
 
-**Production for NT keeps only the OI scanner.** Do not restart `orchestrator` / `signal-publisher` for Nautilus deploys.
+## Trade-intent handoff (no guessing)
 
-| Process | Responsibility | Live |
-| --- | --- | --- |
-| `binance-oi-rotation-scanner` | BN OI qualify/rank, feed, membership TTL (~36h), hard prune, static membership skip | **Online** |
-| `orchestrator` | Legacy full research pipeline | **Stopped** |
-| `signal-publisher` | Legacy alpha delivery | **Stopped** |
+The analyst writes `INTENT_INBOX`; `bybit-executor` reads it. One knob resolves the
+shared path to the executor's own default inbox:
 
-Retention + static skip: [`specs/binance-oi-rotation-retention.md`](specs/binance-oi-rotation-retention.md). NT consumes via `data-oi` static-subtract ([ADR-013](../nautilus-trading-os/specs/ADR-013-oi-rotating-static-subtract-and-ttl.md)).
-
-### Historical PM2 apps (research path)
-
-| Process | Responsibility | Schedule |
-| --- | --- | --- |
-| `orchestrator` | Ingestion, universe snapshots, two-pool discovery, durable backfill, retention, regime and strategy evaluation | Every 15 minutes; discovery hourly |
-| `signal-publisher` | Event validation/persistence, optional local-evidence research, Telegram and configured bot-inbox delivery | Every 30 seconds |
-
-When those apps run, `orchestrator` is the sole writer of `DB_PATH` and `signal-publisher` of `ALPHA_DB_PATH`. Keep paths distinct; do not duplicate writers.
-
-When CoinAnalyze is rate-limited (high 429s or stale 15m bars), non-critical CA calls are shaped and the system automatically fails over to Binance USDM + Bybit Linear (venue_agg_v1) for OHLCV + best-effort OI/funding. Core CA ohlcv continues for recovery detection. See specs/ca-limited-takeover.md, MARKET_FAILOVER_ENABLED, CA_SHAPE_ON_CIRCUIT. Preferred loader and purity stamps preserve strategy correctness.
-
-## Discovery and Evaluation
-
-Every eligible Binance USDT perpetual is retained in point-in-time universe and broad-discovery snapshots, including rejected contracts. Assets are classified as `core`, `emerging`, or `not_eligible`, so historical work can use the universe that existed at the time rather than today's survivors.
-
-The hourly scanner independently ranks two capped pools:
-
-| Pool | Finds | Excludes |
-| --- | --- | --- |
-| `ignition` | Quiet, compressed bases where activity or positioning may precede a move | Fresh breakouts, post-breakout pullbacks, high current movement/volume |
-| `continuation` | Established directional movement with volume and OI participation | Illiquid and exhausted expansions |
-
-New watchlist selections create a durable `deep_backfill_jobs` record. The scanner obtains 14 days of 15-minute OHLCV, OI, and funding before a candidate qualifies. Watchlist history is append-only; selection has a 24-hour minimum residency and then requires continued qualification.
-
-Evaluators use local warmed DuckDB data only. They never call CoinAnalyze and never write raw market data. The optional `FREQTRADE_DATA_DIR` Feather archive is for historical research, not live input.
-
-| Setup class | Hypothesis |
-| --- | --- |
-| `accumulation_base` | EMA99 pullback and completed-bar confirmation |
-| `impulse_ignition` | Pre-breakout compression with supporting activity and positioning |
-| `continuation_breakout` | Established move with re-acceleration evidence |
-
-All decisions use completed 15-minute candles. Evaluators cut off at the current UTC 15-minute boundary, query only earlier bars, and reject stale data. The intended horizon is 15 minutes to hours, not sub-minute execution.
-
-## Alpha Events and Delivery
-
-Evaluators atomically write schema-versioned JSON events to `data/alpha_outbox/`. Each event is deduplicated by `strategy_id`, `asset`, `direction`, and `observed_at`.
-
-```json
-{
-  "schema_version": 1,
-  "alpha_id": "deterministic UUID",
-  "strategy_id": "impulse-ignition-v1",
-  "asset": "SOL",
-  "direction": "long",
-  "setup_class": "impulse_ignition",
-  "phase": "armed_base",
-  "observed_at": "2026-08-16T10:15:00Z",
-  "valid_until": "2026-08-16T14:15:00Z",
-  "horizon_minutes": 240,
-  "confidence": 0.67,
-  "entry_condition": {"type": "breakout_above", "price": 145.2},
-  "invalidation_price": 142.7,
-  "targets": [148.1, 151.0],
-  "feature_snapshot": {}
-}
+```bash
+BYBIT_EXECUTOR_DIR=/home/ubuntu/bybit-executor
+INTENT_DELIVERY_ENABLED=true
 ```
 
-`confidence` is a score-derived research estimate, not a calibrated production probability. `feature_snapshot` is immutable. Events are `active`, `expired`, or `invalidated`.
-
-The publisher validates and persists each event before delivery. `alpha_events` is authoritative. `signal_deliveries` records Telegram attempts, responses/errors, retry times, and completion. Active events may be sent to Telegram; bounded retries do not duplicate the event.
-
-## Optional Integrations
-
-### Local-Evidence Research
-
-LLM research is disabled by default. Set `LLM_RESEARCH_ENABLED=true` only after supplying a provider key, model, pricing, and a suitable monthly budget. The coordinator works from local event evidence and is bounded by timeout, retry, report, and input/output limits. Its Telegram note is advisory and cannot change deterministic event fields.
-
-### Execution Inboxes
-
-The adapter is disabled by default. It can write validated, immutable messages into target bot inboxes for `bybit`, `bybit-test`, `mexc`, or `propr`; it never connects to an exchange or submits an order.
-
-Enable an individual target with its `EXECUTION_*_ENABLED` setting and use an asset allowlist where required. Only active, unexpired events with a supported `limit_at_ema_context` entry, exactly one target, valid stop/target geometry, and a supported asset are forwarded. Delivery state and bot receipts are retained in `execution_deliveries`.
+`INTENT_INBOX` then defaults to `<BYBIT_EXECUTOR_DIR>/data/intents`. If the executor
+overrides its `INTENT_INBOX`, set the analyst's `INTENT_INBOX` to the same absolute
+path. **The intent carries no sizing** — the executor sizes from its account profile
+(`risk.risk_amount`). Geometry (`stop_loss < entry_price < take_profit` for LONG) is
+validated before delivery; invalid events are skipped.
 
 ## Setup
 
-1. Create your local configuration.
-
 ```bash
 cp .env.example .env
-```
-
-Set `COINANALYZE_API_KEY` for live market collection. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` for Telegram delivery. Keep every execution integration disabled until its receiving bot and allowlist are ready.
-
-2. Create a virtual environment and install dependencies.
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+python config.py          # create tables / apply migrations
 ```
 
-3. Initialize the schemas.
-
-```bash
-python config.py
-```
-
-`config.py` creates missing tables and applies normal column migrations. Do not delete a populated database to apply regular schema changes: doing so destroys raw data, discovery snapshots, candidates, outcomes, and delivery history.
-
-4. Optionally bootstrap selected assets with deep history.
-
-```bash
-./venv/bin/python bootstrap_trend_history.py --days 14
-```
-
-Normal discovery queues this work automatically when an asset first enters a pool.
+Set `DISCORD_ALPHA_WEBHOOK_URL` for advisory signals. For executor delivery, set
+`BYBIT_EXECUTOR_DIR` and `INTENT_DELIVERY_ENABLED=true`.
 
 ## Running
 
-Start the supported PM2 topology:
-
 ```bash
-pm2 start ecosystem.config.js
-pm2 status
-pm2 logs orchestrator
-pm2 logs signal-publisher
+./venv/bin/python ws_gateway.py &     # ingestion (single writer of source_observations)
+./venv/bin/python orchestrator.py     # eval + delivery loop (single writer of DB_PATH)
 ```
 
-Restart it after changing Python or PM2 configuration:
-
-```bash
-pm2 restart ecosystem.config.js
-```
-
-Run a one-off ingestion, discovery, and evaluation cycle with immediate event publishing:
+One-off evaluation cycle:
 
 ```bash
 ./venv/bin/python orchestrator.py --once
 ```
 
+## Key Configuration (see `.env.example`)
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `WS_BYBIT_ENABLED` / `WS_BINANCE_ENABLED` | WS sources | `true` / `false` |
+| `WS_STREAM_TIMEFRAMES` | Bars streamed (5m base for resampling) | `1m,5m` |
+| `WS_SYMBOL_SOURCE` | `static` / `rotated` / `both` | `static` |
+| `EVAL_INTERVALS` | Strategy eval cutoffs | `1m,5m,15m` |
+| `STRATEGY_ENABLED_IDS` | Registered plugins | v1+v2+rsi (+lsr opt-in) |
+| `STRATEGY_ACTIVE_IDS` | Runtime-active subset (empty = all) | *(empty)* |
+| `BYBIT_EXECUTOR_DIR` | Executor repo root → resolves `INTENT_INBOX` | *(empty)* |
+| `INTENT_DELIVERY_ENABLED` | Emit executor trade intents | `false` |
+| `INTENT_EXCHANGE_ID` / `INTENT_ACCOUNT_ID` | Executor profile | `bybit` / `account_a` |
+| `INTENT_ORDER_TYPE` | `limit` (IOC) / `market` | `limit` |
+| `INTENT_VALIDITY_MINUTES` | Entry validity window | `5` |
+| `PM_SIDECAR_ENABLED` | Emit-only PM advice | `false` |
+| `PRUNE_1M_DAYS`…`PRUNE_4H_DAYS` | Tiered `source_observations` retention | `7/30/90/365/365` |
+| `ROTATION_FEED_ENABLED` | Export OI rotation members to universe | `false` |
+
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
-| No ingestion or discovery | `COINANALYZE_API_KEY`, then `pm2 logs orchestrator` |
-| Selected asset has no event | `discovery_watchlist_history`, `deep_backfill_jobs`, fresh completed `source_observations`, then evaluator outbox files |
-| No Telegram signal | Credentials, `alpha_events`, `signal_deliveries`, then `pm2 logs signal-publisher` |
-| No bot-inbox item | Target enablement/allowlist, event shape and expiry, then `execution_deliveries` |
-| DuckDB lock error | Stop duplicate processes; retain one market-data writer and one separate publisher-ledger writer |
-| No regime context | Retain enough 15-minute history for daily/hourly aggregation; the Feather archive does not populate live DuckDB |
-| CA rate limited / stale bars | Shaping active (see logs for "CA limited"), failover to venue_agg_v1; check caLimited in health.json; core CA still fetched lightly |
+| No intents delivered | `INTENT_DELIVERY_ENABLED`, `BYBIT_EXECUTOR_DIR`/`INTENT_INBOX` matches executor, `STRATEGY_ACTIVE_IDS`, geometry valid |
+| No advisory signal | `DISCORD_ALPHA_WEBHOOK_URL`, `alpha_events`, `INTENT_INBOX` not relevant |
+| Stale/empty bars | `ws_gateway` running & sole writer; fresh completed `source_observations` |
+| Duplicate writers | Only one `ws_gateway`, one `orchestrator` per DB |
 
 ## Research Constraints
 
-Treat each setup class and strategy version as an independent hypothesis. Evaluate with point-in-time universes and immutable candidate records, walk-forward splits, asset-relative normalization, liquidity-tier/regime reporting, conservative fees/spread/slippage/funding, and matched baselines. The current HMM results, discovery ranks, confidence scores, LLM commentary, and delivery records are not evidence of alpha or execution authorization.
+Treat each setup class and plugin version as an independent hypothesis. Evaluate with
+point-in-time universes, immutable candidate records, walk-forward splits,
+asset-relative normalization, liquidity-tier/regime reporting, conservative
+fees/spread/slippage/funding, and matched baselines. Discovery ranks, confidence
+scores, LLM commentary, and delivery records are **not** evidence of alpha or
+execution authorization.

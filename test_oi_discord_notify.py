@@ -27,13 +27,17 @@ class OiDiscordNotifyTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.db = str(Path(self.directory.name) / "market.db")
         self.previous_db = config.DB_PATH
+        self.previous_oi = getattr(config, "BINANCE_OI_DB_PATH", self.db)
         config.DB_PATH = self.db
+        config.BINANCE_OI_DB_PATH = self.db  # reuse for test simplicity
         config.init_db(self.db)
+        config.init_binance_oi_db(self.db)
         self.interval = datetime(2026, 8, 18, 5, 0, tzinfo=timezone.utc)
         self.now = self.interval + timedelta(minutes=3)
 
     def tearDown(self):
         config.DB_PATH = self.previous_db
+        config.BINANCE_OI_DB_PATH = self.previous_oi if hasattr(self, 'previous_oi') else self.previous_db
         self.directory.cleanup()
 
     def _seed_event(self, interval, asset="LAB", rank=1):
@@ -50,7 +54,7 @@ class OiDiscordNotifyTests(unittest.TestCase):
                 "volume_anomaly": 1.5,
             }
             conn.execute(
-                "INSERT INTO binance_oi_rotation_events VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO binance_oi_rotation_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "binance_usdm",
                     asset,
@@ -60,6 +64,7 @@ class OiDiscordNotifyTests(unittest.TestCase):
                     rank,
                     json.dumps(metrics),
                     self.now,
+                    60,
                 ),
             )
             conn.commit()
@@ -91,8 +96,8 @@ class OiDiscordNotifyTests(unittest.TestCase):
              patch.object(config, "BINANCE_OI_DISCORD_SKIP_EMPTY", True):
             first = notify_oi_feed(feed, transport=transport, db_path=self.db, now=lambda: self.now)
             second = notify_oi_feed(feed, transport=transport, db_path=self.db, now=lambda: self.now)
-        self.assertEqual(first, {"hour": "sent", "multi": "sent"})
-        self.assertEqual(second, {"hour": "already_sent", "multi": "already_sent"})
+        self.assertEqual(first, {"short": "skipped", "hour": "sent", "multi": "sent"})
+        self.assertEqual(second, {"short": "skipped", "hour": "already_sent", "multi": "already_sent"})
         self.assertEqual(len(transport.messages), 2)
         self.assertIn("1h", transport.messages[0])
         self.assertIn("multi-hour", transport.messages[1])

@@ -40,23 +40,48 @@ STARTUP_TIME = time.time()
 DAEMON_MODE = False
 
 def prune_db(conn, futures_retention_days: int, auxiliary_retention_days: int = 30):
-    """Prunes auxiliary data and optionally retains longer futures history for research."""
-    auxiliary_limit = datetime.now(timezone.utc) - timedelta(days=auxiliary_retention_days)
-    futures_limit = (
-        datetime.now(timezone.utc) - timedelta(days=futures_retention_days)
-        if futures_retention_days > 0 else None
-    )
+    """Prunes auxiliary data and retains market history per-interval (phase 8 tiered TTL).
+
+    `source_observations` is pruned per interval using `config.PRUNE_INTERVAL_DAYS`
+    (1m short, 5m/15m medium, 1h/4h long). Intervals not covered by the tiers fall
+    back to the legacy `futures_retention_days` (0 disables that fallback).
+    """
+    now_utc = datetime.now(timezone.utc)
+    auxiliary_limit = now_utc - timedelta(days=auxiliary_retention_days)
     print(f"Pruning auxiliary records older than {auxiliary_limit.strftime('%Y-%m-%d %H:%M:%S')} UTC...")
     try:
         # Prune option_chains
         res_opt = conn.execute("DELETE FROM option_chains WHERE timestamp < ?", (auxiliary_limit,)).rowcount
         res_brain = conn.execute("DELETE FROM brain_outputs WHERE timestamp < ?", (auxiliary_limit,)).rowcount
-        if futures_limit is None:
-            res_fut = 0
-            print("  Futures history pruning disabled.")
-        else:
-            res_fut = conn.execute("DELETE FROM source_observations WHERE source_end < ?", (futures_limit,)).rowcount
-        
+
+        # Tiered source_observations pruning by interval.
+        tiers = getattr(config, "PRUNE_INTERVAL_DAYS", {})
+        res_fut = 0
+        for iv, days in tiers.items():
+            if not days or days <= 0:
+                continue
+            limit = now_utc - timedelta(days=days)
+            n = conn.execute(
+                "DELETE FROM source_observations WHERE interval = ? AND source_end < ?",
+                (iv, limit),
+            ).rowcount
+            res_fut += n
+        # Fallback for any interval not in the tiered map (uses legacy retention).
+        if futures_retention_days > 0 and tiers:
+            placeholders = ",".join("?" for _ in tiers) or "?"
+            limit = now_utc - timedelta(days=futures_retention_days)
+            n = conn.execute(
+                f"DELETE FROM source_observations WHERE interval NOT IN ({placeholders}) AND source_end < ?",
+                list(tiers.keys()) + [limit],
+            ).rowcount
+            res_fut += n
+        elif futures_retention_days > 0:
+            limit = now_utc - timedelta(days=futures_retention_days)
+            n = conn.execute(
+                "DELETE FROM source_observations WHERE source_end < ?", (limit,)
+            ).rowcount
+            res_fut += n
+
         conn.commit()
         print(f"  Pruned: {res_opt} option chains, {res_fut} source_observation rows, {res_brain} brain outputs.")
         
@@ -436,7 +461,7 @@ def _run_pipeline():
 
     # Cutoff + plugins (data platform v2 path). Legacy direct evaluators cleaned up post cutover.
     try:
-        from alpha_evaluator import completed_cycle
+        from strategy_v2_context import completed_cycle
         cutoff_at = completed_cycle(datetime.now(timezone.utc))
         cutoff_id = _get_or_create_cutoff_run(cutoff_at)
         # finalize now that ingestion complete
@@ -542,9 +567,29 @@ def _run_pipeline():
         except Exception as fe:
             print(f"Feature mat err: {fe}")
 
-        from strategy_plugins import invoke_plugins_for_cutoff
-        pres = invoke_plugins_for_cutoff(config.DB_PATH, cutoff_id, now=datetime.now(timezone.utc))
-        print(f"Plugins for {cutoff_id}: { {k: v.get('emitted', v) for k,v in pres.items()} }")
+        from strategy_plugins import invoke_plugins_for_intervals, ensure_plugin_states
+        ensure_plugin_states(config.DB_PATH)
+        pres = invoke_plugins_for_intervals(config.DB_PATH, now=datetime.now(timezone.utc))
+        for iv, ivres in pres.items():
+            print(f"Plugins [{iv}] for {cutoff_id}: { {k: v.get('emitted', v) for k,v in ivres.items()} }")
+
+        # Phase 7: LLM position-management sidecar (emit-only, 5m cadence via cutoff).
+        if config.PM_SIDECAR_ENABLED:
+            try:
+                from pm_sidecar import run_once as run_pm_sidecar
+                pm = run_pm_sidecar(config.DB_PATH, now=datetime.now(timezone.utc))
+                print(f"PM sidecar: {pm}")
+            except Exception as pe:
+                print(f"PM sidecar err: {pe}")
+
+        # Phase 9: rotation feed (disabled by default; also needs WS_SYMBOL_SOURCE=rotated|both).
+        if config.ROTATION_FEED_ENABLED:
+            try:
+                from rotation_feed import refresh_rotation_feed
+                rf = refresh_rotation_feed()
+                print(f"Rotation feed: {rf}")
+            except Exception as re:
+                print(f"Rotation feed err: {re}")
 
         # Dedicated outcome evaluator (market read-only)
         try:

@@ -11,3 +11,4 @@ anyio==4.13.0
 hmmlearn>=0.3.0
 numpy>=1.26.0
 pandas>=2.0.0
+websockets>=12

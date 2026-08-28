@@ -10,7 +10,7 @@ from typing import Callable
 import config
 from binance_oi_rotation_scanner import SOURCE
 from discord_format import (
-    format_oi_hour_message,
+    format_oi_bar_message,
     format_oi_multi_hour_message,
     multi_hour_boundary,
     parse_timestamp,
@@ -84,6 +84,7 @@ def load_multi_hour_rows(connection, window_end: datetime, window_hours: int) ->
         SELECT completed_interval_at, asset, symbol, rank, metrics_json
         FROM binance_oi_rotation_events
         WHERE source = ?
+          AND bar_minutes = 60
           AND completed_interval_at >= ?
           AND completed_interval_at <= ?
         ORDER BY completed_interval_at, rank
@@ -112,16 +113,20 @@ def notify_oi_feed(
     db_path: str | None = None,
     now: Callable[[], datetime] = utc_now,
 ) -> dict[str, str]:
-    """Send 1h (when candidates) and multi-hour (on window boundary) Discord posts.
+    """Send 1h or short-bar (when candidates) + multi-hour (hourly boundary only).
 
-    Idempotent per completed interval via discord_oi_deliveries.
+    Short-bar posts are gated by BINANCE_OI_10M_DISCORD_ENABLED and never trigger multi.
+    Empty short bars are always skipped for Discord.
+    Idempotent via discord_oi_deliveries using bar-aware keys.
     """
-    results: dict[str, str] = {"hour": "skipped", "multi": "skipped"}
+    results: dict[str, str] = {"short": "skipped", "hour": "skipped", "multi": "skipped"}
     active_transport = transport if transport is not None else _transport()
     if active_transport is None:
         return results
 
     interval = parse_timestamp(feed["completed_interval_at"])
+    bm = int(feed.get("bar_minutes", 60))
+    is_short = bm != 60
     top_n = config.BINANCE_OI_DISCORD_TOP_N
     window_hours = config.BINANCE_OI_DISCORD_MULTI_HOUR_WINDOW
     connection = config.get_db_connection(db_path=db_path or config.BINANCE_OI_DB_PATH)
@@ -129,52 +134,78 @@ def notify_oi_feed(
         _ensure_delivery_table(connection)
         moment = now()
 
-        hour_key = f"oi:1h:{interval.isoformat()}"
-        if _already_sent(connection, hour_key):
-            results["hour"] = "already_sent"
-        else:
-            message = format_oi_hour_message(feed, top_n=top_n)
-            if message is None:
-                if config.BINANCE_OI_DISCORD_SKIP_EMPTY:
-                    _record(connection, hour_key, "hour", "skipped", moment, error_message="empty_candidates")
-                    results["hour"] = "skipped_empty"
-                else:
-                    message = (
-                        f"**OI ROTATION** · Binance USDM · 1h\n"
-                        f"Hour closed: `{interval.strftime('%Y-%m-%d %H:%M UTC')}` · **no qualifying candidates**\n\n"
-                        f"_Feed only — not an alpha entry signal_"
-                    )
-            if message is not None:
-                try:
-                    response = active_transport.send(message)
-                    _record(connection, hour_key, "hour", "sent", moment, response_body=str(response))
-                    results["hour"] = "sent"
-                except Exception as error:
-                    _record(connection, hour_key, "hour", "failed", moment, error_message=str(error))
-                    results["hour"] = "failed"
-                    print(f"OI Discord 1h notify failed: {error}", file=sys.stderr)
-
-        if multi_hour_boundary(interval, window_hours):
-            multi_key = f"oi:multi:{interval.isoformat()}:w{window_hours}"
-            if _already_sent(connection, multi_key):
-                results["multi"] = "already_sent"
+        if is_short:
+            if not getattr(config, "BINANCE_OI_10M_DISCORD_ENABLED", True):
+                results["short"] = "disabled"
             else:
-                rows = load_multi_hour_rows(connection, interval, window_hours)
-                message = format_oi_multi_hour_message(
-                    window_end=interval,
-                    window_hours=window_hours,
-                    hour_rows=rows,
-                    generated_at=moment,
-                    top_n=top_n,
-                )
-                try:
-                    response = active_transport.send(message)
-                    _record(connection, multi_key, "multi", "sent", moment, response_body=str(response))
-                    results["multi"] = "sent"
-                except Exception as error:
-                    _record(connection, multi_key, "multi", "failed", moment, error_message=str(error))
-                    results["multi"] = "failed"
-                    print(f"OI Discord multi-hour notify failed: {error}", file=sys.stderr)
+                short_key = f"oi:short:{bm}:{interval.isoformat()}"
+                if _already_sent(connection, short_key):
+                    results["short"] = "already_sent"
+                else:
+                    message = format_oi_bar_message(feed, top_n=top_n)
+                    if message is None:
+                        # always skip empty for short per spec
+                        _record(connection, short_key, "short", "skipped", moment, error_message="empty_candidates")
+                        results["short"] = "skipped_empty"
+                    else:
+                        try:
+                            response = active_transport.send(message)
+                            _record(connection, short_key, "short", "sent", moment, response_body=str(response))
+                            results["short"] = "sent"
+                        except Exception as error:
+                            _record(connection, short_key, "short", "failed", moment, error_message=str(error))
+                            results["short"] = "failed"
+                            print(f"OI Discord short-bar notify failed: {error}", file=sys.stderr)
+            # never multi for short bars
+            results["multi"] = "skipped"
+        else:
+            # hourly path (unchanged behavior)
+            hour_key = f"oi:1h:{interval.isoformat()}"
+            if _already_sent(connection, hour_key):
+                results["hour"] = "already_sent"
+            else:
+                message = format_oi_bar_message(feed, top_n=top_n)
+                if message is None:
+                    if config.BINANCE_OI_DISCORD_SKIP_EMPTY:
+                        _record(connection, hour_key, "hour", "skipped", moment, error_message="empty_candidates")
+                        results["hour"] = "skipped_empty"
+                    else:
+                        message = (
+                            f"**OI ROTATION** · Binance USDM · 1h\n"
+                            f"Hour closed: `{interval.strftime('%Y-%m-%d %H:%M UTC')}` · **no qualifying candidates**\n\n"
+                            f"_Feed only — not an alpha entry signal_"
+                        )
+                if message is not None:
+                    try:
+                        response = active_transport.send(message)
+                        _record(connection, hour_key, "hour", "sent", moment, response_body=str(response))
+                        results["hour"] = "sent"
+                    except Exception as error:
+                        _record(connection, hour_key, "hour", "failed", moment, error_message=str(error))
+                        results["hour"] = "failed"
+                        print(f"OI Discord 1h notify failed: {error}", file=sys.stderr)
+
+            if multi_hour_boundary(interval, window_hours):
+                multi_key = f"oi:multi:{interval.isoformat()}:w{window_hours}"
+                if _already_sent(connection, multi_key):
+                    results["multi"] = "already_sent"
+                else:
+                    rows = load_multi_hour_rows(connection, interval, window_hours)
+                    message = format_oi_multi_hour_message(
+                        window_end=interval,
+                        window_hours=window_hours,
+                        hour_rows=rows,
+                        generated_at=moment,
+                        top_n=top_n,
+                    )
+                    try:
+                        response = active_transport.send(message)
+                        _record(connection, multi_key, "multi", "sent", moment, response_body=str(response))
+                        results["multi"] = "sent"
+                    except Exception as error:
+                        _record(connection, multi_key, "multi", "failed", moment, error_message=str(error))
+                        results["multi"] = "failed"
+                        print(f"OI Discord multi-hour notify failed: {error}", file=sys.stderr)
 
         connection.commit()
     finally:

@@ -27,9 +27,26 @@ def dedupe_key(event: dict) -> str:
 def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]:
     """Atomically append an event, returning whether it was newly written.
 
-    ``link`` creates the final path only when absent, so concurrent evaluators
-    cannot replace a previously emitted event with the same dedupe identity.
+    Enforces emit gate per ca-truth-venue-agg-failover.md:
+    - MIXED strategies require data_purity == 'pure_ca' else refuse (log)
+    - PRICE_STRUCTURE allowed with stamp
     """
+    sid = event.get("strategy_id", "")
+    dp = event.get("data_purity", "pure_ca")
+    MIXED = getattr(config, "MIXED_STRATEGY_IDS", set())
+    PRICE = getattr(config, "PRICE_STRUCTURE_STRATEGY_IDS", set())
+    # "pure" sources (coinalyze, websocket feeds) pass; failover (venue_agg_v1) is
+    # intentionally non-pure and must not produce deterministic events.
+    is_pure = str(dp).startswith("pure_")
+    if sid in MIXED and not is_pure:
+        print(f"write_event blocked: mixed {sid} on non-pure {dp}")
+        # still "write" metadata? no: refuse
+        return False, outbox_dir / "blocked.json"
+    if sid not in (MIXED | PRICE) and not is_pure:
+        # unknown -> fail closed
+        print(f"write_event blocked: unknown {sid} on non-pure {dp}")
+        return False, outbox_dir / "blocked.json"
+
     key = dedupe_key(event)
     outbox_dir.mkdir(parents=True, exist_ok=True)
     destination = outbox_dir / f"{key}.json"
@@ -48,9 +65,30 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
             os.link(temporary, destination)
         except FileExistsError:
             return False, destination
+        _maybe_deliver_intent(payload)
         return True, destination
     finally:
         try:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def _maybe_deliver_intent(payload: dict) -> None:
+    """Best-effort: emit an executor TradeIntent envelope for a newly written event.
+
+    Gated by INTENT_DELIVERY_ENABLED; geometry-invalid events are skipped (the
+    advisory alpha event is still emitted). Failures are logged, never raised.
+    """
+    if not getattr(config, "INTENT_DELIVERY_ENABLED", False):
+        return
+    try:
+        from intent_outbox import build_executor_intent, validate_geometry, write_intent
+        intent = build_executor_intent(payload)
+        ok, reason = validate_geometry(intent)
+        if not ok:
+            print(f"intent skipped (geometry): {reason} for {payload.get('strategy_id')}/{payload.get('asset')}")
+            return
+        write_intent(intent, config.INTENT_INBOX)
+    except Exception as exc:  # never break the advisory emit path
+        print(f"intent delivery error: {exc}")

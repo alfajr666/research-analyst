@@ -37,13 +37,26 @@ def completed_cycle(now: datetime | None = None) -> datetime:
     return now.replace(minute=now.minute - now.minute % 15, second=0, microsecond=0)
 
 
+_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+
+
+def completed_cycle_for(now: datetime | None, interval: str) -> datetime:
+    """Floor `now` to the most recent completed `interval` bar boundary."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    minutes = _INTERVAL_MINUTES.get(interval, 15)
+    if minutes >= 60:
+        hours = minutes // 60
+        return now.replace(hour=now.hour - now.hour % hours, minute=0, second=0, microsecond=0)
+    return now.replace(minute=now.minute - now.minute % minutes, second=0, microsecond=0)
+
+
 def _ensure_utc(ts: datetime) -> datetime:
     if ts.tzinfo is None:
         return ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(timezone.utc)
 
 
-def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: datetime) -> List[Dict]:
+def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: datetime, interval: str = "15m") -> List[Dict]:
     """Internal: raw rows with source for prefer logic."""
     cutoff = _ensure_utc(cutoff)
     rows = conn.execute(
@@ -58,12 +71,12 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
                json_extract(payload_json, '$.funding_rate')::DOUBLE,
                payload_json
          FROM source_observations
-         WHERE asset = ? AND interval='15m'
+         WHERE asset = ? AND interval=?
            AND source_end < ? AND source_end >= ?
            AND json_extract(payload_json, '$.close')::DOUBLE > 0
          ORDER BY source_end ASC
         """,
-        (asset, cutoff, start),
+        (asset, interval, cutoff, start),
     ).fetchall()
     out = []
     for r in rows:
@@ -118,7 +131,7 @@ def load_preferred_15m_bars(conn, asset: Optional[str] = None, native_symbol: Op
         asset = _asset_from_symbol(native_symbol)
     if not asset:
         asset = "BTC"
-    raw = _load_raw_observations_for_asset(conn, asset, cutoff, start)
+    raw = _load_raw_observations_for_asset(conn, asset, cutoff, start, interval="15m")
     rows = _prefer_rows(raw)
     if not rows:
         return pl.DataFrame()
@@ -147,6 +160,40 @@ def load_15m_bars(conn, symbol: str, cutoff: datetime, lookback_days: int = LOOK
     """Backward compat: delegate to preferred by asset."""
     asset = _asset_from_symbol(symbol)
     return load_preferred_15m_bars(conn, asset=asset, cutoff=cutoff, lookback_days=lookback_days)
+
+
+def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
+                           lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
+    """Load preferred bars for an arbitrary eval interval (1m/5m/15m/...).
+    HTF intervals (1h/4h) are resampled by ws_gateway and stored directly, so
+    they load the same way; 15m/1h/4h are derived, 1m/5m streamed.
+    """
+    asset = _asset_from_symbol(symbol)
+    cutoff = _ensure_utc(cutoff)
+    start = cutoff - timedelta(days=lookback_days)
+    raw = _load_raw_observations_for_asset(conn, asset, cutoff, start, interval=interval)
+    rows = _prefer_rows(raw)
+    if not rows:
+        return pl.DataFrame()
+    df = pl.DataFrame(
+        {
+            "timestamp": [r["timestamp"] for r in rows],
+            "open": [r["open"] for r in rows],
+            "high": [r["high"] for r in rows],
+            "low": [r["low"] for r in rows],
+            "close": [r["close"] for r in rows],
+            "volume": [r["volume"] for r in rows],
+            "open_interest": [r["open_interest"] for r in rows],
+            "funding_rate": [r["funding_rate"] for r in rows],
+            "source": [r["source"] for r in rows],
+        },
+        strict=False,
+    )
+    if "open_interest" in df.columns:
+        df = df.with_columns(pl.col("open_interest").fill_null(0.0))
+    if "funding_rate" in df.columns:
+        df = df.with_columns(pl.col("funding_rate").fill_null(0.0))
+    return df
 
 
 def load_btc_15m(conn, cutoff: datetime, lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:

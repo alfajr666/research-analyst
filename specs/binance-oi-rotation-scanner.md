@@ -110,3 +110,16 @@ after the native event ledger has accumulated sufficient point-in-time outcomes.
 The repository's existing data ownership remains intact: the orchestrator is the
 only writer of external market-data research state, while downstream evaluators and
 consumer bots use the published artifact and their own venue-local state.
+
+### Amendment — retention + NT rotating budget (2026-08-20)
+
+Soft feed/membership TTLs in this document remain. **Hard table prune**, optional
+**static membership skip**, and the NT rule that **`ROTATING_LIMIT` is novel-only
+after static-subtract** are specified in:
+
+- [`binance-oi-rotation-retention.md`](./binance-oi-rotation-retention.md) (this repo)
+- [`ADR-013`](../../nautilus-trading-os/specs/ADR-013-oi-rotating-static-subtract-and-ttl.md) (nautilus-trading-os)
+- [`IMPL-013`](../../nautilus-trading-os/specs/IMPL-013-oi-rotating-static-subtract-and-ttl.md) (patch order)
+
+Live topology: PM2 `binance-oi-rotation-scanner` owns scan + prune; NT `data-oi`
+consumes only. Do not embed the scanner in NT.

@@ -12,12 +12,14 @@ from confluence_scoring import clamp01, confidence_from_confluence, proximity_sc
 from strategy_v2_context import (
     atr_last,
     completed_cycle,
+    completed_cycle_for,
     compression_ok,
     compute_htf_zones,
     has_active_event,
     last_completed_bar_fresh,
     list_candidate_symbols,
     load_15m_bars,
+    load_bars_for_interval,
     load_btc_15m,
     resample_ohlcv,
     resolve_bias,
@@ -480,15 +482,17 @@ def evaluate(
     snapshot: dict | None = None,
     alpha_db_path: str | Path | None = None,
     outbox_dir: Path | None = None,
+    eval_interval: str = "15m",
 ) -> list[dict]:
     cfg = cfg or load_config()
-    cutoff = cutoff or completed_cycle()
     snapshot = snapshot or {}
-    btc = load_btc_15m(conn, cutoff)
+    now = snapshot.get("now")
+    cutoff = cutoff or completed_cycle_for(now, eval_interval)
+    btc = load_bars_for_interval(conn, "BTC", eval_interval, cutoff).select(["timestamp", "close"])
     symbols = list_candidate_symbols(conn, cutoff)
     gated: list[dict] = []
     for symbol, asset in symbols:
-        bars = load_15m_bars(conn, symbol, cutoff)
+        bars = load_bars_for_interval(conn, symbol, eval_interval, cutoff)
         zones = snapshot_zones_for_asset(snapshot, asset)
         extras = (snapshot.get("feature_snapshots") or {}).get(asset) or {}
         vp = extras.get("vp") or extras.get("openmarket_vp")
@@ -532,8 +536,9 @@ def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
     conn = config.get_db_connection(read_only=True, db_path=snapshot.get("db_path"))
     try:
         now = snapshot.get("now")
-        cutoff = completed_cycle(now) if now else completed_cycle()
-        events = evaluate(conn, cutoff, snapshot=snapshot)
+        eval_interval = snapshot.get("eval_interval", "15m")
+        cutoff = completed_cycle_for(now, eval_interval) if now else completed_cycle_for(None, eval_interval)
+        events = evaluate(conn, cutoff, snapshot=snapshot, eval_interval=eval_interval)
         written = []
         for ev in events:
             ev["input_snapshot_id"] = cutoff_id

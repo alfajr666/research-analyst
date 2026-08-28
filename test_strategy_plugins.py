@@ -41,7 +41,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         self.assertTrue(all_known - enabled)
 
     def test_plugin_failure_is_isolated(self):
-        config.STRATEGY_ENABLED_IDS = ("accumulation-base-v1", "impulse-ignition-v1")
+        config.STRATEGY_ENABLED_IDS = ("accumulation-base-v2", "impulse-ignition-v2")
         from strategy_plugins import load_enabled_plugins, invoke_plugins_for_cutoff
         plugins = load_enabled_plugins()
 
@@ -52,15 +52,15 @@ class StrategyPluginRegistryTests(unittest.TestCase):
                      (cutoff_id, "2026-08-17T12:00:00+00:00", "2026-08-17T12:00:00+00:00", "2026-08-17T12:00:01+00:00", "[]"))
         conn.commit()
         conn.close()
-        # The second plugin is rigged to explode in test mode via env
-        os.environ["TEST_EXPLODE_PLUGIN"] = "impulse-ignition-v1"
+        # One plugin is rigged to explode in test mode via env (phase 6 isolation hook)
+        os.environ["TEST_EXPLODE_PLUGIN"] = "impulse-ignition-v2"
         try:
             results = invoke_plugins_for_cutoff(self.db, cutoff_id, now=datetime(2026,8,17,12,15,tzinfo=timezone.utc))
             # Should have recorded a structured failure for the exploding one, but not aborted others
-            self.assertIn("accumulation-base-v1", results)
-            self.assertIn("failed", str(results.get("impulse-ignition-v1", "")))
+            self.assertIn("accumulation-base-v2", results)
+            self.assertIn("failed", str(results.get("impulse-ignition-v2", "")))
             # check emitted have required (if any emitted)
-            acc_res = results.get("accumulation-base-v1", {})
+            acc_res = results.get("accumulation-base-v2", {})
             if acc_res.get("emitted", 0) > 0 and acc_res.get("events"):
                 ev = acc_res["events"][0]
                 self.assertIn("plugin_version", ev)

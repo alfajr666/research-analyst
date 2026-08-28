@@ -68,7 +68,9 @@ def validate_event(event: dict) -> None:
 
 def format_signal(event: dict) -> str:
     family = "Continuation" if event["setup_class"].startswith("continuation") else (
-        "Accumulation base" if event["setup_class"] == "accumulation_base" else "Impulse ignition"
+        "Accumulation base" if event["setup_class"] == "accumulation_base" else (
+            "Liquidity reversal" if event["setup_class"] == "liquidity_reversal" else "Impulse ignition"
+        )
     )
     trigger = event["entry_condition"]
     trigger_text = trigger["type"].replace("_", " ")

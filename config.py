@@ -2,6 +2,7 @@ import json
 import os
 import stat
 from pathlib import Path
+from typing import List
 import duckdb
 from dotenv import load_dotenv
 
@@ -105,6 +106,53 @@ BINANCE_OI_10M_MIN_VOLUME_ANOMALY = float(os.getenv("BINANCE_OI_10M_MIN_VOLUME_A
 BINANCE_OI_10M_HISTORY_BARS = int(os.getenv("BINANCE_OI_10M_HISTORY_BARS", "672"))  # ~7d @15m
 BINANCE_OI_10M_DISCORD_ENABLED = os.getenv("BINANCE_OI_10M_DISCORD_ENABLED", "true").lower() == "true"
 BINANCE_OI_10M_FEED_MERGE_HOURLY = os.getenv("BINANCE_OI_10M_FEED_MERGE_HOURLY", "true").lower() == "true"
+
+# Static agreed symbol universe (sourced from nautilus trading agent CRYPTO_STATIC).
+# Persisted in the repo at symbols/static_universe.json so it is version-controlled and
+# survives restarts/prunes. Canonical bases (e.g. BTC); expand to XUSDT perps at load time.
+STATIC_SYMBOLS_PATH = os.getenv("STATIC_SYMBOLS_PATH", str(BASE_DIR / "symbols" / "static_universe.json"))
+STATIC_SYMBOLS_OVERRIDE = os.getenv("STATIC_SYMBOLS", "").strip()
+# Universe mode for WS/eval: "static" (nautilus list only), "rotated" (rotation feed only),
+# "both" (static + rotated union).
+WS_SYMBOL_SOURCE = os.getenv("WS_SYMBOL_SOURCE", "static").strip().lower()
+# WS provider toggles. Bybit is the default public source; Binance is opt-in/off.
+WS_BYBIT_ENABLED = os.getenv("WS_BYBIT_ENABLED", "true").lower() == "true"
+WS_BINANCE_ENABLED = os.getenv("WS_BINANCE_ENABLED", "false").lower() == "true"
+WS_STREAM_TIMEFRAMES = os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").strip().lower().split(",")
+WS_MARKPRICE_ENABLED = os.getenv("WS_MARKPRICE_ENABLED", "true").lower() == "true"
+# Shard size for Bybit (per-connection topic cap). Binance uses one combined conn.
+WS_BYBIT_SHARD = int(os.getenv("WS_BYBIT_SHARD", "20"))
+WS_BACKFILL_HOURS = int(os.getenv("WS_BACKFILL_HOURS", "6"))
+# Source names stamped on native bars (purity = "pure_ws", accepted by emit gate).
+BYBIT_WS_SOURCE = "bybit_ws"
+BINANCE_WS_SOURCE = "binance_ws"
+WS_DATA_PURITY = "pure_ws"
+
+
+def load_static_symbols() -> List[str]:
+    """Return canonical base symbols for the static universe (uppercased)."""
+    import json as _json
+    if STATIC_SYMBOLS_OVERRIDE:
+        return [s.strip().upper() for s in STATIC_SYMBOLS_OVERRIDE.split(",") if s.strip()]
+    p = Path(STATIC_SYMBOLS_PATH)
+    if p.exists():
+        try:
+            data = _json.loads(p.read_text())
+            syms = data.get("symbols") or data.get("crypto_static") or []
+            return [str(s).upper() for s in syms]
+        except Exception:
+            return []
+    return []
+
+
+def expand_perp_symbols(bases: List[str], venue: str = "bybit") -> List[str]:
+    """Expand canonical bases to perp contract symbols per venue.
+
+    bybit: BTC -> BTCUSDT (linear USDT perp). binance: BTC -> BTCUSDT.
+    """
+    if venue == "binance":
+        return [f"{b}USDT" for b in bases]
+    return [f"{b}USDT" for b in bases]
 
 
 def init_binance_oi_db(db_path: str | Path | None = None):
@@ -267,6 +315,65 @@ STRATEGY_ENABLED_IDS = tuple(
         "liquidity-sweep-reversal-v1"
     ).split(",") if s.strip()
 )
+
+# Evaluation intervals the active strategy plugins run on. 1m/5m are streamed
+# directly by ws_gateway; 15m is resampled from 5m. HTF (1h/4h) remains an
+# enrichment layer only (resampled, not evaluated standalone).
+EVAL_INTERVALS = [s.strip() for s in os.getenv("EVAL_INTERVALS", "1m,5m,15m").split(",") if s.strip()]
+
+# Runtime active/inactive toggle (phase 6). Empty => all enabled strategies are
+# active. Set to an explicit allowlist to override (e.g. "accumulation-base-v2,
+# impulse-ignition-v2"). The `plugin_states` table can also override per-strategy
+# at runtime without a restart.
+STRATEGY_ACTIVE_IDS = tuple(
+    s.strip() for s in os.getenv("STRATEGY_ACTIVE_IDS", "").split(",") if s.strip()
+)
+
+# Phase 7: LLM position-management sidecar (emit-only). Off by default.
+PM_SIDECAR_ENABLED = os.getenv("PM_SIDECAR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+PM_CADENCE_MINUTES = int(os.getenv("PM_CADENCE_MINUTES", "5"))
+PM_LLM_TIMEOUT_S = int(os.getenv("PM_LLM_TIMEOUT_S", "20"))
+PM_LLM_RETRIES = int(os.getenv("PM_LLM_RETRIES", "1"))
+PM_REASON_MAX_CHARS = int(os.getenv("PM_REASON_MAX_CHARS", "120"))
+
+# Phase 8: tiered prune retention, days per interval. <=0 disables that tier.
+# 1m is high-volume/low-value -> short; 5m/15m medium; HTF (1h/4h) long.
+PRUNE_1M_DAYS = int(os.getenv("PRUNE_1M_DAYS", "7"))
+PRUNE_5M_DAYS = int(os.getenv("PRUNE_5M_DAYS", "30"))
+PRUNE_15M_DAYS = int(os.getenv("PRUNE_15M_DAYS", "90"))
+PRUNE_1H_DAYS = int(os.getenv("PRUNE_1H_DAYS", "365"))
+PRUNE_4H_DAYS = int(os.getenv("PRUNE_4H_DAYS", "365"))
+PRUNE_INTERVAL_DAYS = {
+    "1m": PRUNE_1M_DAYS, "5m": PRUNE_5M_DAYS, "15m": PRUNE_15M_DAYS,
+    "1h": PRUNE_1H_DAYS, "4h": PRUNE_4H_DAYS,
+}
+
+# Phase 9: rotation feed (exports active binance_oi_rotation members to the WS
+# universe feed). Disabled by default; also requires WS_SYMBOL_SOURCE=rotated|both.
+ROTATION_FEED_ENABLED = os.getenv("ROTATION_FEED_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+
+# Trade-intent outbox → bybit-executor (see bybit-executor/AGENTS.md "Trade Intent
+# Contract", schema_version 1). The internal alpha event is the advisory record
+# (Discord); this envelope is the executor-consumable intent.
+#
+# Shared handoff: the analyst WRITES to INTENT_INBOX and the executor READS the same
+# directory. The executor's own default is <bybit-executor>/data/intents, so set
+# BYBIT_EXECUTOR_DIR to the executor repo root and INTENT_INBOX resolves there with no
+# guessing. If the executor overrides its INTENT_INBOX, set this to the same absolute
+# path. Deliberately OFF by default (INTENT_DELIVERY_ENABLED).
+BYBIT_EXECUTOR_DIR = os.getenv("BYBIT_EXECUTOR_DIR", "")
+if BYBIT_EXECUTOR_DIR:
+    _default_intent_inbox = Path(BYBIT_EXECUTOR_DIR) / "data" / "intents"
+else:
+    _default_intent_inbox = DEFAULT_DB_DIR / "intent_outbox"
+INTENT_DELIVERY_ENABLED = os.getenv("INTENT_DELIVERY_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+INTENT_INBOX = Path(os.getenv("INTENT_INBOX", str(_default_intent_inbox)))
+INTENT_SOURCE = os.getenv("INTENT_SOURCE", "research-analyst")
+INTENT_EXCHANGE_ID = os.getenv("INTENT_EXCHANGE_ID", "bybit")
+INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "account_a")
+INTENT_ORDER_TYPE = os.getenv("INTENT_ORDER_TYPE", "limit")  # limit (IOC) | market
+INTENT_TAKE_PROFIT_MODE = os.getenv("INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
+INTENT_VALIDITY_MINUTES = int(os.getenv("INTENT_VALIDITY_MINUTES", "5"))
 
 # accumulation-base-v2 knobs (specs/strategy-accumulation-base-v2.md)
 # Defaults grilled 2026-08-18 — independent prefixes; tighter coil / emit floor.
@@ -508,6 +615,50 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                 applied_at TIMESTAMP WITH TIME ZONE NOT NULL
             );
         """)
+        # Phase 6: runtime active/inactive toggle for strategy plugins.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plugin_states (
+                strategy_id VARCHAR PRIMARY KEY,
+                state VARCHAR NOT NULL CHECK (state IN ('active', 'inactive', 'paused')),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                reason VARCHAR,
+                updated_by VARCHAR
+            );
+        """)
+
+        # Phase 7: LLM position-management sidecar (emit-only). `positions_feed` is
+        # executor-owned (PM reads it); `pm_advice` is PM-owned (executor consumes).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS positions_feed (
+                position_id VARCHAR PRIMARY KEY,
+                symbol VARCHAR NOT NULL,
+                asset VARCHAR NOT NULL,
+                side VARCHAR NOT NULL,
+                entry DOUBLE NOT NULL,
+                size DOUBLE,
+                opened_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                strategy_id VARCHAR NOT NULL,
+                current_pnl DOUBLE,
+                status VARCHAR NOT NULL DEFAULT 'open',
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pm_advice (
+                advice_id VARCHAR PRIMARY KEY,
+                position_id VARCHAR NOT NULL,
+                strategy_id VARCHAR NOT NULL,
+                asset VARCHAR NOT NULL,
+                action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce')),
+                reason VARCHAR,
+                htf_bias VARCHAR,
+                rr DOUBLE,
+                cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pm_advice_pos ON pm_advice (position_id, cutoff_at);")
         if not is_alpha:
             # Create option_chains table (15-min snapshots)
             conn.execute("""

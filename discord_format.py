@@ -53,6 +53,8 @@ def _family(setup_class: str) -> str:
         return "Continuation"
     if setup_class == "accumulation_base":
         return "Accumulation base"
+    if setup_class == "liquidity_reversal":
+        return "Liquidity reversal"
     return "Impulse ignition"
 
 
@@ -131,39 +133,53 @@ def _candidate_block(candidate: dict, rank_label: str | None = None) -> str:
     header = f"**{rank} {asset}**"
     if symbol:
         header += f" `{symbol}`"
+    # Use bar-aware labels when present; fall back to legacy 1h labels (values reflect discovery bar)
+    bm = candidate.get("bar_minutes") or candidate.get("bar_minutes", 60)
+    delta_label = f"OI Δ {bm}m" if bm != 60 else "OI Δ 1h"
+    px_label = f"Price {bm}m" if bm != 60 else "Price 1h"
+    vol_label = "Vol anom"
     lines = [
         header,
         (
-            f"OI Δ 1h: **{format_pct(candidate.get('oi_change_1h_pct'))}** "
-            f"({format_usd(candidate.get('oi_change_1h_usd'))}) · "
+            f"{delta_label}: **{format_pct(candidate.get('oi_change_1h_pct') or candidate.get('oi_change_bar_pct'))}** "
+            f"({format_usd(candidate.get('oi_change_1h_usd') or candidate.get('oi_change_bar_usd'))}) · "
             f"OI {format_usd(candidate.get('open_interest_usd'))}"
         ),
         (
-            f"Price 1h: **{format_pct(candidate.get('price_change_1h'))}** · "
-            f"Vol anom **{float(candidate.get('volume_anomaly') or 0):.2f}×**"
+            f"{px_label}: **{format_pct(candidate.get('price_change_1h') or candidate.get('price_change_bar'))}** · "
+            f"{vol_label} **{float(candidate.get('volume_anomaly') or 0):.2f}×**"
         ),
     ]
     return "\n".join(lines)
 
 
-def format_oi_hour_message(feed: dict, top_n: int = 5) -> str | None:
+def format_oi_bar_message(feed: dict, top_n: int = 5) -> str | None:
+    """Generic formatter for both 1h and short-bar feeds. Uses bar_minutes if present."""
     candidates = list(feed.get("candidates") or [])
     if not candidates:
         return None
     top = candidates[: max(top_n, 0)]
+    bm = int(feed.get("bar_minutes", 60))
+    kind = "1h" if bm == 60 else f"{bm}m"
     interval = parse_timestamp(feed["completed_interval_at"]).strftime("%Y-%m-%d %H:%M UTC")
     expires = parse_timestamp(feed["expires_at"]).strftime("%H:%M UTC") if feed.get("expires_at") else "?"
     total = len(candidates)
     shown = len(top)
+    label = "Hour" if bm == 60 else "Bar"
     header = (
-        f"**OI ROTATION** · Binance USDM · 1h\n"
-        f"Hour closed: `{interval}` · top {shown}"
+        f"**OI ROTATION** · Binance USDM · {kind}\n"
+        f"{label} closed: `{interval}` · top {shown}"
         + (f" of {total}" if total > shown else "")
         + f" · expires `{expires}`"
     )
     body = "\n\n".join(_candidate_block(item) for item in top)
     message = f"{header}\n\n{body}\n\n{OI_FOOTER}"
     return message[:DISCORD_CONTENT_LIMIT]
+
+
+def format_oi_hour_message(feed: dict, top_n: int = 5) -> str | None:
+    """Backward compat wrapper."""
+    return format_oi_bar_message(feed, top_n=top_n)
 
 
 def _hour_label(interval: datetime) -> str:
