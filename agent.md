@@ -120,9 +120,11 @@ When `INTENT_DELIVERY_ENABLED=true`, every accepted event also emits a
 | `observed_at` / `entry_valid_until` | ISO Z; expiry = `valid_until` else `observed_at + INTENT_VALIDITY_MINUTES` |
 | `metadata` | non-sizing only — **no quantity/risk_amount** |
 
-Geometry is validated before delivery (`stop_loss < entry_price < take_profit` for
-LONG, inverse for SHORT); invalid events are skipped (the advisory event still
-emits). The executor sizes from its account profile — the analyst never sends size.
+Admission is validated before delivery: geometry must be valid, limit entries must
+meet `INTENT_MIN_RR` (default 2.0), and SL distance must be between
+`INTENT_MIN_STOP_DISTANCE_PCT` and `INTENT_MAX_STOP_DISTANCE_PCT` (defaults 0.1%
+and 5%). Invalid events are skipped (the advisory event still emits). The executor
+sizes from its account profile — the analyst never sends size.
 
 ## Executor Integration (no guessing)
 
@@ -140,9 +142,11 @@ executor's own default inbox. If the executor overrides its `INTENT_INBOX`, set
 the analyst's `INTENT_INBOX` to that same absolute path. Sizing is executor-owned;
 do not add `quantity`/`risk_amount` to the analyst intent.
 
-> **Pending:** the PM sidecar writes `pm_advice` to the analyst DB. The executor's
-> *PM Decision Contract* (`POSITION_DECISION_DIR` files: `HOLD`/`REDUCE`/`EXIT`)
-> is a separate surface not yet wired. Until then `pm_advice` is advisory-only.
+The PM sidecar reads executor 1m snapshots and also writes the executor's *PM
+Decision Contract* (`POSITION_DECISION_DIR` files: `HOLD`/`REDUCE`/`EXIT`). A PM
+`HOLD` can veto a discretionary strategy exit, but cannot override the executor's
+protective SL or fixed TP. The initial TP remains at least 2R; runner/trailing
+management is an executor-side concern.
 
 **Per-strategy routing (multiple accounts/exchanges).** `INTENT_ROUTING` is a JSON
 map keyed by `strategy_id` that overrides `exchange_id` / `account_id` (and

@@ -141,7 +141,7 @@ class RsiReclaimV1Tests(unittest.TestCase):
         entry = event["entry_condition"]["price"]
         inv = event["invalidation_price"]
         risk = abs(entry - inv)
-        self.assertAlmostEqual(event["targets"][0], entry + 1.5 * risk, places=5)
+        self.assertAlmostEqual(event["targets"][0], entry + 2.0 * risk, places=5)
 
     def test_hard_fail_without_reclaim(self):
         bars = _grind_bars()

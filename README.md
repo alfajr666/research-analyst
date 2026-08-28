@@ -93,6 +93,8 @@ One-off evaluation cycle:
 | `INTENT_EXCHANGE_ID` / `INTENT_ACCOUNT_ID` | Executor profile | `bybit` / `account_a` |
 | `INTENT_ORDER_TYPE` | `limit` (IOC) / `market` | `limit` |
 | `INTENT_VALIDITY_MINUTES` | Entry validity window | `5` |
+| `INTENT_MIN_RR` | Minimum limit-entry reward/risk | `2.0` |
+| `INTENT_MIN_STOP_DISTANCE_PCT` / `INTENT_MAX_STOP_DISTANCE_PCT` | Stop distance admission bounds | `0.001` / `0.05` |
 | `INTENT_ROUTING` | Per-strategy `exchange_id`/`account_id` overrides (JSON) | *(empty)* |
 | `PM_SIDECAR_ENABLED` | Emit-only PM advice | `false` |
 | `EXECUTOR_SNAPSHOT_DIR` | Executor 1m position snapshots consumed by PM | derived from `BYBIT_EXECUTOR_DIR` |
@@ -107,6 +109,7 @@ One-off evaluation cycle:
 | Symptom | Check |
 | --- | --- |
 | No intents delivered | `INTENT_DELIVERY_ENABLED`, `BYBIT_EXECUTOR_DIR`/`INTENT_INBOX` matches executor, `STRATEGY_ACTIVE_IDS`, geometry valid |
+| Intent skipped for admission | Check entry/SL/TP geometry, minimum 2R, and SL distance bounds |
 | PM has no positions/decisions | Executor snapshot and decision directories match `POSITION_SNAPSHOT_DIR`/`POSITION_DECISION_DIR`; `PM_SIDECAR_ENABLED=true` |
 | No advisory signal | `DISCORD_ALPHA_WEBHOOK_URL`, `alpha_events`, `INTENT_INBOX` not relevant |
 | Stale/empty bars | `ws_gateway` running & sole writer; fresh completed `source_observations` |

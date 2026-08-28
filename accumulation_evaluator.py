@@ -85,7 +85,7 @@ def event_from_setup(asset: str, symbol: str, source: str, accumulation: dict, s
     entry = max(ema, close) if direction == "long" else min(ema, close)
     invalidation = ema * (0.985 if direction == "long" else 1.015)
     risk = abs(entry - invalidation)
-    target = entry + risk * (1.5 if direction == "long" else -1.5)
+    target = entry + risk * (2.0 if direction == "long" else -2.0)
     observed_at = setup["bar_timestamp"]
     return {
         "schema_version": 1,

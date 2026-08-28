@@ -106,7 +106,7 @@ class ContV2Config:
     r_max: float = 2.5
     s_min: float = 0.55
     n_top: int = 3
-    target_r: float = 1.5
+    target_r: float = 2.0
     horizon_hours: int = 4
     weight_profile: str = "balanced"
     weights: dict[str, float] | None = None

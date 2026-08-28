@@ -48,7 +48,7 @@ class AccV2Config:
     s_min: float = 0.55
     n_top: int = 3
     ema_inv_pct: float = 0.015
-    target_r: float = 1.5
+    target_r: float = 2.0
     horizon_hours: int = 4
     weights: dict[str, float] | None = None
 

@@ -21,8 +21,8 @@ def _alpha_event(**over):
         "direction": "long",
         "observed_at": "2026-08-28T12:00:00+00:00",
         "entry_condition": {"type": "limit", "price": 100},
-        "invalidation_price": 90,
-        "targets": [120],
+        "invalidation_price": 95,
+        "targets": [110],
         "alpha_id": "deliv-1",
     }
     ev.update(over)
@@ -42,8 +42,8 @@ class IntentBuildTests(unittest.TestCase):
         self.assertEqual(intent["direction"], "LONG")
         self.assertEqual(intent["order_type"], "limit")
         self.assertEqual(intent["entry_price"], 100)
-        self.assertEqual(intent["stop_loss"], 90)
-        self.assertEqual(intent["take_profit"], 120)
+        self.assertEqual(intent["stop_loss"], 95)
+        self.assertEqual(intent["take_profit"], 110)
         self.assertEqual(intent["take_profit_mode"], "fixed_full_close")
         # Analyst never sizes: intent carries no quantity/risk_amount.
         self.assertNotIn("quantity", intent["metadata"])
@@ -109,6 +109,20 @@ class IntentGeometryTests(unittest.TestCase):
     def test_rejects_missing_target(self):
         ok, _ = validate_geometry(build_executor_intent(_alpha_event(targets=[])))
         self.assertFalse(ok)
+
+    def test_rejects_below_minimum_rr(self):
+        ok, reason = validate_geometry(
+            build_executor_intent(_alpha_event(targets=[105]))
+        )
+        self.assertFalse(ok)
+        self.assertIn("reward/risk", reason)
+
+    def test_rejects_too_tight_stop(self):
+        ok, reason = validate_geometry(
+            build_executor_intent(_alpha_event(invalidation_price=99.95))
+        )
+        self.assertFalse(ok)
+        self.assertIn("stop distance", reason)
 
     def test_market_entry_skips_relative_geometry(self):
         ok, reason = validate_geometry(

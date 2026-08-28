@@ -142,6 +142,6 @@ def event_from_candidate(candidate: dict, family: str) -> dict:
         "confidence": round(candidate["score"] / 100, 4),
         "entry_condition": {"type": "breakout_above", "price": round(entry_price, 8)},
         "invalidation_price": round(entry_price - risk, 8),
-        "targets": [round(entry_price + risk * 1.5, 8), round(entry_price + risk * 3, 8)],
+        "targets": [round(entry_price + risk * 2.0, 8), round(entry_price + risk * 3, 8)],
         "feature_snapshot": candidate,
     }

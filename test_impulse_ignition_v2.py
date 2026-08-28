@@ -111,7 +111,7 @@ class ImpulseIgnitionV2Tests(unittest.TestCase):
         self.assertGreater(entry, inv)
         # single 1.5R target
         risk = entry - inv
-        self.assertAlmostEqual(event["targets"][0], entry + 1.5 * risk, places=5)
+        self.assertAlmostEqual(event["targets"][0], entry + 2.0 * risk, places=5)
         # not v1 synthetic close*1.005
         close = event["feature_snapshot"]["close_15m"]
         self.assertNotAlmostEqual(entry, close * 1.005, places=4)

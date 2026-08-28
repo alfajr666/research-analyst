@@ -166,17 +166,20 @@ Mapping (internal α-event → executor intent):
 
 Geometry is validated before delivery (`validate_geometry`): LONG ⇒
 `stop_loss < entry_price < take_profit`, SHORT ⇒ `take_profit < entry_price <
-stop_loss`; invalid events are skipped (the advisory event still emits). The
-intent envelope is written atomically to `INTENT_INBOX` by `delivery_id`,
-idempotent on replay.
+stop_loss`; limit intents additionally require minimum `INTENT_MIN_RR` (2.0 by
+default) and SL distance between `INTENT_MIN_STOP_DISTANCE_PCT` (0.1%) and
+`INTENT_MAX_STOP_DISTANCE_PCT` (5%). Invalid events are skipped (the advisory event
+still emits). The intent envelope is written atomically to `INTENT_INBOX` by
+`delivery_id`, idempotent on replay.
 
 Enable: `INTENT_DELIVERY_ENABLED=true` and point `INTENT_INBOX` at the
 executor's `INTENT_INBOX` (e.g. `/home/ubuntu/bybit-executor/data/intents`).
 
-> **Follow-up (not yet wired):** the PM sidecar `pm_advice` is still a DB-only
-> advisory record. The executor's *PM Decision Contract* (`POSITION_DECISION_DIR`
-> files: `HOLD`/`REDUCE`/`EXIT`, `decision_id`, `REDUCE` fraction) is a separate
-> surface; aligning `pm_advice` → that envelope is a distinct piece.
+The PM sidecar reads executor 1m snapshots and exports the executor's *PM Decision
+Contract* (`POSITION_DECISION_DIR` files: `HOLD`/`REDUCE`/`EXIT`). A PM `HOLD` may
+veto a discretionary strategy exit, but cannot override the protective SL or the
+fixed TP. The initial TP remains at least 2R; runner/trailing behavior belongs to
+the executor.
 
 ---
 

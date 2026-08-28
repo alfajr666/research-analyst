@@ -9,6 +9,9 @@ duplicate `delivery_id`s, and never trusts intent leverage.
 Geometry rules mirrored from the contract:
   LONG  -> stop_loss < entry_price < take_profit
   SHORT -> take_profit < entry_price < stop_loss
+
+Limit-order admission also requires the configured minimum reward/risk and stop
+distance, keeping the TradeIntent schema unchanged.
 """
 
 from __future__ import annotations
@@ -136,10 +139,25 @@ def validate_geometry(intent: dict) -> tuple[bool, str]:
         return False, "direction must be LONG or SHORT"
     if ep is None:
         return True, ""  # market entry: geometry relative to entry is not yet known
+    if not isinstance(ep, (int, float)) or ep <= 0:
+        return False, "entry_price must be positive"
     if direction == "LONG" and not (sl < ep < tp):
         return False, "LONG requires stop_loss < entry_price < take_profit"
     if direction == "SHORT" and not (tp < ep < sl):
         return False, "SHORT requires take_profit < entry_price < stop_loss"
+    risk = abs(ep - sl)
+    reward = abs(tp - ep)
+    rr = reward / risk if risk else 0.0
+    min_rr = float(getattr(config, "INTENT_MIN_RR", 2.0))
+    if rr < min_rr:
+        return False, f"reward/risk {rr:.2f} below minimum {min_rr:.2f}"
+    stop_pct = risk / ep
+    min_stop = float(getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", 0.001))
+    max_stop = float(getattr(config, "INTENT_MAX_STOP_DISTANCE_PCT", 0.05))
+    if stop_pct < min_stop:
+        return False, f"stop distance {stop_pct:.4%} below minimum {min_stop:.4%}"
+    if stop_pct > max_stop:
+        return False, f"stop distance {stop_pct:.4%} above maximum {max_stop:.4%}"
     return True, ""
 
 

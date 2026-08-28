@@ -374,6 +374,9 @@ INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "account_a")
 INTENT_ORDER_TYPE = os.getenv("INTENT_ORDER_TYPE", "limit")  # limit (IOC) | market
 INTENT_TAKE_PROFIT_MODE = os.getenv("INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
 INTENT_VALIDITY_MINUTES = int(os.getenv("INTENT_VALIDITY_MINUTES", "5"))
+INTENT_MIN_RR = float(os.getenv("INTENT_MIN_RR", "2.0"))
+INTENT_MIN_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MIN_STOP_DISTANCE_PCT", "0.001"))
+INTENT_MAX_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MAX_STOP_DISTANCE_PCT", "0.05"))
 # Per-strategy routing to executor profiles (exchange/account). JSON map keyed by
 # strategy_id; each value may override any of: exchange_id, account_id, source,
 # order_type, take_profit_mode, validity_minutes. Strategies not listed fall back to

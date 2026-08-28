@@ -120,7 +120,7 @@ class ContinuationBreakoutV2Tests(unittest.TestCase):
         inv = event["invalidation_price"]
         self.assertGreater(entry, inv)
         risk = entry - inv
-        self.assertAlmostEqual(event["targets"][0], entry + 1.5 * risk, places=5)
+        self.assertAlmostEqual(event["targets"][0], entry + 2.0 * risk, places=5)
         self.assertIn("flag_high", event["feature_snapshot"])
         self.assertIn("trend_norm_4h", event["feature_snapshot"])
 
