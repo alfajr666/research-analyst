@@ -56,6 +56,9 @@ def admit(candidate: dict, now: datetime | None = None) -> dict:
             reasons.append("entry expiry is not in the future")
     except (KeyError, TypeError, ValueError, OverflowError):
         reasons.append("valid_until is invalid")
+    freshness = candidate.get("data_freshness_seconds")
+    if not _number(freshness) or freshness < 0 or freshness > float(getattr(config, "DATA_FRESHNESS_MAX_SECONDS", 600)):
+        reasons.append("market data is stale or freshness is unavailable")
     identity = candidate.get("candidate_id") or candidate.get("dedupe_key")
     if not isinstance(identity, str) or not identity.strip():
         reasons.append("event identity is invalid")

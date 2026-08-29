@@ -38,7 +38,7 @@ def publish(cutoff_at: datetime, trigger_dir: Path | None = None) -> tuple[bool,
     directory.mkdir(parents=True, exist_ok=True)
     key = cutoff_key(cutoff_at)
     destination = directory / f"{key}.json"
-    if destination.exists():
+    if destination.exists() or destination.with_suffix(".claimed").exists() or destination.with_suffix(".processed").exists():
         return False, destination
     payload = {"interval": "5m", "cutoff_at": cutoff_at.astimezone(timezone.utc).isoformat()}
     fd, temporary = tempfile.mkstemp(prefix=".trigger-", suffix=".tmp", dir=directory)

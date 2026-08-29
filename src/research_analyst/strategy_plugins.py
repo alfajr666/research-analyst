@@ -338,6 +338,38 @@ def _bars_available(market_db_path: str | Path, dataset: str, snapshot: dict) ->
         conn.close()
 
 
+def _data_freshness_seconds(market_db_path: str | Path, interval: str, cutoff: datetime) -> float | None:
+    conn = config.get_db_connection(read_only=True, db_path=market_db_path)
+    try:
+        try:
+            row = conn.execute(
+                "SELECT MAX(source_end) FROM source_observations WHERE interval = ? AND source_end <= ?",
+                (interval, cutoff),
+            ).fetchone()
+        except Exception:
+            return None
+        if not row or row[0] is None:
+            return None
+        latest = row[0]
+        if isinstance(latest, str):
+            latest = datetime.fromisoformat(latest.replace("Z", "+00:00"))
+        if latest.tzinfo is None:
+            latest = latest.replace(tzinfo=timezone.utc)
+        return max(0.0, (cutoff.astimezone(timezone.utc) - latest.astimezone(timezone.utc)).total_seconds())
+    finally:
+        conn.close()
+
+
+def _cutoff_from_id(cutoff_id: str, fallback: datetime | None) -> datetime:
+    text = cutoff_id.split(":", 1)[1] if ":" in cutoff_id else cutoff_id[cutoff_id.find("20"):]
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        if fallback is None:
+            raise
+        return fallback
+
+
 def _ensure_cutoff_run_finalized(db_path: str | Path, cutoff_id: str, interval: str, cutoff: datetime) -> None:
     """Upsert a finalized cutoff_run row so plugins can read a consistent snapshot."""
     conn = config.get_db_connection(read_only=False, db_path=db_path or config.ANALYST_DB_PATH)
@@ -406,6 +438,8 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     if snapshot is None:
         snapshot = _build_snapshot(db_path, cutoff_id, now, market_db_path)
     eval_interval = snapshot.get("eval_interval", "15m")
+    cutoff = _cutoff_from_id(cutoff_id, now)
+    freshness = _data_freshness_seconds(snapshot["market_db_path"], eval_interval, cutoff)
 
     for p in plugins:
         try:
@@ -445,6 +479,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                     ev.setdefault("data_purity", "unknown")
                     ev.setdefault("price_source", "unknown")
                 ev.setdefault("candidate_id", dedupe_key(ev))
+                ev["data_freshness_seconds"] = freshness
             results[p.id] = {"emitted": len(events), "events": events}
         except Exception as exc:
             results[p.id] = {"failed": str(exc)[:200]}

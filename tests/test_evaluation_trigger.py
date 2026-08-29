@@ -23,6 +23,10 @@ class EvaluationTriggerTests(unittest.TestCase):
             self.assertEqual(pending(root), [path])
             self.assertEqual(list(root.glob('.trigger-*.tmp')), [])
 
+            path.rename(path.with_suffix('.processed'))
+            duplicate_processed, _ = publish(cutoff, root)
+            self.assertFalse(duplicate_processed)
+
     def test_claim_recovery_and_bounded_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
