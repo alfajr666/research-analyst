@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -427,5 +428,15 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
 
 if __name__ == "__main__":
     import sys
-    db = sys.argv[1] if len(sys.argv) > 1 else None
-    print(json.dumps(run_once(db), default=str))
+    if "--once" in sys.argv:
+        db = next((arg for arg in sys.argv[1:] if arg != "--once"), None)
+        print(json.dumps(run_once(db), default=str))
+    else:
+        interval_seconds = max(60, int(getattr(config, "PM_CADENCE_MINUTES", 1)) * 60)
+        print(f"Starting independent PM sidecar at {interval_seconds}s cadence...", flush=True)
+        while True:
+            try:
+                print(json.dumps(run_once(config.ANALYST_DB_PATH), default=str), flush=True)
+            except Exception as exc:
+                print(f"PM sidecar err: {exc}", file=sys.stderr, flush=True)
+            time.sleep(interval_seconds)

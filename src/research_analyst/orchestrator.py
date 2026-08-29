@@ -506,15 +506,6 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         for iv, ivres in pres.items():
             print(f"Plugins [{iv}] for {cutoff_id}: { {k: v.get('emitted', v) for k,v in ivres.items()} }")
 
-        # Phase 7: LLM position-management sidecar (emit-only, 5m cadence via cutoff).
-        if config.PM_SIDECAR_ENABLED:
-            try:
-                from pm_sidecar import run_once as run_pm_sidecar
-                pm = run_pm_sidecar(config.ANALYST_DB_PATH, now=datetime.now(timezone.utc))
-                print(f"PM sidecar: {pm}")
-            except Exception as pe:
-                print(f"PM sidecar err: {pe}")
-
         # Phase 9: rotation feed (disabled by default; also needs WS_SYMBOL_SOURCE=rotated|both).
         print("Legacy rotation feed disabled in live orchestrator.")
 

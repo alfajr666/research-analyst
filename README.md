@@ -118,12 +118,13 @@ delay, or suppress an executor intent.
 
 ## PM sidecar
 
-The active LLM position-management sidecar runs on a 5m cutoff. It reads
-executor 1m snapshots from `EXECUTOR_SNAPSHOT_DIR`, joins the originating intent
-and market context, and emits `HOLD`, `REDUCE`, or `EXIT` to `pm_advice` and,
-when configured, `EXECUTOR_DECISION_DIR`. Missing credentials, timeout, parse
-failure, or invalid output fails safe to `HOLD`. It is emit-only and cannot
-change entry, stop, target, direction, sizing, or executor hard protections.
+The PM sidecar is an independent process from the orchestrator and runs both
+LLM and mechanical management on a 1-minute cadence. It reads executor 1m
+snapshots from `EXECUTOR_SNAPSHOT_DIR`, joins the originating intent and market
+context, and emits `HOLD`, `REDUCE`, or `EXIT` to `pm_advice` and
+`EXECUTOR_DECISION_DIR`. Missing credentials, timeout, parse failure, or invalid
+output fails safe to `HOLD`. It is emit-only and cannot change entry, stop,
+target, direction, sizing, or executor hard protections.
 
 ## Raw Discord batch
 
@@ -164,13 +165,42 @@ are observation-only and never go to Telegram or the executor.
   and expiry metadata, plus `_Feed only — not an alpha entry signal_`.
 - **OI multi-hour:** OI window/generated metadata, repeat hits, latest hour, and
   a by-hour top-1 timeline with the same footer.
-- **Exit/reduce:** PM sidecar decisions are executor JSON values `HOLD`, `REDUCE`,
-  or `EXIT`, not Discord notifications. They cannot alter hard protections.
+- **Trade entry/exit:** executor notifications use the locked legacy entry and
+  exit message bodies. PM decisions are executor JSON values `HOLD`, `REDUCE`, or
+  `EXIT`; they do not create a new Discord message format.
+
+The locked entry body is:
+
+```text
+🚀 Bybit Trade Executed
+
+Symbol: HANA/USDT:USDT
+Side: 🔴 SHORT
+Amount: 2140.0000
+Entry Price: 0.030580
+Lev: 25.0x
+Strategy: LowFloatBreakoutStrategy
+```
+
+The locked exit body is:
+
+```text
+❌ [Position Closed]
+
+Symbol: PIEVERSE/USDT:USDT
+Side: 🟢 LONG
+Entry: 0.925200
+Exit: 0.870500
+PnL: -5.58 USD (-5.91%)
+Outcome: LOSS
+Reason: breakout_invalidated
+Strategy: LowFloatBreakoutStrategy
+```
 
 ## Service operation
 
 Production services are managed by the host's `oxmgr` definitions: one
-`ws_gateway`, one orchestrator, and one PM sidecar role. The repository's
+`ws_gateway`, one orchestrator, and one independent PM sidecar role. The repository's
 orchestrator consumes durable completed-5m triggers from the WebSocket gateway.
 Run only one owner for each database.
 

@@ -18,6 +18,8 @@ class PMSidecarTests(unittest.TestCase):
         self.prev_dec = getattr(config, "EXECUTOR_DECISION_DIR", "")
         config.PM_SIDECAR_ENABLED = False
         config.LLM_API_KEY = ""  # force offline (hold) path; no live LLM calls
+        config.EXECUTOR_SNAPSHOT_DIR = ""
+        config.EXECUTOR_DECISION_DIR = ""
         os.environ.pop("LLM_API_KEY", None)
         self.directory = tempfile.TemporaryDirectory()
         self.db = Path(self.directory.name) / "analyst.db"
@@ -74,8 +76,8 @@ class PMSidecarTests(unittest.TestCase):
         self.assertEqual(res["advices"], 1)
         self.assertEqual(self._count_advice(), 1)
 
-        # Same 5m cutoff -> second pass must NOT add a duplicate.
-        res2 = pm_sidecar.run_once(self.db, now=datetime(2026, 1, 1, 12, 6, tzinfo=timezone.utc))
+        # Same 1m cutoff -> second pass must NOT add a duplicate.
+        res2 = pm_sidecar.run_once(self.db, now=datetime(2026, 1, 1, 12, 5, 30, tzinfo=timezone.utc))
         self.assertEqual(res2["advices"], 0)
         self.assertEqual(self._count_advice(), 1)
 
