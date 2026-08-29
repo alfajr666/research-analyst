@@ -496,7 +496,8 @@ MARKET_FAILOVER_ENABLED = os.getenv("MARKET_FAILOVER_ENABLED", "false").lower() 
 # Emit classification (normative, see spec)
 PRICE_STRUCTURE_STRATEGY_IDS = {
     "accumulation-base-v1", "accumulation-base-v2", "rsi-reclaim-v1",
-    "liquidity-sweep-reversal-v1",
+    "liquidity-sweep-reversal-v1", "bb-rsi-meanrev-v1", "failed-break-v3",
+    "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
 }
 MIXED_STRATEGY_IDS = {
     "impulse-ignition-v1", "impulse-ignition-v2",

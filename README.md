@@ -80,6 +80,22 @@ One-off evaluation cycle:
 
 ## Key Configuration (see `.env.example`)
 
+### Compact Strategy Ports
+
+The compact-mode ports are restricted to `BTC`, `ETH`, `PAXG`, and `QQQ` only:
+
+| Strategy | Execution timeframe | Context |
+| --- | --- | --- |
+| `failed-break-v3` | 5m | 15m resampled to 4h |
+| `bb-rsi-meanrev-v1` | 5m | none |
+| `williams-fractal-scalp-v1` | 1m | none |
+| `ema9-continuation-stochrsi-v1` | 1m trigger | 5m setup |
+
+These IDs are opt-in through `STRATEGY_ENABLED_IDS`. Their alpha events use the
+unchanged TradeIntent contract and still require valid SL geometry and minimum 2R.
+TA-derived targets are preserved when they meet 2R; otherwise the event remains
+advisory-only and is not delivered to the executor.
+
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `WS_BYBIT_ENABLED` / `WS_BINANCE_ENABLED` | WS sources | `true` / `false` |

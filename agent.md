@@ -128,6 +128,18 @@ sizes from its account profile — the analyst never sends size.
 
 ## Executor Integration (no guessing)
 
+### Compact Strategy Ports
+
+The compact-mode ports are restricted to `BTC`, `ETH`, `PAXG`, and `QQQ` only.
+`failed-break-v3` and `bb-rsi-meanrev-v1` execute on 5m bars;
+`williams-fractal-scalp-v1` executes on 1m bars; and
+`ema9-continuation-stochrsi-v1` uses a 5m setup with a 1m trigger. These IDs are
+opt-in through `STRATEGY_ENABLED_IDS`; they do not evaluate the general universe.
+
+Their alpha events use the unchanged TradeIntent contract, including SL geometry
+and minimum 2R admission. A TA target above 2R is preserved; a target below 2R
+remains advisory-only and is not delivered to the executor.
+
 The analyst **writes** `INTENT_INBOX`; `bybit-executor` **reads** the same path.
 Set one knob and the shared path resolves automatically:
 

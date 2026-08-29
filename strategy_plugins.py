@@ -66,6 +66,10 @@ KNOWN_STRATEGIES = {
     "continuation-breakout-v2",
     "rsi-reclaim-v1",
     "liquidity-sweep-reversal-v1",
+    "bb-rsi-meanrev-v1",
+    "failed-break-v3",
+    "williams-fractal-scalp-v1",
+    "ema9-continuation-stochrsi-v1",
 }
 
 # Pre-refactor evaluators (built on alpha_evaluator / accumulation_evaluator).
@@ -164,6 +168,10 @@ def _load_builtin_plugins():
     from continuation_breakout_v2 import run_plugin as cont_v2_run
     from rsi_reclaim_v1 import run_plugin as rsi_reclaim_run
     from liquidity_sweep_reversal_v1 import run_plugin as lsr_run
+    from bb_rsi_meanrev_v1 import run_plugin as bb_rsi_run
+    from failed_break_v3 import run_plugin as failed_break_run
+    from williams_fractal_scalp_v1 import run_plugin as williams_run
+    from ema9_continuation_stochrsi_v1 import run_plugin as ema9_run
 
     register(StrategyPlugin("accumulation-base-v1", "v1", ("bars_15m",), ("fvg_1h",), _acc_run))
     register(StrategyPlugin("impulse-ignition-v1", "v1", ("bars_15m",), ("vp",), _ign_run))
@@ -173,6 +181,11 @@ def _load_builtin_plugins():
     register(StrategyPlugin("continuation-breakout-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), cont_v2_run))
     register(StrategyPlugin("rsi-reclaim-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), rsi_reclaim_run))
     register(StrategyPlugin("liquidity-sweep-reversal-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), lsr_run))
+    register(StrategyPlugin("bb-rsi-meanrev-v1", "v1", ("bars_5m",), (), bb_rsi_run))
+    # Primary execution bars gate invocation; each plugin loads its own HTF context.
+    register(StrategyPlugin("failed-break-v3", "v3", ("bars_5m",), (), failed_break_run))
+    register(StrategyPlugin("williams-fractal-scalp-v1", "v1", ("bars_1m",), (), williams_run))
+    register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v1", ("bars_1m",), (), ema9_run))
 
 
 _load_builtin_plugins()
