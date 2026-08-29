@@ -12,7 +12,7 @@ Design (see specs/ws-ingestion.md):
 - Single writer: all DB writes (live bars + resampled) happen in one asyncio task
   over one DuckDB connection, preserving single-writer discipline for DB_PATH.
 
-Run:  python ws_gateway.py            # foreground daemon
+Run:  python src/research_analyst/ws_gateway.py  # foreground daemon from repo root
 """
 
 from __future__ import annotations
