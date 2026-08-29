@@ -6,8 +6,8 @@ from typing import List
 import duckdb
 from dotenv import load_dotenv
 
-# Project Paths
-BASE_DIR = Path(__file__).resolve().parent
+# Project Paths. Runtime data and secrets live at repository root, not beside code.
+BASE_DIR = Path(__file__).resolve().parents[2]
 ENV_FILE = BASE_DIR / ".env"
 
 
