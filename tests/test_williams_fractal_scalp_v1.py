@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import polars as pl
 
-from williams_fractal_scalp_v1 import ALLOWED_ASSETS, STRATEGY_ID, evaluate_symbol
+from strategies.compact.williams_fractal_scalp_v1 import ALLOWED_ASSETS, STRATEGY_ID, evaluate_symbol
 
 
 class WilliamsFractalScalpTests(unittest.TestCase):

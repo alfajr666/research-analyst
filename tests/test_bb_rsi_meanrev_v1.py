@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import polars as pl
 
 import config
-from bb_rsi_meanrev_v1 import BBRsiMeanRevConfig, evaluate_symbol
+from strategies.compact.bb_rsi_meanrev_v1 import BBRsiMeanRevConfig, evaluate_symbol
 from intent_outbox import build_executor_intent, validate_geometry
 
 

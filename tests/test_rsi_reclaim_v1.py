@@ -6,7 +6,7 @@ from pathlib import Path
 
 import polars as pl
 
-from rsi_reclaim_v1 import (
+from strategies.v2.rsi_reclaim_v1 import (
     STRATEGY_ID,
     RsiReclaimConfig,
     evaluate_symbol,

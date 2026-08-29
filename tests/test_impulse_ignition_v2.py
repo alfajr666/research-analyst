@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 
 import config
-from impulse_ignition_v2 import IgnV2Config, STRATEGY_ID, evaluate_symbol
+from strategies.v2.impulse_ignition_v2 import IgnV2Config, STRATEGY_ID, evaluate_symbol
 from strategy_v2_context import has_active_event
 
 

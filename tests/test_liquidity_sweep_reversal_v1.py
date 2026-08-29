@@ -8,7 +8,7 @@ from pathlib import Path
 
 import polars as pl
 
-from liquidity_sweep_reversal_v1 import (
+from strategies.v2.liquidity_sweep_reversal_v1 import (
     STRATEGY_ID,
     LsrV1Config,
     evaluate_symbol,

@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 
 import config
-from accumulation_base_v2 import AccV2Config, STRATEGY_ID, evaluate, evaluate_symbol
+from strategies.v2.accumulation_base_v2 import AccV2Config, STRATEGY_ID, evaluate, evaluate_symbol
 from strategy_v2_context import has_active_event, resolve_bias
 
 

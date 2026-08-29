@@ -6,7 +6,7 @@ from pathlib import Path
 
 import polars as pl
 
-from continuation_breakout_v2 import ContV2Config, STRATEGY_ID, evaluate_symbol
+from strategies.v2.continuation_breakout_v2 import ContV2Config, STRATEGY_ID, evaluate_symbol
 from strategy_v2_context import has_active_event
 
 
