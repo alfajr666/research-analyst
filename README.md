@@ -37,6 +37,10 @@ Bybit WS (on) / Binance WS (off): 1m + 5m kline + markPrice
 - **Outboxes:** advisory alpha event → `data/alpha_outbox/` → Discord; trade intent
   → `INTENT_INBOX` → `bybit-executor`.
 
+Reference notes and historical design material live under `docs/reference/`; runtime
+Python entrypoints intentionally remain at the repository root because PM2 and the
+current import graph execute them as top-level scripts.
+
 ## Trade-intent handoff (no guessing)
 
 The analyst writes `INTENT_INBOX`; `bybit-executor` reads it. One knob resolves the
@@ -77,6 +81,28 @@ One-off evaluation cycle:
 ```bash
 ./venv/bin/python orchestrator.py --once
 ```
+
+## Live Setup Checklist
+
+Run the following in order, starting in shadow/paper mode:
+
+1. Configure `/home/ubuntu/bybit-executor` with the production Bybit profile,
+   credentials, leverage, minimum quantity, and reconciliation settings.
+2. Set `BYBIT_EXECUTOR_DIR`, `INTENT_DELIVERY_ENABLED=true`, and verify the shared
+   `data/intents` directory.
+3. Keep `STRATEGY_ACTIVE_IDS` limited to the selected compact strategy IDs. Compact
+   ports only evaluate `BTC`, `ETH`, `PAXG`, and `QQQ`.
+4. Confirm `EVAL_INTERVALS=1m,5m,15m`; execution cadence is strategy-specific.
+5. Configure 9router with `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`; enable
+   `PM_SIDECAR_ENABLED=true` only after snapshot/decision handoff is verified.
+6. Start the executor, then `ws_gateway.py`, then `orchestrator.py`.
+7. Verify: fresh snapshots, accepted intents, protective SL/TP, PM decisions,
+   idempotent replay, and expired-intent rejection.
+8. Enable live orders only after the complete paper path is stable.
+
+The analyst never stores exchange credentials, sizes positions, or overrides the
+executor's protective SL/TP. Every delivered limit intent must pass valid geometry,
+minimum 2R, and SL-distance admission.
 
 ## Key Configuration (see `.env.example`)
 
