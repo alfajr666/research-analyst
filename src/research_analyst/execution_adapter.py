@@ -138,7 +138,6 @@ class ExecutionAdapter:
             "asset": event["asset"].upper(),
             "symbol": f"{event['asset'].upper()}/USDT:USDT",
             "direction": event["direction"].upper(),
-            "order_type": "limit",
             **values,
             "take_profit_mode": "fixed_full_close",
             "observed_at": format_timestamp(parse_timestamp(event["observed_at"])),

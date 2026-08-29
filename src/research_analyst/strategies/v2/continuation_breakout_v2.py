@@ -495,7 +495,7 @@ def evaluate(
         bars = load_bars_for_interval(conn, symbol, eval_interval, cutoff)
         zones = snapshot_zones_for_asset(snapshot, asset)
         extras = (snapshot.get("feature_snapshots") or {}).get(asset) or {}
-        vp = extras.get("vp") or extras.get("openmarket_vp")
+        vp = extras.get("vp")
         feature_extras = {}
         if isinstance(vp, dict) and vp.get("proximity") is not None:
             feature_extras["vp_proximity"] = vp["proximity"]

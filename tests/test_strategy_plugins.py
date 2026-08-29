@@ -106,6 +106,18 @@ class StrategyPluginRegistryTests(unittest.TestCase):
                     [event(sid, 3 if sid == ids[0] else 1)]) for sid in ids})
             config.STRATEGY_ENABLED_IDS = ids
             config.STRATEGY_ACTIVE_IDS = ids
+            conn = config.get_db_connection(db_path=self.db)
+            conn.execute("""CREATE TABLE source_observations (
+                observation_id VARCHAR, source VARCHAR, venue VARCHAR,
+                native_symbol VARCHAR, asset VARCHAR, market_kind VARCHAR,
+                interval VARCHAR, source_start TIMESTAMP, source_end TIMESTAMP,
+                retrieved_at TIMESTAMP, retrieval_kind VARCHAR, payload_json VARCHAR
+            )""")
+            conn.execute("INSERT INTO source_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         ("obs", "test", "test", "BTCUSDT", "BTC", "perp", "5m",
+                          "2026-08-17 12:00:00", "2026-08-17 12:05:00",
+                          "2026-08-17 12:06:00", None, "{}"))
+            conn.commit(); conn.close()
             strategy_plugins.write_event = lambda ev: (writes.append(ev) or (True, self.db / "x"))
             result = strategy_plugins._run_plugins_for_cutoff(
                 self.db, "cut", datetime(2026, 8, 17, 12, 15, tzinfo=timezone.utc),
@@ -114,6 +126,48 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             assert len(writes) == 1, result
             assert writes[0]["strategy_id"] == ids[0]
             assert result[ids[0]]["emitted"] == 1
+        finally:
+            strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)
+            config.STRATEGY_ENABLED_IDS = old_enabled
+            config.STRATEGY_ACTIVE_IDS = old_active
+
+    def test_companion_bars_are_checked_in_market_db(self):
+        import strategy_plugins
+
+        conn = config.get_db_connection(db_path=self.db)
+        conn.execute("""CREATE TABLE source_observations (
+            observation_id VARCHAR, source VARCHAR, venue VARCHAR,
+            native_symbol VARCHAR, asset VARCHAR, market_kind VARCHAR,
+            interval VARCHAR, source_start TIMESTAMP, source_end TIMESTAMP,
+            retrieved_at TIMESTAMP, retrieval_kind VARCHAR, payload_json VARCHAR
+        )""")
+        conn.execute("INSERT INTO source_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("obs", "test", "test", "BTCUSDT", "BTC", "perp", "5m",
+                      "2026-08-17 12:00:00", "2026-08-17 12:05:00",
+                      "2026-08-17 12:06:00", None, "{}"))
+        conn.commit(); conn.close()
+
+        old_registry = strategy_plugins._REGISTRY.copy()
+        old_enabled = config.STRATEGY_ENABLED_IDS
+        old_active = config.STRATEGY_ACTIVE_IDS
+        try:
+            strategy_plugins._REGISTRY["failed-break-v3"] = strategy_plugins.StrategyPlugin(
+                "failed-break-v3", "test", ("bars_5m",), (), lambda *_: [])
+            config.STRATEGY_ENABLED_IDS = ("failed-break-v3",)
+            config.STRATEGY_ACTIVE_IDS = ("failed-break-v3",)
+            snapshot = {"cutoff_id": "1m:2026-08-17T12:15:00Z",
+                        "eval_interval": "1m", "feature_snapshots": {},
+                        "market_db_path": str(self.db)}
+            result = strategy_plugins._run_plugins_for_cutoff(
+                self.db, "1m:2026-08-17T12:15:00Z", None, False, snapshot=snapshot)
+            self.assertEqual(result["failed-break-v3"], {"emitted": 0, "events": []})
+
+            conn = config.get_db_connection(db_path=self.db)
+            conn.execute("DELETE FROM source_observations")
+            conn.commit(); conn.close()
+            result = strategy_plugins._run_plugins_for_cutoff(
+                self.db, "1m:2026-08-17T12:15:00Z", None, False, snapshot=snapshot)
+            self.assertIn("missing required datasets: bars_5m", result["failed-break-v3"]["skipped"])
         finally:
             strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)
             config.STRATEGY_ENABLED_IDS = old_enabled

@@ -49,14 +49,19 @@ def record_status(raw_signal_id, *, hard_gate_status=None, score_status=None,
     finally:
         conn.close()
 
-def render(rows, start):
+def render(rows, start, skipped_symbols=0):
     end = start + timedelta(minutes=config.RAW_SIGNAL_DISCORD_BATCH_MINUTES)
-    lines = ["RAW STRATEGY SIGNALS", f"Window: {start:%Y-%m-%d %H:%M}-{end:%H:%M} UTC",
-             "Status: observation only; not execution-authorized"]
-    for row in rows:
-        p = json.loads(row[6]); entry = p.get("entry_condition", {})
-        lines.append(f"{row[3]} {row[4].upper()} {row[2]} entry={entry.get('price', entry.get('type', '?'))} stop={p.get('invalidation_price', '?')} target={(p.get('targets') or ['?'])[0]}")
-    lines.append(f"Totals: {len(rows)} raw")
+    lines = [f"📊 SIGNAL · research-analyst · {config.RAW_SIGNAL_DISCORD_BATCH_MINUTES}m",
+             f"window {start:%H:%M}–{end:%H:%M} UTC", "```",
+             "asset  side   strat                    desc",
+             "─────  ─────  ───────────────────────  ────"]
+    for row in rows[:5]:
+        lines.append(f"{row[3]:<5}  {row[4].upper():<5}  {row[2]:<23}  signal")
+    lines.append("```")
+    remaining = max(0, len(rows) - 5)
+    if remaining:
+        lines.append(f"+ {remaining} more signal evaluations")
+    lines.append(f"skipped {max(0, skipped_symbols)} symbols (observed)")
     return "\n".join(lines)
 
 def publish_once(now=None, db_path=None, transport=None):
@@ -65,7 +70,13 @@ def publish_once(now=None, db_path=None, transport=None):
     start = end - timedelta(minutes=config.RAW_SIGNAL_DISCORD_BATCH_MINUTES)
     conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH)
     try:
-        rows = conn.execute("SELECT raw_signal_id,candidate_id,strategy_id,asset,direction,observed_at,payload_json FROM raw_signals WHERE observed_at >= ? AND observed_at < ? ORDER BY observed_at,raw_signal_id", (start.isoformat(), end.isoformat())).fetchall()
+        rows = conn.execute("""SELECT r.raw_signal_id,r.candidate_id,r.strategy_id,r.asset,r.direction,
+                    r.observed_at,r.payload_json,h.executor_intent_status,h.hard_gate_status,
+                    h.executor_intent_status,h.clash_status
+                    FROM raw_signals r LEFT JOIN raw_signal_status_history h ON h.status_id = (
+                      SELECT status_id FROM raw_signal_status_history WHERE raw_signal_id=r.raw_signal_id
+                      ORDER BY recorded_at DESC LIMIT 1)
+                    WHERE r.observed_at >= ? AND r.observed_at < ? ORDER BY r.observed_at,r.raw_signal_id""", (start.isoformat(), end.isoformat())).fetchall()
         if not rows: return False
         key = start.isoformat().replace("+00:00", "Z"); now_s = now.isoformat()
         conn.execute("INSERT OR IGNORE INTO discord_signal_batches(window_start,window_end,status,candidate_count,message_count) VALUES (?, ?, 'pending', ?, 0)", (key, end.isoformat(), len(rows)))
@@ -75,7 +86,9 @@ def publish_once(now=None, db_path=None, transport=None):
         if not claimed: return False
     finally: conn.close()
     try:
-        response = (transport or DiscordWebhookTransport(config.RAW_SIGNAL_DISCORD_WEBHOOK_URL)).send(render(rows, start))
+        observed_assets = {row[3] for row in rows}
+        skipped = len(set(config.load_static_symbols()) - observed_assets)
+        response = (transport or DiscordWebhookTransport(config.RAW_SIGNAL_DISCORD_WEBHOOK_URL)).send(render(rows, start, skipped))
         conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH); conn.execute("UPDATE discord_signal_batches SET status='sent',sent_at=?,response_body=?,message_count=1 WHERE window_start=?", (datetime.now(timezone.utc).isoformat(), response, key)); conn.commit(); conn.close(); return True
     except Exception as exc:
         conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH); conn.execute("UPDATE discord_signal_batches SET status='pending',error_message=? WHERE window_start=? AND attempts < ?", (str(exc)[:500], key, config.RAW_BATCH_MAX_ATTEMPTS)); conn.execute("UPDATE discord_signal_batches SET status='failed',error_message=? WHERE window_start=? AND attempts >= ?", (str(exc)[:500], key, config.RAW_BATCH_MAX_ATTEMPTS)); conn.commit(); conn.close(); return False

@@ -42,6 +42,40 @@ RESAMPLE_LOOKBACK_MIN = int(os.getenv("WS_RESAMPLE_LOOKBACK_MIN", "1440"))  # 24
 
 # Streamed base timeframes -> exchange-specific tokens.
 STREAMED_TFS = [t.strip() for t in os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").split(",") if t.strip()]
+WS_MESSAGE_TIMEOUT_SECONDS = 90
+WS_STALE_SECONDS = int(os.getenv("WS_STALE_SECONDS", "180"))
+_STARTED_MONOTONIC = time.monotonic()
+_HEALTH = {"last_message_at": None, "last_bar_at": None, "active_connections": 0, "reconnect_count": 0, "last_error": None}
+
+
+def _write_health(status: str) -> None:
+    path = config.DEFAULT_DB_DIR / "ws_health.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"service": "ws_gateway", "status": status, "ts": datetime.now(timezone.utc).isoformat(), **_HEALTH}
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.replace(path)
+
+
+def _record_message(is_bar: bool = False) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    _HEALTH["last_message_at"] = now
+    if is_bar:
+        _HEALTH["last_bar_at"] = now
+
+
+async def health_monitor() -> None:
+    while True:
+        last_bar = _HEALTH["last_bar_at"]
+        stale = (
+            (datetime.now(timezone.utc) - datetime.fromisoformat(last_bar)).total_seconds() > WS_STALE_SECONDS
+            if last_bar
+            else time.monotonic() - _STARTED_MONOTONIC > WS_STALE_SECONDS
+        )
+        _write_health("stale" if stale else "healthy")
+        if stale and _HEALTH["active_connections"] > 0:
+            raise RuntimeError(f"WebSocket feed stale for more than {WS_STALE_SECONDS}s")
+        await asyncio.sleep(10)
 BYBIT_TF_TOKEN = {"1m": "1", "5m": "5", "15m": "15"}
 BINANCE_TF_STREAM = {"1m": "1m", "5m": "5m", "15m": "15m"}
 
@@ -107,8 +141,8 @@ def plan_bybit_streams(symbols: List[str], shard: int) -> List[List[str]]:
         for tf in STREAMED_TFS:
             token = BYBIT_TF_TOKEN.get(tf, tf)
             shards[-1].append(f"kline.{token}.{sym}")
-        if getattr(config, "WS_MARKPRICE_ENABLED", True):
-            shards[-1].append(f"markPrice.{sym}")
+        # Bybit does not expose mark price as a public markPrice.<symbol> topic.
+        # Sending it with the kline topics makes the shard subscription fail.
     return shards
 
 
@@ -475,22 +509,43 @@ async def _bybit_conn(topics: List[str], queue: asyncio.Queue, source: str) -> N
         try:
             async with websockets.connect(BYBIT_WS_URL, ping_interval=15, ping_timeout=10) as ws:
                 backoff = 1.0
+                _HEALTH["active_connections"] += 1
                 await ws.send(json.dumps({"op": "subscribe", "args": topics}))
-                async for raw in ws:
-                    try:
-                        msg = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    topic = msg.get("topic", "")
-                    if topic.startswith("kline."):
-                        rec = normalize_bybit_kline(msg)
-                        if rec:
-                            queue.put_nowait(bar_record_to_row(rec, source, venue, "stream"))
-                    elif topic.startswith("markPrice."):
-                        rec = normalize_bybit_mark(msg)
-                        if rec:
-                            queue.put_nowait(mark_record_to_row(rec, source, venue, "stream"))
+
+                async def heartbeat() -> None:
+                    while True:
+                        await asyncio.sleep(20)
+                        await ws.send(json.dumps({"op": "ping"}))
+
+                heartbeat_task = asyncio.create_task(heartbeat())
+                try:
+                    while True:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=WS_MESSAGE_TIMEOUT_SECONDS)
+                        _record_message()
+                        try:
+                            msg = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if msg.get("op") == "subscribe" and not msg.get("success", True):
+                            print(f"[bybit] subscription rejected: {msg}")
+                        topic = msg.get("topic", "")
+                        if topic.startswith("kline."):
+                            rec = normalize_bybit_kline(msg)
+                            if rec:
+                                _record_message(is_bar=True)
+                                queue.put_nowait(bar_record_to_row(rec, source, venue, "stream"))
+                        elif topic.startswith("markPrice."):
+                            rec = normalize_bybit_mark(msg)
+                            if rec:
+                                queue.put_nowait(mark_record_to_row(rec, source, venue, "stream"))
+                finally:
+                    heartbeat_task.cancel()
+                    await asyncio.gather(heartbeat_task, return_exceptions=True)
         except Exception as e:
+            _HEALTH["active_connections"] = max(0, _HEALTH["active_connections"] - 1)
+            _HEALTH["reconnect_count"] += 1
+            _HEALTH["last_error"] = str(e)[:500]
+            _write_health("reconnecting")
             print(f"[bybit] connection error: {e}; retrying in {backoff:.1f}s")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
@@ -506,7 +561,8 @@ async def _binance_conn(streams: List[str], queue: asyncio.Queue, source: str) -
             url = BINANCE_WS_URL + "/".join(streams)
             async with websockets.connect(url, ping_interval=15, ping_timeout=10) as ws:
                 backoff = 1.0
-                async for raw in ws:
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=WS_MESSAGE_TIMEOUT_SECONDS)
                     try:
                         msg = json.loads(raw)
                     except json.JSONDecodeError:
@@ -553,7 +609,8 @@ async def run_async() -> None:
 
     queue: asyncio.Queue = asyncio.Queue()
     ws_source = config.BYBIT_WS_SOURCE if config.WS_BYBIT_ENABLED else config.BINANCE_WS_SOURCE
-    tasks = [writer_task(queue, bases, ws_source)]
+    _write_health("starting")
+    tasks = [writer_task(queue, bases, ws_source), health_monitor()]
     if config.WS_BYBIT_ENABLED:
         tasks.append(_run("bybit", bases, queue, config.BYBIT_WS_SOURCE))
     if config.WS_BINANCE_ENABLED:

@@ -12,15 +12,14 @@ import ws_gateway as wsg
 
 
 def test_plan_bybit_streams_shards():
-    syms = [f"BASE{i}" for i in range(45)]  # 45 bases -> 3 topics each (1m,5m,mark)
+    syms = [f"BASE{i}" for i in range(45)]  # 45 bases -> 2 kline topics each
     shards = wsg.plan_bybit_streams(syms, shard=20)
     total = sum(len(s) for s in shards)
-    assert total == 135, total  # 45 * (kline.1 + kline.5 + markPrice)
+    assert total == 90, total  # 45 * (kline.1 + kline.5)
     # Soft cap: a symbol can overshoot the 20 cap by up to (topics per symbol - 1).
     assert max(len(s) for s in shards) <= 20 + len(wsg.STREAMED_TFS), max(len(s) for s in shards)
     assert shards[0][0] == "kline.1.BASE0USDT"
     assert shards[0][1] == "kline.5.BASE0USDT"
-    assert shards[0][2] == "markPrice.BASE0USDT"
 
 
 def test_gateway_universe_is_independent_from_compact_evaluation_universe(monkeypatch):

@@ -158,7 +158,45 @@ def _ta_5m(conn, asset: str, cutoff: datetime) -> Dict[str, Any]:
         summary["atr14"] = atr_last(bars, 14)
     except Exception:
         pass
+    try:
+        rsi_len, stoch_len = 14, 14
+        rsi = []
+        for i in range(len(closes)):
+            if i < rsi_len:
+                rsi.append(None)
+                continue
+            gains = [max(closes[j] - closes[j - 1], 0.0) for j in range(i - rsi_len + 1, i + 1)]
+            losses = [max(closes[j - 1] - closes[j], 0.0) for j in range(i - rsi_len + 1, i + 1)]
+            avg_loss = sum(losses) / rsi_len
+            rsi.append(100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + sum(gains) / rsi_len / avg_loss))
+        raw = []
+        for i, value in enumerate(rsi):
+            window = [x for x in rsi[max(0, i - stoch_len + 1):i + 1] if x is not None]
+            if value is None or len(window) < stoch_len:
+                raw.append(None)
+            else:
+                lo, hi = min(window), max(window)
+                raw.append(0.0 if hi == lo else 100.0 * (value - lo) / (hi - lo))
+        k_values = [sum(raw[i - 2:i + 1]) / 3 for i in range(len(raw)) if i >= 2 and all(x is not None for x in raw[i - 2:i + 1])]
+        summary["rsi5"] = rsi[-1]
+        summary["stoch_k"] = k_values[-1] if k_values else None
+    except Exception:
+        pass
     return summary
+
+
+def _mechanical_exit(pos: Dict[str, Any], ta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Evaluate the strategy-declared TA exit without involving the LLM."""
+    strategy_id = str(pos.get("strategy_id") or "")
+    rsi, stoch_k = ta.get("rsi5"), ta.get("stoch_k")
+    if strategy_id != "ema99-wall-stochrsi-v1" or rsi is None or stoch_k is None:
+        return None
+    long_hit = str(pos.get("side", "")).lower() == "long" and rsi > 70 and stoch_k >= 80
+    short_hit = str(pos.get("side", "")).lower() == "short" and rsi < 30 and stoch_k <= 20
+    if not (long_hit or short_hit):
+        return None
+    return {"rule": "rsi_stochrsi_extreme", "rsi5": rsi, "stoch_k": stoch_k,
+            "veto_allowed": True}
 
 
 def _swings(conn, asset: str, cutoff: datetime) -> Dict[str, Any]:
@@ -268,7 +306,7 @@ def _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, observed_at) -
                  htf_bias, rr, cutoff_at, observed_at, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (advice_id, pos["position_id"], pos["strategy_id"], pos["asset"], action,
+            (advice_id, pos["position_id"], pos["strategy_id"], pos["asset"], "hold" if action == "veto_mechanical_exit" else action,
              reason, htf_bias, rr, cutoff, observed_at, observed_at),
         )
         conn.commit()
@@ -291,7 +329,7 @@ def _write_decision_file(pos: Dict[str, Any], action: str, reason: str,
     decision_dir = Path(decision_dir)
     decision_dir.mkdir(parents=True, exist_ok=True)
     action_up = str(action).upper()
-    if action_up not in ("HOLD", "EXIT", "REDUCE"):
+    if action_up not in ("HOLD", "EXIT", "REDUCE", "VETO_MECHANICAL_EXIT"):
         action_up = "HOLD"
     fraction = None
     if action_up == "REDUCE":
@@ -352,17 +390,30 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
             intent = _get_active_intent(conn, pos["strategy_id"], asset)
             htf_bias, _ = _htf_bias(market_conn, asset, cutoff)
             ta = _ta_5m(market_conn, asset, cutoff)
+            mechanical = _mechanical_exit(pos, ta)
+            if mechanical:
+                print(json.dumps({"event": "mechanical_exit_triggered", "strategy_id": pos.get("strategy_id"), "asset": asset, "position_id": pos.get("position_id"), "rule": mechanical["rule"], "rsi5": mechanical["rsi5"], "stoch_k": mechanical["stoch_k"], "cutoff": cutoff.isoformat()}, sort_keys=True))
             swings = _swings(market_conn, asset, cutoff)
             rr = _compute_rr(
                 pos["side"], pos["entry"], ta.get("last_close"),
                 (intent or {}).get("invalidation_price"),
             )
             prompt = _build_prompt(pos, intent, htf_bias, ta, swings, rr)
+            if mechanical:
+                prompt += "\nMECHANICAL EXIT TRIGGERED. Return veto_mechanical_exit only to hold a reduced position; otherwise return exit."
             decision = call_pm_llm(prompt)
             if decision is None:
                 action, reason = "hold", "llm unavailable/error; defaulting to hold"
             else:
                 action, reason = decision["action"], decision["reason"]
+            if mechanical and action == "hold":
+                action = "veto_mechanical_exit"
+                reason = reason or "LLM vetoed mechanical exit"
+            if mechanical and action == "veto_mechanical_exit":
+                reason = reason or "LLM vetoed mechanical exit"
+            if mechanical and action not in ("veto_mechanical_exit", "reduce"):
+                action = "exit"
+            print(json.dumps({"event": "llm_management_decision", "strategy_id": pos.get("strategy_id"), "asset": asset, "position_id": pos.get("position_id"), "mechanical_trigger": bool(mechanical), "action": action, "reason": reason, "cutoff": cutoff.isoformat()}, sort_keys=True))
             if _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, now):
                 advices += 1
                 if _write_decision_file(pos, action, reason, cutoff, now):

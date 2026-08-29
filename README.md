@@ -53,6 +53,18 @@ The live compact universe is `BTC`, `ETH`, `PAXG`, and `QQQ` from
 registration and runtime activation. Other registered v2 plugins are research
 capabilities, not part of the four-strategy live compact admission path.
 
+The four compact strategies are forced to Bybit account `hyro`. The dual-zone
+strategies explicitly route to Bybit account `fundamo`:
+
+| Strategy | Account |
+| --- | --- |
+| `failed-break-v3` | `hyro` |
+| `bb-rsi-meanrev-v1` | `hyro` |
+| `williams-fractal-scalp-v1` | `hyro` |
+| `ema9-continuation-stochrsi-v1` | `hyro` |
+| `dual-zone-follower-v1` | `fundamo` |
+| `dual-zone-short-follower-v1` | `fundamo` |
+
 ## Decision pipeline
 
 Each plugin runs against a finalized point-in-time cutoff. Every returned
@@ -80,11 +92,20 @@ and produces no intent. Losing and failed candidates remain auditable.
 
 When `INTENT_DELIVERY_ENABLED=true`, a selected candidate is atomically written
 to the executor intent inbox. Compact intents are forcibly routed to
-`exchange_id=bybit`, `account_id=hyro`; old multi-target routing is not the live
-path. The analyst sends thesis fields only and never emits an `order_type`
+`exchange_id=bybit`, `account_id=hyro`; dual-zone intents use their explicit
+`fundamo` route. The analyst sends thesis fields only and never emits an `order_type`
 instruction. The executor profile selects the entry order policy. The executor
 owns credentials, quantity, risk sizing, leverage, venue precision, portfolio
 gates, orders, fills, lifecycle, hard protective SL, and fixed full-close TP.
+
+Each intent is `schema_version: 1` JSON containing `delivery_id`, `source`,
+`exchange_id`, `account_id`, `asset`, unified perpetual `symbol`, normalized
+`direction`, `entry_price`, `stop_loss`, `take_profit`, `take_profit_mode`,
+`observed_at`, `entry_valid_until`, and non-sizing metadata. The default entry TTL
+is five minutes. Geometry requires `LONG: stop < entry < target` or
+`SHORT: target < entry < stop`, with RR at least `2.0` and stop distance `0.1%..5%`.
+Files are atomic and idempotent by `delivery_id`; expired files are not valid
+execution opportunities.
 
 Keep delivery disabled until the executor paper path, account, symbol universe,
 and protection behavior are verified. A Discord or LLM failure must not create,
@@ -106,6 +127,40 @@ to fixed UTC 30-minute windows. The batch reads committed ledger state and is
 non-blocking: webhook latency, retry, or outage cannot affect evaluation or
 immediate Bybit/Hyro intent delivery. It is observation-only and disabled unless
 `RAW_SIGNAL_DISCORD_BATCH_ENABLED=true` and a webhook is configured.
+
+The locked raw format is:
+
+```text
+📊 SIGNAL · research-analyst · 30m
+window 01:15–01:45 UTC
+asset  side   strat                    desc
+─────  ─────  ───────────────────────  ────
+ASTER  SHORT  LongVCP                  signal
+HOOD   SHORT  GoldTrendEMA_BB_Stoch    signal
+POL    SHORT  LongVCP                  signal
+MSFT   LONG   TrendSwingTrader         signal
+ONDO   SHORT  TrendSwingTrader         signal
++ 91 more signal evaluations
+skipped 152 symbols (observed)
+```
+
+Only the first five rows are expanded; the remainder is summarized. Raw batches
+are observation-only and never go to Telegram or the executor.
+
+## Discord message contracts
+
+- **Entry alpha:** bold `ALPHA · DIRECTION · ASSET`, setup family/strategy,
+  phase/confidence, trigger, invalidation, targets, validity window, and bounded
+  context.
+- **Research note:** optional `---` section with advisory verdict, thesis, and up
+  to two limitations.
+- **Raw signals:** the exact fixed-width 30-minute format above.
+- **OI bar:** `OI ROTATION · Binance USDM · 1h|Nm`, ranked candidates, completion
+  and expiry metadata, plus `_Feed only — not an alpha entry signal_`.
+- **OI multi-hour:** OI window/generated metadata, repeat hits, latest hour, and
+  a by-hour top-1 timeline with the same footer.
+- **Exit/reduce:** PM sidecar decisions are executor JSON values `HOLD`, `REDUCE`,
+  or `EXIT`, not Discord notifications. They cannot alter hard protections.
 
 ## Service operation
 

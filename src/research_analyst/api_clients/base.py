@@ -83,7 +83,7 @@ class RateLimitedClient:
         meta: Dict[str, Any],
         db_path: Optional[str] = None,
     ) -> None:
-        """Logs to source_request_log (shared with OpenMarket)."""
+        """Logs a source request to source_request_log."""
         conn = config.get_db_connection(db_path=db_path)
         try:
             conn.execute(

@@ -33,6 +33,7 @@ def _get_or_create_cutoff_run(cutoff_at: datetime) -> str:
         conn.close()
 
 STARTUP_TIME = time.time()
+LAST_EVALUATION_OBSERVABILITY = {}
 DAEMON_MODE = False
 
 
@@ -373,10 +374,15 @@ def _run_pipeline():
         try:
             feat_conn = config.get_db_connection(read_only=False, db_path=config.ANALYST_DB_PATH)
             nowf = datetime.now(timezone.utc)
-            assets = sorted(config.COMPACT_STRATEGY_ASSETS)
-
             # Load recent 15m bars from the market-owned source observations.
             market_conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
+            static_assets = config.load_static_symbols()
+            placeholders = ",".join("?" for _ in static_assets)
+            assets = [row[0] for row in market_conn.execute(
+                f"SELECT DISTINCT asset FROM source_observations "
+                f"WHERE interval = '15m' AND asset IN ({placeholders}) ORDER BY asset",
+                static_assets,
+            ).fetchall()]
             bars_by_asset = {}
             for asset in assets:
                 rows = market_conn.execute("""
@@ -451,7 +457,7 @@ def _run_pipeline():
                     VALUES (?, ?, ?, 'fvg_ob_zones', 'v1', ?, ?)
                 """, (f"feat-{cutoff_id}-zones", cutoff_id, assets[0] if assets else "SOL", nowf, json.dumps({"zones": len(zone_rows)})))
 
-            # Distinct approx VP (candle derived, not native OpenMarket)
+            # Distinct approximate VP derived from candles.
             feat_conn.execute("""
                 INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
                 VALUES (?, ?, ?, 'coinalyze_candle_distributed_volume_profile_v1', 'v1', ?, ?)
@@ -466,6 +472,31 @@ def _run_pipeline():
         from strategy_plugins import invoke_plugins_for_intervals, ensure_plugin_states
         ensure_plugin_states(config.ANALYST_DB_PATH)
         pres = invoke_plugins_for_intervals(config.ANALYST_DB_PATH, now=datetime.now(timezone.utc), market_db_path=config.MARKET_DB_PATH)
+        strategies = list(config.STRATEGY_ENABLED_IDS)
+        symbols = sorted(config.load_static_symbols())
+        per_interval = {}
+        for interval, results in pres.items():
+            per_interval[interval] = {
+                "strategies": {
+                    strategy_id: {
+                        "status": "completed" if isinstance(result, dict) and "emitted" in result else "skipped" if isinstance(result, dict) and "skipped" in result else "failed" if isinstance(result, dict) and "failed" in result else "unknown",
+                        "emitted": result.get("emitted", 0) if isinstance(result, dict) else 0,
+                        "detail": result.get("skipped") or result.get("failed") if isinstance(result, dict) else None,
+                    }
+                    for strategy_id, result in results.items()
+                },
+                "strategy_evaluations": len(strategies) * len(symbols),
+            }
+        LAST_EVALUATION_OBSERVABILITY.clear()
+        LAST_EVALUATION_OBSERVABILITY.update({
+            "strategies_enabled": len(strategies),
+            "symbols": symbols,
+            "symbols_evaluated": len(symbols),
+            "strategy_evaluations": len(strategies) * len(symbols) * len(per_interval),
+            "signals_emitted": sum(v.get("emitted", 0) for interval in per_interval.values() for v in interval["strategies"].values()),
+            "by_interval": per_interval,
+        })
+        print(f"Evaluation observability: {json.dumps(LAST_EVALUATION_OBSERVABILITY, sort_keys=True)}")
         for iv, ivres in pres.items():
             print(f"Plugins [{iv}] for {cutoff_id}: { {k: v.get('emitted', v) for k,v in ivres.items()} }")
 
@@ -488,25 +519,6 @@ def _run_pipeline():
             if n: print(f"Outcomes evaluated: {n}")
         except Exception as oe:
             print(f"Outcome eval err: {oe}")
-
-        # Wire OpenMarket advisory into features (if enabled; never blocks)
-        if config.OPENMARKET_ENABLED:
-            try:
-                from api_clients.openmarket import OpenMarketClient
-                om_client = OpenMarketClient()
-                om_assets = (list(config.OPENMARKET_PERMANENT_ASSETS)[:3] or ["SOL"])
-                om_conn = config.get_db_connection(read_only=False, db_path=config.ANALYST_DB_PATH)
-                for asset in om_assets:
-                    prof = om_client.fetch_htf_profile([asset], cutoff_id)
-                    flow = om_client.fetch_15m_flow([asset], cutoff_id)
-                    om_conn.execute("""
-                        INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
-                        VALUES (?, ?, ?, 'openmarket_htf_profile', 'v1', ?, ?)
-                    """, (f"feat-{cutoff_id}-om-{asset}", cutoff_id, asset, datetime.now(timezone.utc), json.dumps({"htf": prof, "flow": flow})))
-                om_conn.commit()
-                om_conn.close()
-            except Exception as ome:
-                print(f"OM wire err: {ome}")
 
         # Drop phase: after verification, drop legacy futures_data (opt-in via env for safety)
         if os.getenv("DROP_LEGACY_FUTURES", "0").lower() in ("1", "true", "yes"):
@@ -533,12 +545,8 @@ def _run_pipeline():
             "SELECT count(*) FROM source_observations WHERE interval='15m' AND source_end > ? AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0",
             (now - timedelta(minutes=30),)
         ).fetchone()[0] or 0
-        om = conn.execute(
-            "SELECT status, count(*) FROM source_request_log WHERE source='openmarket' AND requested_at > ? GROUP BY status",
-            (now - timedelta(minutes=15),)
-        ).fetchall()
         latest_str = latest.strftime("%Y-%m-%d %H:%M UTC") if hasattr(latest, "strftime") else str(latest)
-        print(f"Health: age={age}m bars30={bars30} latest={latest_str} om={dict(om) or {}}")
+        print(f"Health: age={age}m bars30={bars30} latest={latest_str}")
 
         # Wire non-trading health to bot-health-watchdog (sketch implemented)
         try:
@@ -557,7 +565,8 @@ def _run_pipeline():
                     "ageMin": age,
                     "barsLast30m": bars30,
                 },
-                "om": dict(om) or {},
+                "evaluation": dict(LAST_EVALUATION_OBSERVABILITY),
+                "llm": {"status": "disabled", "enabled": False},
                 "ts": now.isoformat(),
             }
             tmp = hpath.with_suffix(".tmp")

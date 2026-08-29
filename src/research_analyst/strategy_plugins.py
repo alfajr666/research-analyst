@@ -22,7 +22,8 @@ from strategy_v2_context import completed_cycle_for
 PRICE_STRUCTURE_STRATEGY_IDS = getattr(config, "PRICE_STRUCTURE_STRATEGY_IDS", set())
 MIXED_STRATEGY_IDS = getattr(config, "MIXED_STRATEGY_IDS", set())
 ADMISSION_STRATEGY_IDS = {"failed-break-v3", "bb-rsi-meanrev-v1",
-                          "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1"}
+                           "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
+                           "dual-zone-follower-v1", "dual-zone-short-follower-v1"}
 
 
 def _get_bar_purity(conn, asset: str, observed_at: Any, interval: str = "15m") -> Dict[str, Any]:
@@ -68,6 +69,8 @@ KNOWN_STRATEGIES = {
     "failed-break-v3",
     "williams-fractal-scalp-v1",
     "ema9-continuation-stochrsi-v1",
+    "dual-zone-follower-v1",
+    "dual-zone-short-follower-v1",
 }
 
 @dataclass
@@ -96,6 +99,8 @@ def _load_builtin_plugins():
     from strategies.compact.failed_break_v3 import run_plugin as failed_break_run
     from strategies.compact.williams_fractal_scalp_v1 import run_plugin as williams_run
     from strategies.compact.ema9_continuation_stochrsi_v1 import run_plugin as ema9_run
+    from strategies.v2.dual_zone_follower_v1 import run_plugin as dual_zone_run
+    from strategies.v2.dual_zone_short_follower_v1 import run_plugin as dual_zone_short_run
 
     register(StrategyPlugin("accumulation-base-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), acc_v2_run))
     register(StrategyPlugin("impulse-ignition-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), ign_v2_run))
@@ -107,6 +112,8 @@ def _load_builtin_plugins():
     register(StrategyPlugin("failed-break-v3", "v3", ("bars_5m",), (), failed_break_run))
     register(StrategyPlugin("williams-fractal-scalp-v1", "v1", ("bars_1m",), (), williams_run))
     register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v1", ("bars_1m",), (), ema9_run))
+    register(StrategyPlugin("dual-zone-follower-v1", "v1", ("bars_5m",), (), dual_zone_run))
+    register(StrategyPlugin("dual-zone-short-follower-v1", "v1", ("bars_5m",), (), dual_zone_short_run))
 
 
 _load_builtin_plugins()
@@ -302,6 +309,35 @@ def _interval_cutoff_id(interval: str, cutoff: datetime) -> str:
     return f"{interval}:{cutoff.isoformat().replace('+00:00', 'Z')}"
 
 
+def _bars_available(market_db_path: str | Path, dataset: str, snapshot: dict) -> bool:
+    """Check that the market DB has this bar interval at the snapshot cutoff."""
+    interval = dataset.removeprefix("bars_")
+    cutoff_id = str(snapshot.get("cutoff_id", ""))
+    cutoff_text = cutoff_id.split(":", 1)[1] if ":" in cutoff_id else None
+    assets = list((snapshot.get("feature_snapshots") or {}).keys())
+    try:
+        conn = config.get_db_connection(read_only=True, db_path=market_db_path)
+    except Exception:
+        return False
+    try:
+        query = "SELECT 1 FROM source_observations WHERE interval = ?"
+        params: list[Any] = [interval]
+        if cutoff_text:
+            query += " AND source_end <= ?"
+            params.append(datetime.fromisoformat(cutoff_text.replace("Z", "+00:00")))
+        if assets:
+            placeholders = ",".join("?" for _ in assets)
+            query += f" AND asset IN ({placeholders})"
+            params.extend(assets)
+        query += " LIMIT 1"
+        try:
+            return conn.execute(query, params).fetchone() is not None
+        except Exception:
+            return False
+    finally:
+        conn.close()
+
+
 def _ensure_cutoff_run_finalized(db_path: str | Path, cutoff_id: str, interval: str, cutoff: datetime) -> None:
     """Upsert a finalized cutoff_run row so plugins can read a consistent snapshot."""
     conn = config.get_db_connection(read_only=False, db_path=db_path or config.ANALYST_DB_PATH)
@@ -382,9 +418,10 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
             for fs in feat_snap.values():
                 if isinstance(fs, dict):
                     available.update(fs.keys())
-            # The eval-interval bars are always available from source_observations.
-            available.add(f"bars_{eval_interval}")
-            missing = [d for d in p.required_datasets if d not in available]
+            missing = [d for d in p.required_datasets
+                       if (d.startswith("bars_") and not _bars_available(
+                           snapshot.get("market_db_path") or market_db_path or config.MARKET_DB_PATH,
+                           d, snapshot)) or (not d.startswith("bars_") and d not in available)]
             if missing:
                 results[p.id] = {"skipped": f"missing required datasets: {','.join(missing)}"}
                 continue

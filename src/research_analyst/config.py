@@ -147,6 +147,23 @@ COMPACT_STRATEGY_IDS = frozenset((
     "failed-break-v3", "bb-rsi-meanrev-v1",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
 ))
+DUAL_ZONE_STRATEGY_ID = "dual-zone-follower-v1"
+DUAL_ZONE_EXIT_EMA_LENGTH = int(os.getenv("DUAL_ZONE_EXIT_EMA_LENGTH", "7"))
+DUAL_ZONE_ANCHOR_EMA_LENGTH = int(os.getenv("DUAL_ZONE_ANCHOR_EMA_LENGTH", "26"))
+DUAL_ZONE_TREND_EMA_LENGTH = int(os.getenv("DUAL_ZONE_TREND_EMA_LENGTH", "99"))
+DUAL_ZONE_A_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_A_ENTRY_DISTANCE_PCT", "1.0"))
+DUAL_ZONE_A_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_A_TARGET_DISTANCE_PCT", "3.0"))
+DUAL_ZONE_A_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_A_STOP_DISTANCE_PCT", "1.0"))
+DUAL_ZONE_B_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_B_ENTRY_DISTANCE_PCT", "1.5"))
+DUAL_ZONE_B_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_B_TARGET_DISTANCE_PCT", "5.0"))
+DUAL_ZONE_B_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_B_STOP_DISTANCE_PCT", "1.0"))
+DUAL_ZONE_SHORT_STRATEGY_ID = "dual-zone-short-follower-v1"
+DUAL_ZONE_SHORT_A_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_A_ENTRY_DISTANCE_PCT", "1.0"))
+DUAL_ZONE_SHORT_A_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_A_TARGET_DISTANCE_PCT", "3.0"))
+DUAL_ZONE_SHORT_A_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_A_STOP_DISTANCE_PCT", "1.0"))
+DUAL_ZONE_SHORT_B_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_B_ENTRY_DISTANCE_PCT", "1.5"))
+DUAL_ZONE_SHORT_B_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_B_TARGET_DISTANCE_PCT", "5.0"))
+DUAL_ZONE_SHORT_B_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_B_STOP_DISTANCE_PCT", "1.0"))
 WS_STREAM_TIMEFRAMES = os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").strip().lower().split(",")
 WS_MARKPRICE_ENABLED = os.getenv("WS_MARKPRICE_ENABLED", "true").lower() == "true"
 # Shard size for Bybit (per-connection topic cap). Binance uses one combined conn.
@@ -399,7 +416,6 @@ INTENT_INBOX = Path(os.getenv("INTENT_INBOX", str(_default_intent_inbox)))
 INTENT_SOURCE = os.getenv("INTENT_SOURCE", "research-analyst")
 INTENT_EXCHANGE_ID = os.getenv("INTENT_EXCHANGE_ID", "bybit")
 INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "hyro")
-INTENT_ORDER_TYPE = os.getenv("INTENT_ORDER_TYPE", "limit")  # limit (IOC) | market
 INTENT_TAKE_PROFIT_MODE = os.getenv("INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
 INTENT_VALIDITY_MINUTES = int(os.getenv("INTENT_VALIDITY_MINUTES", "5"))
 INTENT_MIN_RR = float(os.getenv("INTENT_MIN_RR", "2.0"))
@@ -410,7 +426,7 @@ STRATEGY_PRIORITY = {}
 INTENT_MAX_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MAX_STOP_DISTANCE_PCT", "0.05"))
 # Per-strategy routing to executor profiles (exchange/account). JSON map keyed by
 # strategy_id; each value may override any of: exchange_id, account_id, source,
-# order_type, take_profit_mode, validity_minutes. Strategies not listed fall back to
+# take_profit_mode, validity_minutes. Strategies not listed fall back to
 # the INTENT_* defaults above. Compact strategies are always forced to the
 # deployment's Hyro Bybit account by intent_outbox.
 _INTENT_ROUTING_RAW = os.getenv("INTENT_ROUTING", "{}")
@@ -420,6 +436,8 @@ try:
         INTENT_ROUTING = {}
 except (ValueError, TypeError):
     INTENT_ROUTING = {}
+INTENT_ROUTING.setdefault("dual-zone-follower-v1", {"exchange_id": "bybit", "account_id": "fundamo"})
+INTENT_ROUTING.setdefault("dual-zone-short-follower-v1", {"exchange_id": "bybit", "account_id": "fundamo"})
 
 # PM sidecar <-> bybit-executor handoff (the executor's PM Decision Contract).
 # EXECUTOR_SNAPSHOT_DIR: where the executor writes its 1m position snapshots
@@ -510,18 +528,7 @@ LSR_V1_USE_15M_EPHEMERAL_FVG = os.getenv("LSR_V1_USE_15M_EPHEMERAL_FVG", "true")
 # LLM delivery-order booster cap (ADR); does not alter event confidence
 LLM_BOOST_CAP = float(os.getenv("LLM_BOOST_CAP", "0.10"))
 
-# OpenMarket Free enrichment (optional, disabled until key; Bybit Perp only in phase 1)
-OPENMARKET_ENABLED = os.getenv("OPENMARKET_ENABLED", "false").lower() == "true"
-OPENMARKET_API_KEY = os.getenv("OPENMARKET_API_KEY", "")
-OPENMARKET_REFERENCE_VENUE = os.getenv("OPENMARKET_REFERENCE_VENUE", "BYBIT")
-OPENMARKET_PERMANENT_ASSETS = tuple(s.strip().upper() for s in os.getenv("OPENMARKET_PERMANENT_ASSETS", "BTC,ETH,SOL,PAXG,XAUT").split(",") if s.strip())
-OPENMARKET_CANDIDATE_CAP = int(os.getenv("OPENMARKET_CANDIDATE_CAP", "30"))
-OPENMARKET_HTF_REFRESH_HOURS = int(os.getenv("OPENMARKET_HTF_REFRESH_HOURS", "4"))
-OPENMARKET_REQUEST_DEADLINE_MS = int(os.getenv("OPENMARKET_REQUEST_DEADLINE_MS", "1500"))
-OPENMARKET_RETENTION_DAYS = int(os.getenv("OPENMARKET_RETENTION_DAYS", "30"))
-
 # CA + venue-aggregate failover for 15m backbone (specs/ca-truth-venue-agg-failover.md)
-# Shipped dark (enabled=false). Core=OPENMARKET_PERMANENT_ASSETS; hot expansion capped.
 MARKET_FAILOVER_ENABLED = os.getenv("MARKET_FAILOVER_ENABLED", "false").lower() == "true"
 LEGACY_SCANNER_ENABLED = os.getenv("LEGACY_SCANNER_ENABLED", "false").lower() == "true"
 
@@ -557,8 +564,6 @@ COINANALYZE_RPS = float(os.getenv("COINANALYZE_RPS", "0.08"))
 COINANALYZE_MAX_CONCURRENT = int(os.getenv("COINANALYZE_MAX_CONCURRENT", "5"))
 COINANALYZE_DEFAULT_RETRY_AFTER = int(os.getenv("COINANALYZE_DEFAULT_RETRY_AFTER", "5"))
 
-OPENMARKET_DAILY_WEIGHT_BUDGET = int(os.getenv("OPENMARKET_DAILY_WEIGHT_BUDGET", "1000"))
-OPENMARKET_PER_CUTOFF_WEIGHT = int(os.getenv("OPENMARKET_PER_CUTOFF_WEIGHT", "50"))
 LLM_RESEARCH_ENABLED = os.getenv("LLM_RESEARCH_ENABLED", "false").lower() == "true"
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 LLM_MODEL = os.getenv("LLM_MODEL", "")

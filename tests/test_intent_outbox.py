@@ -45,7 +45,6 @@ class IntentBuildTests(unittest.TestCase):
         self.assertEqual(intent["asset"], "BTC")
         self.assertEqual(intent["symbol"], "BTC/USDT:USDT")
         self.assertEqual(intent["direction"], "LONG")
-        self.assertEqual(intent["order_type"], "limit")
         self.assertEqual(intent["entry_price"], 100)
         self.assertEqual(intent["stop_loss"], 95)
         self.assertEqual(intent["take_profit"], 110)
@@ -54,10 +53,11 @@ class IntentBuildTests(unittest.TestCase):
         self.assertNotIn("quantity", intent["metadata"])
         self.assertNotIn("risk_amount", intent["metadata"])
 
-    def test_market_order_has_null_entry_and_uppercases_direction(self):
+    def test_order_type_is_executor_owned(self):
         intent = build_executor_intent(_alpha_event(direction="SHORT", order_type="market"))
         self.assertEqual(intent["direction"], "SHORT")
-        self.assertIsNone(intent["entry_price"])
+        self.assertEqual(intent["entry_price"], 100)
+        self.assertNotIn("order_type", intent)
 
     def test_never_carries_risk_or_sizing(self):
         # Even if a strategy attaches sizing hints, the executor-owned sizing must

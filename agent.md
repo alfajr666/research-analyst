@@ -2,7 +2,7 @@
 
 ## Mission and boundaries
 
-Evaluate completed Bybit market data with four compact strategies, preserve the
+Evaluate completed Bybit market data with the configured active strategies, preserve the
 full candidate history, and emit advisory alpha or a safe executor intent. This
 service has no exchange credentials and never sizes or places orders.
 
@@ -53,7 +53,7 @@ For each finalized interval cutoff:
 4. Score eligible candidates using soft HTF bias, swings, FVG, order block,
    alignment, freshness, evidence, agreement, and contradiction components.
 5. Resolve same-direction ranking and opposite-direction clashes immediately.
-6. Write only selected `bybit / hyro` intents; retain all other outcomes.
+6. Write only selected intents using the per-strategy route; retain all other outcomes.
 
 Defaults are `RR >= 2.0`, stop distance `0.1%..5%`, and clash margin `2.0`.
 Missing soft context is `unavailable`, never automatic rejection. Hard failures
@@ -101,3 +101,35 @@ When diagnosing missing output, inspect static universe and active IDs, fresh
 completed observations, cutoff/features, plugin results, raw-signal statuses,
 alpha outbox/ledger, executor inbox, snapshots, and PM decisions. Report
 advisory, selected, accepted, and filled as distinct states.
+
+## Message contracts
+
+### Discord
+
+- **Alpha entry:** `**ALPHA · LONG|SHORT · ASSET**`, setup family and strategy,
+  phase/confidence, trigger, invalidation, targets, validity window, and bounded
+  feature context.
+- **Research note:** optional `---` section with advisory verdict, thesis, and up
+  to two limitations. It never changes deterministic signal fields.
+- **Raw signal batch:** exactly `📊 SIGNAL · research-analyst · 30m`, a UTC window,
+  a fenced fixed-width `asset / side / strat / desc` table with five rows, then
+  `+ N more signal evaluations` and `skipped N symbols (observed)`.
+- **OI bar and multi-hour:** `OI ROTATION · Binance USDM` with ranked candidates,
+  completion/window metadata, expiry where applicable, and the feed-only footer.
+- **Exit/reduce:** `HOLD`, `REDUCE`, and `EXIT` are executor PMDecision values,
+  not Discord messages; they cannot alter entry geometry or hard protections.
+
+### Trade intent
+
+The executor envelope is `schema_version: 1` JSON with `delivery_id`, `source`,
+`exchange_id`, `account_id`, `asset`, unified perpetual `symbol`, normalized
+`direction`, `entry_price`, `stop_loss`, `take_profit`, `take_profit_mode`,
+`observed_at`, `entry_valid_until`, and non-sizing metadata. The default entry TTL
+is five minutes. Geometry requires `LONG: stop < entry < target` or
+`SHORT: target < entry < stop`, with RR at least `2.0` and stop distance `0.1%..5%`.
+Files are atomic and idempotent by `delivery_id`. The analyst never emits
+`quantity`, `risk_amount`, leverage, or `order_type`; the executor owns those.
+
+Compact strategies are forced to Bybit `hyro`; dual-zone strategies explicitly
+route to Bybit `fundamo`. Strategies without an explicit route use the global
+default account.
