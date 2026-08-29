@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import polars as pl
 
-from ema9_continuation_stochrsi_v1 import STRATEGY_ID, _atr, evaluate_symbol
+from strategies.compact.ema9_continuation_stochrsi_v1 import STRATEGY_ID, _atr, evaluate_symbol
 
 
 def _bars(count, minutes, base=100.0):
@@ -34,7 +34,7 @@ class Ema9ContinuationStochRsiTests(unittest.TestCase):
             k[i], d[i], rsi[i] = 50.0, 50.0, 50.0
         k[20] = 10.0
         k[-2], d[-2], k[-1], d[-1] = 20.0, 30.0, 40.0, 30.0
-        with patch("ema9_continuation_stochrsi_v1._stoch_rsi", return_value=(k, d, rsi)):
+        with patch("strategies.compact.ema9_continuation_stochrsi_v1._stoch_rsi", return_value=(k, d, rsi)):
             event = evaluate_symbol(bars5, bars1, asset="BTC", symbol="BTC/USDT:USDT", cutoff=bars5["timestamp"][-1] + timedelta(minutes=5))
         self.assertIsNotNone(event)
         self.assertEqual(event["strategy_id"], STRATEGY_ID)
@@ -45,7 +45,7 @@ class Ema9ContinuationStochRsiTests(unittest.TestCase):
         self.assertIn("long", event["metadata"]["strategy_exits"])
 
     def test_restricts_assets_before_indicator_evaluation(self):
-        with patch("ema9_continuation_stochrsi_v1._stoch_rsi", side_effect=AssertionError):
+        with patch("strategies.compact.ema9_continuation_stochrsi_v1._stoch_rsi", side_effect=AssertionError):
             self.assertIsNone(evaluate_symbol(_bars(40, 5), _bars(50, 1), asset="SOL", symbol="SOL", cutoff=datetime.now(timezone.utc)))
 
     def test_atr_is_true_range_average(self):

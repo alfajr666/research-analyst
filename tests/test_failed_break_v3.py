@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import polars as pl
 
-from failed_break_v3 import SUPPORTED_ASSETS, evaluate_symbol
+from strategies.compact.failed_break_v3 import SUPPORTED_ASSETS, evaluate_symbol
 
 
 def _bars(n=40):
@@ -21,8 +21,8 @@ class FailedBreakV3Tests(unittest.TestCase):
     def test_emits_concrete_entry_stop_and_two_r_fallback(self):
         setup = {"direction": "long", "stop": 98.0, "swing": 99.0,
                  "armed_at": datetime(2026, 8, 29, tzinfo=timezone.utc)}
-        with patch("failed_break_v3._latest_setup", return_value=setup), patch(
-            "failed_break_v3._stoch_rsi", return_value=(pl.Series([10.0, 15.0]), pl.Series([20.0, 12.0]))
+        with patch("strategies.compact.failed_break_v3._latest_setup", return_value=setup), patch(
+            "strategies.compact.failed_break_v3._stoch_rsi", return_value=(pl.Series([10.0, 15.0]), pl.Series([20.0, 12.0]))
         ):
             event = evaluate_symbol(_bars(), _bars(), asset="BTC", symbol="BTCUSDT",
                                     cutoff=datetime(2026, 8, 29, 3, 20, tzinfo=timezone.utc))
@@ -35,7 +35,7 @@ class FailedBreakV3Tests(unittest.TestCase):
     def test_invalidates_when_price_crosses_opposite_side(self):
         setup = {"direction": "long", "stop": 98.0, "swing": 99.0,
                  "armed_at": datetime(2026, 8, 29, tzinfo=timezone.utc)}
-        with patch("failed_break_v3._latest_setup", return_value=None):
+        with patch("strategies.compact.failed_break_v3._latest_setup", return_value=None):
             self.assertIsNone(evaluate_symbol(_bars(), _bars(), asset="BTC", symbol="BTCUSDT",
                                                cutoff=datetime(2026, 8, 29, 3, 20, tzinfo=timezone.utc)))
 

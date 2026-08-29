@@ -163,15 +163,15 @@ def _load_builtin_plugins():
         finally:
             conn.close()
 
-    from accumulation_base_v2 import run_plugin as acc_v2_run
-    from impulse_ignition_v2 import run_plugin as ign_v2_run
-    from continuation_breakout_v2 import run_plugin as cont_v2_run
-    from rsi_reclaim_v1 import run_plugin as rsi_reclaim_run
-    from liquidity_sweep_reversal_v1 import run_plugin as lsr_run
-    from bb_rsi_meanrev_v1 import run_plugin as bb_rsi_run
-    from failed_break_v3 import run_plugin as failed_break_run
-    from williams_fractal_scalp_v1 import run_plugin as williams_run
-    from ema9_continuation_stochrsi_v1 import run_plugin as ema9_run
+    from strategies.v2.accumulation_base_v2 import run_plugin as acc_v2_run
+    from strategies.v2.impulse_ignition_v2 import run_plugin as ign_v2_run
+    from strategies.v2.continuation_breakout_v2 import run_plugin as cont_v2_run
+    from strategies.v2.rsi_reclaim_v1 import run_plugin as rsi_reclaim_run
+    from strategies.v2.liquidity_sweep_reversal_v1 import run_plugin as lsr_run
+    from strategies.compact.bb_rsi_meanrev_v1 import run_plugin as bb_rsi_run
+    from strategies.compact.failed_break_v3 import run_plugin as failed_break_run
+    from strategies.compact.williams_fractal_scalp_v1 import run_plugin as williams_run
+    from strategies.compact.ema9_continuation_stochrsi_v1 import run_plugin as ema9_run
 
     register(StrategyPlugin("accumulation-base-v1", "v1", ("bars_15m",), ("fvg_1h",), _acc_run))
     register(StrategyPlugin("impulse-ignition-v1", "v1", ("bars_15m",), ("vp",), _ign_run))
