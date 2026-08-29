@@ -3,8 +3,9 @@ import os
 import stat
 from pathlib import Path
 from typing import List
-import duckdb
+import sqlite3
 from dotenv import load_dotenv
+
 
 # Project Paths. Runtime data and secrets live at repository root, not beside code.
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -42,15 +43,20 @@ TELEGRAM_ALLOWED_USER_IDS = frozenset(
 # Discord incoming webhooks (optional). Empty URL disables that stream.
 DISCORD_ALPHA_WEBHOOK_URL = os.getenv("DISCORD_ALPHA_WEBHOOK_URL", "")
 DISCORD_OI_WEBHOOK_URL = os.getenv("DISCORD_OI_WEBHOOK_URL", "")
+RAW_SIGNAL_DISCORD_BATCH_ENABLED = os.getenv("RAW_SIGNAL_DISCORD_BATCH_ENABLED", "false").lower() == "true"
+RAW_SIGNAL_DISCORD_BATCH_MINUTES = int(os.getenv("RAW_SIGNAL_DISCORD_BATCH_MINUTES", "30"))
+RAW_SIGNAL_DISCORD_WEBHOOK_URL = os.getenv("RAW_SIGNAL_DISCORD_WEBHOOK_URL", DISCORD_ALPHA_WEBHOOK_URL)
+RAW_BATCH_CLAIM_LEASE_SECONDS = int(os.getenv("RAW_BATCH_CLAIM_LEASE_SECONDS", "120"))
+RAW_BATCH_MAX_ATTEMPTS = int(os.getenv("RAW_BATCH_MAX_ATTEMPTS", "5"))
+if RAW_SIGNAL_DISCORD_BATCH_MINUTES <= 0 or 60 % RAW_SIGNAL_DISCORD_BATCH_MINUTES:
+    raise ValueError("RAW_SIGNAL_DISCORD_BATCH_MINUTES must be a positive divisor of 60")
 BINANCE_OI_DISCORD_TOP_N = int(os.getenv("BINANCE_OI_DISCORD_TOP_N", "5"))
 BINANCE_OI_DISCORD_MULTI_HOUR_WINDOW = int(os.getenv("BINANCE_OI_DISCORD_MULTI_HOUR_WINDOW", "6"))
 BINANCE_OI_DISCORD_SKIP_EMPTY = os.getenv("BINANCE_OI_DISCORD_SKIP_EMPTY", "true").lower() == "true"
 
 # Config Settings
-DB_PATH = os.getenv("DB_PATH", str(DEFAULT_DB_DIR / "market_data.db"))
-# The publisher owns this database. Keeping its delivery ledger separate lets it
-# run while the market-data owner holds DuckDB's single-process write lock.
-ALPHA_DB_PATH = os.getenv("ALPHA_DB_PATH", str(DEFAULT_DB_DIR / "alpha_events.db"))
+MARKET_DB_PATH = os.getenv("MARKET_DB_PATH", str(DEFAULT_DB_DIR / "market.sqlite3"))
+ANALYST_DB_PATH = os.getenv("ANALYST_DB_PATH", str(DEFAULT_DB_DIR / "analyst.sqlite3"))
 INGEST_INTERVAL_MINS = int(os.getenv("INGEST_INTERVAL_MINS", "15"))
 MIN_CONVICTION = os.getenv("MIN_CONVICTION", "LOW")
 DAILY_BRIEF_TIME_WITA = os.getenv("DAILY_BRIEF_TIME_WITA", "08:00")
@@ -75,6 +81,23 @@ BINANCE_OI_ROTATION_WATCHLIST_HOURS = int(os.getenv("BINANCE_OI_ROTATION_WATCHLI
 BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS = int(os.getenv("BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS", "6"))
 BINANCE_OI_ROTATION_FEED_PATH = Path(os.getenv("BINANCE_OI_ROTATION_FEED_PATH", str(DEFAULT_DB_DIR / "binance_oi_rotation_feed.json")))
 BINANCE_OI_DB_PATH = os.getenv("BINANCE_OI_DB_PATH", str(DEFAULT_DB_DIR / "binance_oi.db"))
+
+# Tables are deliberately classified here, at the schema boundary.  Startup
+# must never repair a database by creating tables owned by the other service.
+MARKET_SCHEMA_TABLES = frozenset({
+    "option_chains", "daily_options_summary", "brain_outputs", "confluence_alerts",
+    "scanner_history", "universe_snapshots", "broad_discovery_snapshots",
+    "discovery_watchlist_history", "deep_backfill_jobs", "regime_signals",
+    "source_observations", "source_request_log",
+})
+ANALYST_SCHEMA_TABLES = frozenset({
+    "plugin_states", "positions_feed", "pm_advice", "alpha_candidates", "alpha_outcomes",
+    "alpha_events", "signal_deliveries", "alpha_event_status_history",
+    "alpha_confidence_observations", "research_requests", "research_reports",
+    "research_run_metrics", "research_artifacts", "research_evidence", "pipeline_runs",
+    "execution_deliveries", "cutoff_runs", "feature_snapshots", "structure_zones",
+})
+
 
 # ADR-013 / retention: hard prune of aged research tables (worker-owned)
 BINANCE_OI_PRUNE_ENABLED = os.getenv("BINANCE_OI_PRUNE_ENABLED", "1").strip().lower() not in (
@@ -119,6 +142,11 @@ WS_SYMBOL_SOURCE = os.getenv("WS_SYMBOL_SOURCE", "static").strip().lower()
 WS_BYBIT_ENABLED = os.getenv("WS_BYBIT_ENABLED", "true").lower() == "true"
 WS_BINANCE_ENABLED = os.getenv("WS_BINANCE_ENABLED", "false").lower() == "true"
 COINANALYZE_EVAL_ENABLED = os.getenv("COINANALYZE_EVAL_ENABLED", "false").lower() == "true"
+COMPACT_STRATEGY_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
+COMPACT_STRATEGY_IDS = frozenset((
+    "failed-break-v3", "bb-rsi-meanrev-v1",
+    "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
+))
 WS_STREAM_TIMEFRAMES = os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").strip().lower().split(",")
 WS_MARKPRICE_ENABLED = os.getenv("WS_MARKPRICE_ENABLED", "true").lower() == "true"
 # Shard size for Bybit (per-connection topic cap). Binance uses one combined conn.
@@ -329,8 +357,8 @@ STRATEGY_ACTIVE_IDS = tuple(
     s.strip() for s in os.getenv("STRATEGY_ACTIVE_IDS", "").split(",") if s.strip()
 )
 
-# Phase 7: LLM position-management sidecar (emit-only). Off by default.
-PM_SIDECAR_ENABLED = os.getenv("PM_SIDECAR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+# Phase 7: LLM position-management sidecar (emit-only). Enabled for this deployment.
+PM_SIDECAR_ENABLED = os.getenv("PM_SIDECAR_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 PM_CADENCE_MINUTES = int(os.getenv("PM_CADENCE_MINUTES", "5"))
 PM_LLM_TIMEOUT_S = int(os.getenv("PM_LLM_TIMEOUT_S", "20"))
 PM_LLM_RETRIES = int(os.getenv("PM_LLM_RETRIES", "1"))
@@ -370,18 +398,21 @@ INTENT_DELIVERY_ENABLED = os.getenv("INTENT_DELIVERY_ENABLED", "false").lower() 
 INTENT_INBOX = Path(os.getenv("INTENT_INBOX", str(_default_intent_inbox)))
 INTENT_SOURCE = os.getenv("INTENT_SOURCE", "research-analyst")
 INTENT_EXCHANGE_ID = os.getenv("INTENT_EXCHANGE_ID", "bybit")
-INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "account_a")
+INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "hyro")
 INTENT_ORDER_TYPE = os.getenv("INTENT_ORDER_TYPE", "limit")  # limit (IOC) | market
 INTENT_TAKE_PROFIT_MODE = os.getenv("INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
 INTENT_VALIDITY_MINUTES = int(os.getenv("INTENT_VALIDITY_MINUTES", "5"))
 INTENT_MIN_RR = float(os.getenv("INTENT_MIN_RR", "2.0"))
 INTENT_MIN_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MIN_STOP_DISTANCE_PCT", "0.001"))
 INTENT_MAX_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MAX_STOP_DISTANCE_PCT", "0.05"))
+CLASH_MIN_SCORE_MARGIN = float(os.getenv("CLASH_MIN_SCORE_MARGIN", "2.0"))
+STRATEGY_PRIORITY = {}
+INTENT_MAX_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MAX_STOP_DISTANCE_PCT", "0.05"))
 # Per-strategy routing to executor profiles (exchange/account). JSON map keyed by
 # strategy_id; each value may override any of: exchange_id, account_id, source,
 # order_type, take_profit_mode, validity_minutes. Strategies not listed fall back to
-# the INTENT_* defaults above. Enables e.g. one strategy -> bybit/account_y while
-# another -> binance/account_b.
+# the INTENT_* defaults above. Compact strategies are always forced to the
+# deployment's Hyro Bybit account by intent_outbox.
 _INTENT_ROUTING_RAW = os.getenv("INTENT_ROUTING", "{}")
 try:
     INTENT_ROUTING = json.loads(_INTENT_ROUTING_RAW) if isinstance(_INTENT_ROUTING_RAW, str) else _INTENT_ROUTING_RAW
@@ -496,13 +527,12 @@ LEGACY_SCANNER_ENABLED = os.getenv("LEGACY_SCANNER_ENABLED", "false").lower() ==
 
 # Emit classification (normative, see spec)
 PRICE_STRUCTURE_STRATEGY_IDS = {
-    "accumulation-base-v1", "accumulation-base-v2", "rsi-reclaim-v1",
+    "accumulation-base-v2", "rsi-reclaim-v1",
     "liquidity-sweep-reversal-v1", "bb-rsi-meanrev-v1", "failed-break-v3",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
 }
 MIXED_STRATEGY_IDS = {
-    "impulse-ignition-v1", "impulse-ignition-v2",
-    "continuation-breakout-balanced-v1", "continuation-breakout-v2",
+    "impulse-ignition-v2", "continuation-breakout-v2",
 }
 
 FAILOVER_SOURCE_NAME = os.getenv("FAILOVER_SOURCE_NAME", "venue_agg_v1")
@@ -597,39 +627,60 @@ BYBIT_LINEAR_BASE_URL = os.getenv("BYBIT_LINEAR_BASE_URL", "https://api.bybit.co
 
 def get_db_connection(read_only: bool = False, db_path: str | Path | None = None):
     """
-    Returns a connection to the DuckDB database.
-    Enforces WAL + busy_timeout for better multi-process resilience.
-    Exponential backoff + jitter on contention.
+    Returns a SQLite connection configured for concurrent service processes.
     Writers should be minimized; prefer read_only=True for non-orchestrator code.
     """
-    import random
-    import time
-    db_file = Path(db_path or DB_PATH)
+    db_file = Path(db_path or MARKET_DB_PATH)
     db_file.parent.mkdir(parents=True, exist_ok=True)
-
-    max_retries = 12
-    base_delay = 1.5
-    for attempt in range(max_retries):
-        try:
-            conn = duckdb.connect(str(db_file), read_only=read_only)
-            # DuckDB 1.x does not support SQLite's busy_timeout / journal_mode pragmas.
-            for statement in ("PRAGMA memory_limit='128MB';", "PRAGMA threads=2;"):
-                try:
-                    conn.execute(statement)
-                except duckdb.Error:
-                    pass
-            return conn
-        except duckdb.Error as e:
-            if attempt == max_retries - 1:
-                raise e
-            delay = min(30.0, base_delay * (2 ** attempt) + random.uniform(0, 1))
-            print(f"Database connection attempt {attempt + 1} failed (locked/busy). Retrying in {delay:.1f}s... Error: {e}")
-            time.sleep(delay)
+    if read_only:
+        conn = sqlite3.connect(f"file:{db_file.resolve()}?mode=ro", uri=True, timeout=30.0)
+    else:
+        conn = sqlite3.connect(str(db_file), timeout=30.0)
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    if not read_only:
+        conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 
 def init_market_db(db_path: str | Path | None = None):
     """Orchestrator market schema (delegates to guarded init_db for compat)."""
-    init_db(db_path, force_market=True)
+    init_db(db_path or MARKET_DB_PATH, force_market=True)
+
+def init_analyst_db(db_path: str | Path | None = None):
+    target = db_path or ANALYST_DB_PATH
+    init_db(target, force_alpha=True)
+    conn = get_db_connection(db_path=target)
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS cutoff_runs (
+            cutoff_id VARCHAR PRIMARY KEY, cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            status VARCHAR NOT NULL, started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            finalized_at TIMESTAMP WITH TIME ZONE, source_observation_ids VARCHAR, error VARCHAR)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS feature_snapshots (
+            snapshot_id VARCHAR PRIMARY KEY, cutoff_id VARCHAR NOT NULL, asset VARCHAR NOT NULL,
+            feature_set VARCHAR NOT NULL, version VARCHAR NOT NULL,
+            computed_at TIMESTAMP WITH TIME ZONE NOT NULL, payload_json VARCHAR NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS structure_zones (
+            zone_id VARCHAR PRIMARY KEY, cutoff_id VARCHAR NOT NULL, asset VARCHAR NOT NULL,
+            kind VARCHAR NOT NULL, direction VARCHAR, strength DOUBLE, low DOUBLE, high DOUBLE,
+            state VARCHAR, source_evidence_ids VARCHAR, confidence_status VARCHAR,
+            created_at TIMESTAMP WITH TIME ZONE)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS raw_signals (
+            raw_signal_id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL, strategy_id TEXT NOT NULL,
+            asset TEXT NOT NULL, direction TEXT NOT NULL, observed_at TEXT NOT NULL,
+            valid_until TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS raw_signal_status_history (
+            status_id TEXT PRIMARY KEY, raw_signal_id TEXT NOT NULL, hard_gate_status TEXT,
+            score_status TEXT, clash_status TEXT, executor_intent_status TEXT, reason TEXT,
+            recorded_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS discord_signal_batches (
+            window_start TEXT PRIMARY KEY, window_end TEXT NOT NULL, status TEXT NOT NULL,
+            candidate_count INTEGER NOT NULL, message_count INTEGER NOT NULL DEFAULT 0,
+            claimed_at TEXT, sent_at TEXT, response_body TEXT, error_message TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0)""")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def init_alpha_db(db_path: str | Path | None = None):
@@ -639,12 +690,20 @@ def init_alpha_db(db_path: str | Path | None = None):
 
 def init_db(db_path: str | Path | None = None, *, force_market: bool = False, force_alpha: bool = False):
     """Initializes the database schema if it doesn't exist.
-    Guards prevent market tables from being created inside the alpha DB.
+    With no explicit target, initialize both service-owned databases. Explicit
+    targets are kept for tests and migration tooling.
     """
+    if db_path is None and not force_market and not force_alpha:
+        init_db(MARKET_DB_PATH, force_market=True)
+        init_db(ANALYST_DB_PATH, force_alpha=True)
+        return
+    target = str(db_path or MARKET_DB_PATH)
+    alpha_target = str(ANALYST_DB_PATH)
+    is_alpha = force_alpha or (
+        not force_market
+        and (target in {alpha_target, str(ANALYST_DB_PATH)} or Path(target).name in {"alpha_events.db", "analyst.db"})
+    )
     conn = get_db_connection(read_only=False, db_path=db_path)
-    target = str(db_path or DB_PATH)
-    alpha_target = str(ALPHA_DB_PATH)
-    is_alpha = force_alpha or (not force_market and (target == alpha_target or Path(target).name == "alpha_events.db"))
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -758,8 +817,13 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
         """)
 
         # Migration: add columns if upgrading from old schema
+        existing_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(confluence_alerts)").fetchall()
+        }
         for col in ["val DOUBLE", "vah DOUBLE", "hvns VARCHAR", "lvns VARCHAR"]:
-            conn.execute(f"ALTER TABLE confluence_alerts ADD COLUMN IF NOT EXISTS {col};")
+            name = col.split()[0]
+            if name not in existing_columns:
+                conn.execute(f"ALTER TABLE confluence_alerts ADD COLUMN {col};")
 
         # Create scanner_history table for hourly rotating volume/OI scanner
         conn.execute("""
@@ -772,14 +836,12 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                 open_interest_usd DOUBLE,
                 vol_to_oi_ratio DOUBLE,
                 volume_spike_multiple DOUBLE,
-                price_change_24h DOUBLE,
-                is_accumulating BOOLEAN,
+                    price_change_24h DOUBLE,
+                    price_change_1h DOUBLE,
+                    is_accumulating BOOLEAN,
                 PRIMARY KEY (timestamp, symbol)
             );
         """)
-
-        # Migration: add new columns for scanner schema updates
-        conn.execute("ALTER TABLE scanner_history ADD COLUMN IF NOT EXISTS price_change_1h DOUBLE;")
 
         # Point-in-time scanner universe for leakage-free liquidity-tier research.
         conn.execute("""
@@ -813,13 +875,13 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                 entry_condition    VARCHAR,
                 invalidation_price DOUBLE,
                 targets            VARCHAR,
-                feature_snapshot   VARCHAR
+                feature_snapshot   VARCHAR,
+                promoted_alpha_id  VARCHAR
             );
         """)
         # An emitted event is represented by its deterministic alpha_id. Rows
         # created before an event is emitted retain their own stable ID and link
         # to the promoted event without changing their identity.
-        conn.execute("ALTER TABLE alpha_candidates ADD COLUMN IF NOT EXISTS promoted_alpha_id VARCHAR;")
 
         # Outcomes are separate from candidates so point-in-time inputs stay immutable.
         conn.execute("""
@@ -1003,7 +1065,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
 
         research_workflow_migration = "2026-08-16-phase4-research-workflow"
         if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (research_workflow_migration,)).fetchone() is None:
-            conn.execute("ALTER TABLE research_requests ADD COLUMN IF NOT EXISTS request_input_json VARCHAR;")
             conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (research_workflow_migration,))
 
         research_metrics_migration = "2026-08-16-phase3-research-metrics"
@@ -1022,7 +1083,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
 
         research_metrics_upgrade = "2026-08-16-phase3-research-metrics-v2"
         if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (research_metrics_upgrade,)).fetchone() is None:
-            conn.execute("ALTER TABLE research_run_metrics ADD COLUMN IF NOT EXISTS oldest_report_seconds DOUBLE;")
             conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (research_metrics_upgrade,))
 
         # Append-only hourly broad-universe observations used to reproduce each
@@ -1123,9 +1183,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_regime_date ON regime_signals (date, underlying);")
         
-        # Migration: add sl, tp1, tp2 columns if table already exists
-        for col in ["sl DOUBLE", "tp1 DOUBLE", "tp2 DOUBLE"]:
-            conn.execute(f"ALTER TABLE regime_signals ADD COLUMN IF NOT EXISTS {col};")
         
         if not is_alpha:
             # Data platform v2 tables (append-only source layer + cutoff + features)
@@ -1207,24 +1264,11 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_zones_cut ON structure_zones (cutoff_id, asset);")
         
-        if is_alpha:
-            # Enforce split: drop any market tables (incl legacy futures) that may have been created by shared DDL paths.
-            for t in ("broad_discovery_snapshots", "discovery_watchlist_history",
-                      "deep_backfill_jobs", "scanner_history", "universe_snapshots",
-                      "binance_oi_rotation_observations", "binance_oi_rotation_events",
-                      "binance_oi_rotation_raw_oi_history", "binance_oi_rotation_scans",
-                      "binance_oi_rotation_watchlist_history", "option_chains",
-                      "brain_outputs", "confluence_alerts", "regime_signals"):
-                try:
-                    conn.execute(f"DROP TABLE IF EXISTS {t}")
-                except Exception:
-                    pass
-        else:
-            # One-shot legacy futures import to source_observations on first market init (idempotent, post-migration no-op)
-            try:
-                import_legacy_futures_as_source_observations(db_path)
-            except Exception:
-                pass
+        # Keep the two service stores physically independent even though the
+        # schema declarations above share this compact initialization routine.
+        owned = ANALYST_SCHEMA_TABLES if is_alpha else MARKET_SCHEMA_TABLES
+        for table in (ANALYST_SCHEMA_TABLES | MARKET_SCHEMA_TABLES) - owned:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
         
         conn.commit()
     finally:
@@ -1242,7 +1286,7 @@ def import_legacy_futures_as_source_observations(db_path: str | Path | None = No
         ).fetchone()
         if already:
             return 0
-        tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()]
         if "futures_data" not in tables:
             return 0
         rows = conn.execute("""
@@ -1285,7 +1329,7 @@ def drop_legacy_futures_data(db_path: str | Path | None = None) -> bool:
             print("Refusing drop: no data in source_observations yet")
             return False
         # Check if futures still exists
-        tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()]
         if "futures_data" not in tables:
             return False
         conn.execute("DROP TABLE IF EXISTS futures_data")
@@ -1302,6 +1346,6 @@ def drop_legacy_futures_data(db_path: str | Path | None = None) -> bool:
 
 
 if __name__ == "__main__":
-    print(f"Initializing database at {DB_PATH}...")
+    print(f"Initializing market database at {MARKET_DB_PATH}...")
     init_db()
     print("Database initialized successfully.")

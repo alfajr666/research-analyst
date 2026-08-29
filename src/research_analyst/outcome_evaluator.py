@@ -32,12 +32,17 @@ def _compute_returns_and_excursions(
     targets: list[float],
     valid_until: datetime,
 ) -> dict[str, Any]:
+    if isinstance(entry_at, str):
+        entry_at = datetime.fromisoformat(entry_at.replace("Z", "+00:00"))
     target = min(targets) if direction == "long" else max(targets)
     # simplified: use existing barrier logic in caller
 
     def return_at(minutes: int) -> float | None:
         target_at = entry_at + timedelta(minutes=minutes)
-        bar = next((item for item in outcome_bars if item[0] >= target_at), None)
+        bar = next((item for item in outcome_bars if (
+            datetime.fromisoformat(item[0].replace("Z", "+00:00"))
+            if isinstance(item[0], str) else item[0]
+        ) >= target_at), None)
         if bar is None:
             return None
         raw = float(bar[3]) / entry - 1
@@ -60,7 +65,7 @@ def _compute_returns_and_excursions(
 
 def evaluate_expired_outcomes(
     market_db_path: str, alpha_db_path: str, now: datetime | None = None,
-    market_conn: Any = None
+    market_conn: Any = None, alpha_conn: Any = None
 ) -> int:
     """Evaluate expired alpha events using market bars only. Write outcomes to alpha.
 
@@ -70,7 +75,8 @@ def evaluate_expired_outcomes(
     if now is None:
         now = datetime.now(timezone.utc)
 
-    alpha_conn = config.get_db_connection(db_path=alpha_db_path)
+    close_alpha = alpha_conn is None
+    alpha_conn = alpha_conn or config.get_db_connection(db_path=alpha_db_path)
     try:
         rows = alpha_conn.execute(
             """
@@ -80,18 +86,15 @@ def evaluate_expired_outcomes(
             """
         ).fetchall()
     finally:
-        alpha_conn.close()
+        if close_alpha:
+            alpha_conn.close()
 
     if not rows:
         return 0
 
     close_market = False
     if market_conn is None:
-        # only open read_only if different path (tests often share file; avoid config mix)
-        if market_db_path == alpha_db_path:
-            market_conn = config.get_db_connection(read_only=False, db_path=market_db_path)
-        else:
-            market_conn = config.get_db_connection(read_only=True, db_path=market_db_path)
+        market_conn = config.get_db_connection(read_only=True, db_path=market_db_path)
         close_market = True
     recorded = 0
     try:
@@ -107,13 +110,13 @@ def evaluate_expired_outcomes(
                 """
                 SELECT 
                     source_end as timestamp,
-                    json_extract(payload_json, '$.high')::DOUBLE as high,
-                    json_extract(payload_json, '$.low')::DOUBLE as low,
-                    json_extract(payload_json, '$.close')::DOUBLE as close
+                    CAST(json_extract(payload_json, '$.high') AS REAL) as high,
+                    CAST(json_extract(payload_json, '$.low') AS REAL) as low,
+                    CAST(json_extract(payload_json, '$.close') AS REAL) as close
                 FROM source_observations
                 WHERE native_symbol = ? 
                   AND source_end >= ? AND source_end <= ? 
-                  AND json_extract(payload_json, '$.close')::DOUBLE > 0
+                  AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0
                 ORDER BY source_end
                 """,
                 (symbol, observed_at, valid_until),
@@ -194,7 +197,8 @@ def evaluate_expired_outcomes(
                 "details": {"bars_observed": len(bars), "same_bar_policy": "ambiguous"},
             }
             # write using shared (ensures schema)
-            alpha_write = config.get_db_connection(db_path=alpha_db_path)
+            alpha_write = alpha_conn if not close_alpha else config.get_db_connection(db_path=alpha_db_path)
+            close_alpha_write = close_alpha
             try:
                 # Outcomes FK alpha_candidates. Older events may lack a row after ledger splits.
                 _ensure_candidate_row(alpha_write, candidate_id, event)
@@ -204,7 +208,8 @@ def evaluate_expired_outcomes(
                 print(f"Outcome write skipped for {candidate_id}: {error}")
                 continue
             finally:
-                alpha_write.close()
+                if close_alpha_write:
+                    alpha_write.close()
             recorded += 1
     finally:
         if close_market:

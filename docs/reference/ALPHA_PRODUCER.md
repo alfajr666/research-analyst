@@ -158,7 +158,7 @@ on current liquidity and executable cost.
 
 ## Two-Pool Discovery Module
 
-The broad discovery module runs before deep DuckDB ingestion. It does not
+The broad discovery module runs before deep SQLite ingestion. It does not
 select assets because they are already trending; it records a point-in-time
 eligible universe and independently ranks two small pools.
 
@@ -212,9 +212,10 @@ them later; no discovery rank is an order instruction.
 
 ## Evaluator Topology
 
-The orchestrator owns all external market-data access, broad discovery,
-backfills, and raw DuckDB writes. Evaluators never call CoinAnalyze directly.
-They read warmed data and publish versioned research events to an outbox.
+`ws_gateway` owns live Bybit WS market ingestion and writes the market SQLite
+database. The orchestrator owns finalized cutoffs and the analyst SQLite
+database. Evaluators read committed observations and publish versioned events;
+they do not call CoinAnalyze or any live external market provider directly.
 
 ```text
 orchestrator -> raw data + active watchlists -> evaluators -> alpha outbox
@@ -222,22 +223,21 @@ orchestrator -> raw data + active watchlists -> evaluators -> alpha outbox
 
 | Process | Cadence | Watchlist | Responsibility |
 | --- | --- | --- | --- |
-| `orchestrator` | 15m | all | Ingestion, discovery, backfill, freshness |
-| `accumulation-monitor` | 15m | legacy | Existing EMA99/accumulation evaluator |
-| `ignition-evaluator` | 15m | ignition | Pre-breakout armed-base quality |
-| `acceleration-evaluator` | 15m | continuation | Second-wave trend re-acceleration quality |
-| `regime-evaluator` | daily | active universe | HMM/VWAP macro context |
+| `ws_gateway` | continuous | static/optional rotated universe | Bybit WS 1m/5m/mark; local resampling |
+| `orchestrator` | configured cutoff loop | compact universe | Finalized cutoffs, four compact plugins, admission, delivery |
+| `pm_sidecar` | 5m cutoff | open executor positions | LLM HOLD/REDUCE/EXIT, fail-safe HOLD |
+| raw Discord batch | 30m UTC windows | captured candidates | Non-blocking observation delivery |
 
 The outbox is append-only and deduplicated by strategy, asset, direction, and
 observation timestamp. It is the seam consumed later by the alpha-event writer
-and execution engines. Evaluators remain read-only against DuckDB, avoiding
+and execution engines. Evaluators remain read-only against SQLite, avoiding
 multi-writer contention.
 
-## Signal Publisher: Telegram First
+## Signal Publisher: Alpha and Intent
 
-`signal_publisher.py` is the sole automated Telegram sender. Execution-engine feeds are
-intentionally deferred; neither a clearable JSON file nor venue routing belongs
-in this iteration.
+`signal_publisher.py` persists and delivers the alpha ledger. Selected compact
+candidates also follow the immediate atomic intent path to the fixed `bybit / hyro`
+executor; this is independent of Discord delivery.
 
 ```text
 evaluator outbox event
@@ -249,8 +249,8 @@ signal publisher
         +-> Telegram notification
 ```
 
-The publisher is the sole DuckDB writer for alpha-event delivery records in the
-dedicated `ALPHA_DB_PATH` database, separate from the scanner-owned market database. It
+The publisher is the sole SQLite writer for alpha-event delivery records in the
+dedicated `ANALYST_DB_PATH` database, separate from the gateway-owned market database. It
 must persist a validated event before attempting Telegram delivery, deduplicate
 by the event outbox key, and retry undelivered Telegram messages without
 duplicating the event itself.

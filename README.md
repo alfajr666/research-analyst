@@ -1,165 +1,134 @@
 # Research Analyst
 
-`research-analyst` is a research-grade market-data and strategy-evaluation service.
-It produces advisory alpha events and optional, executor-owned trade intents. It does
-not hold exchange credentials, size positions, or place orders.
+`research-analyst` is a read-and-decide market research service. It consumes
+completed Bybit perpetual bars, evaluates the four live compact strategies,
+keeps an auditable analyst ledger, publishes advisory alpha, and can hand a
+selected intent to the existing `bybit / hyro` executor. It does not hold
+exchange credentials, size positions, place orders, or claim that an intent was
+filled.
+
+## Runtime topology
 
 ```text
-Bybit public WebSocket -> source_observations -> strategy evaluation
-                                             |-> alpha outbox -> Discord
-                                             `-> intent inbox -> bybit-executor
+Bybit public WS: 1m + 5m kline, mark price
+  -> ws_gateway -> market.sqlite3/source_observations
+       5m -> local 15m/1h/4h resampling
+  -> orchestrator -> finalized cutoff snapshots
+       -> four compact strategies
+       -> raw_signals (before admission)
+       -> hard admission -> soft context scoring -> live clash resolution
+            -> analyst.sqlite3 alpha ledger / Discord alpha outbox
+            -> immediate bybit / hyro TradeIntent, when selected
+  bybit-executor 1m position snapshots
+  -> LLM PM sidecar -> HOLD/REDUCE/EXIT PMDecision files
+  raw_signals -> non-blocking 30m Discord observation batch
 ```
 
-## Current Design
+SQLite ownership is deliberately split:
 
-- **Live market data:** Bybit WebSocket, with `1m` and `5m` klines plus mark price.
-- **Higher timeframes:** `15m`, `1h`, and `4h` are resampled locally from the `5m`
-  feed; they are never fetched as live REST evaluation data.
-- **Live Binance WebSocket:** disabled by default.
-- **Live CoinAnalyze:** disabled by default and skipped by the orchestrator.
-- **Database:** DuckDB at `DB_PATH`; the orchestrator owns database writes.
-- **WebSocket writer:** `ws_gateway` owns writes to `source_observations`.
-- **Universe:** 97 static bases from `symbols/static_universe.json`; optional OI
-  rotation is controlled by `WS_SYMBOL_SOURCE` and `ROTATION_FEED_ENABLED`.
-- **Notifications:** Discord webhook for advisory alpha events.
-- **Execution:** JSON files delivered to `/home/ubuntu/bybit-executor/data/intents`.
+- `MARKET_DB_PATH` (`data/market.sqlite3`) is written by `ws_gateway` and holds
+  source observations and market freshness data.
+- `ANALYST_DB_PATH` (`data/analyst.sqlite3`) is written by the orchestrator and
+  holds cutoffs, features, strategy state, raw signals, alpha, delivery, and PM
+  state.
 
-## Repository Layout
+Do not point both services at one database and do not run duplicate writers.
+Derived 15m, 1h, and 4h bars are local resamples of completed 5m observations;
+they are not a CoinAnalyze live-ingestion dependency. The gateway may perform a
+small REST warm backfill at startup, but the live stream is Bybit WS.
 
-```text
-src/research_analyst/       Application code
-  strategies/compact/       Four live compact strategy ports
-  strategies/v2/            Research/plugin strategies
-  api_clients/              External API clients
-tests/                      Automated tests
-docs/                       Design and reference documentation
-specs/                      Decision/specification records
-symbols/                    Versioned static universe
-data/                       Local DuckDB, outboxes, and health output
-research/                   Research notes
-ecosystem.config.js         Retired PM2 declaration
-```
+## Live strategies
 
-The source directory is intentionally separate from project metadata. Tests add
-`src/research_analyst` to their import path through `tests/conftest.py`.
+The live compact universe is `BTC`, `ETH`, `PAXG`, and `QQQ` from
+`symbols/static_universe.json`. The active execution-admission set is:
 
-## Active Strategies
+| Strategy | Primary evaluation |
+| --- | --- |
+| `failed-break-v3` | 5m, with 15m and 4h context |
+| `bb-rsi-meanrev-v1` | 5m |
+| `williams-fractal-scalp-v1` | 1m |
+| `ema9-continuation-stochrsi-v1` | 1m trigger with 5m setup |
 
-The live compact set is restricted to `BTC`, `ETH`, `PAXG`, and `QQQ`.
+`STRATEGY_ENABLED_IDS`, `STRATEGY_ACTIVE_IDS`, and `plugin_states` control
+registration and runtime activation. Other registered v2 plugins are research
+capabilities, not part of the four-strategy live compact admission path.
 
-| Strategy | Evaluation | Context |
-| --- | --- | --- |
-| `failed-break-v3` | 5m | 15m and 4h context |
-| `bb-rsi-meanrev-v1` | 5m | local 5m indicators |
-| `williams-fractal-scalp-v1` | 1m | local 1m indicators |
-| `ema9-continuation-stochrsi-v1` | 1m trigger | 5m setup |
+## Decision pipeline
 
-Strategies are registered by `STRATEGY_ENABLED_IDS` and live-selected by
-`STRATEGY_ACTIVE_IDS`. The compact strategies are the local default. Other plugins
-remain available for research and tests but are not part of the live default.
+Each plugin runs against a finalized point-in-time cutoff. Every returned
+candidate is first captured in append-only `raw_signals`, including candidates
+that later fail or are suppressed. Admission then applies only deterministic
+hard safety rules:
 
-Every event must contain direction, entry condition, invalidation, target, expiry,
-and feature context. A limit intent must have valid direction geometry, a minimum
-`2.0R` reward/risk ratio, and stop distance between `0.1%` and `5%`. Events that do
-not meet executor admission remain advisory-only.
+- valid finite positive prices and future expiry;
+- long: `stop < entry < target`; short: `target < entry < stop`;
+- reward/risk at least `INTENT_MIN_RR` (default `2.0`);
+- stop distance from `0.1%` through `5%` of entry;
+- deterministic candidate identity and required strategy-local data.
 
-## Outputs
+HTF bias, confirmed swings, FVGs, order blocks, alignment, freshness, strategy
+evidence, agreement, and contradictions are soft bounded score components.
+Missing context is `unavailable`, not fabricated support and not an automatic
+rejection. Scores rank candidates but cannot rescue a failed hard gate.
 
-### Advisory alpha
+Live clash resolution ranks same-direction candidates by score with deterministic
+priority and lexical tie breaks. Opposite directions require a score margin of
+`CLASH_MIN_SCORE_MARGIN` (default `2.0`); an unresolved clash remains advisory
+and produces no intent. Losing and failed candidates remain auditable.
 
-`alpha_outbox.py` writes atomic, deterministic JSON files to `data/alpha_outbox/`.
-`signal_publisher.py` validates and persists them to the alpha ledger, then sends
-Discord messages when `DISCORD_ALPHA_WEBHOOK_URL` is configured.
+## Intent and execution safety
 
-An alpha event is a signal, not an order. It does not guarantee venue availability,
-fill, quantity, leverage, or execution.
+When `INTENT_DELIVERY_ENABLED=true`, a selected candidate is atomically written
+to the executor intent inbox. Compact intents are forcibly routed to
+`exchange_id=bybit`, `account_id=hyro`; old multi-target routing is not the live
+path. The analyst sends thesis fields only. The executor owns credentials,
+quantity, risk sizing, leverage, venue precision, portfolio gates, orders,
+fills, lifecycle, hard protective SL, and fixed full-close TP.
 
-### Executor intent
+Keep delivery disabled until the executor paper path, account, symbol universe,
+and protection behavior are verified. A Discord or LLM failure must not create,
+delay, or suppress an executor intent.
 
-When `INTENT_DELIVERY_ENABLED=true`, accepted events are written atomically to the
-executor inbox. Configure:
+## PM sidecar
 
-```dotenv
-BYBIT_EXECUTOR_DIR=/home/ubuntu/bybit-executor
-INTENT_DELIVERY_ENABLED=true
-```
+The active LLM position-management sidecar runs on a 5m cutoff. It reads
+executor 1m snapshots from `EXECUTOR_SNAPSHOT_DIR`, joins the originating intent
+and market context, and emits `HOLD`, `REDUCE`, or `EXIT` to `pm_advice` and,
+when configured, `EXECUTOR_DECISION_DIR`. Missing credentials, timeout, parse
+failure, or invalid output fails safe to `HOLD`. It is emit-only and cannot
+change entry, stop, target, direction, sizing, or executor hard protections.
 
-The default inbox is `${BYBIT_EXECUTOR_DIR}/data/intents`. The intent contains no
-`quantity` or `risk_amount`; `bybit-executor` sizes from its account profile and owns
-venue checks, risk, order placement, retries, and position lifecycle.
+## Raw Discord batch
 
-### PM sidecar
+After a completed daemon cycle, raw candidates are published by a daemon thread
+to fixed UTC 30-minute windows. The batch reads committed ledger state and is
+non-blocking: webhook latency, retry, or outage cannot affect evaluation or
+immediate Bybit/Hyro intent delivery. It is observation-only and disabled unless
+`RAW_SIGNAL_DISCORD_BATCH_ENABLED=true` and a webhook is configured.
 
-`pm_sidecar.py` is disabled by default. When enabled, it reads executor position
-snapshots and emits `HOLD`, `REDUCE`, or `EXIT` decision files. It cannot override a
-protective stop loss or fixed take profit.
+## Service operation
 
-## Setup
+Production services are managed by the host's `oxmgr` definitions: one
+`ws_gateway`, one orchestrator, and one PM sidecar role. The repository's
+`ecosystem.config.js` is retired and must not be used to resurrect PM2
+processes. Run only one owner for each database.
+
+## Setup and verification
 
 ```bash
 cp .env.example .env
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ./venv/bin/python src/research_analyst/config.py
-```
-
-Set `DISCORD_ALPHA_WEBHOOK_URL` for Discord delivery. Keep intent delivery disabled
-until the executor's paper path has been verified.
-
-## Run
-
-Run from the repository root so relative `data/`, `logs/`, and `.env` paths resolve:
-
-```bash
-./venv/bin/python src/research_analyst/ws_gateway.py
-./venv/bin/python src/research_analyst/orchestrator.py
-```
-
-Run one evaluation cycle:
-
-```bash
 ./venv/bin/python src/research_analyst/orchestrator.py --once
-```
-
-Only one WebSocket gateway and one orchestrator should write to a given database.
-The current `ecosystem.config.js` intentionally contains no active PM2 apps because
-the former orchestrator/signal-publisher topology was retired in favor of the
-external Nautilus runtime.
-
-## Configuration Essentials
-
-| Variable | Current default/purpose |
-| --- | --- |
-| `WS_BYBIT_ENABLED` | `true` |
-| `WS_BINANCE_ENABLED` | `false` |
-| `COINANALYZE_EVAL_ENABLED` | `false` |
-| `MARKET_FAILOVER_ENABLED` | `false` |
-| `WS_STREAM_TIMEFRAMES` | `1m,5m` |
-| `WS_SYMBOL_SOURCE` | `static` |
-| `EVAL_INTERVALS` | `1m,5m,15m` |
-| `STRATEGY_ACTIVE_IDS` | four compact strategies in local `.env` |
-| `INTENT_DELIVERY_ENABLED` | `false` |
-| `INTENT_MIN_RR` | `2.0` |
-| `PM_SIDECAR_ENABLED` | `false` |
-
-The complete variable reference is `.env.example`. Never commit `.env`, API keys,
-webhook URLs, database files, or executor credentials.
-
-## Verification
-
-```bash
 ./venv/bin/python -m pytest -q
+git diff --check
 ```
 
-The suite includes strategy contracts, ingestion, outbox idempotency, executor
-handoff, PM decisions, and runtime ownership checks. Some legacy tests may describe
-retired components; those failures must be distinguished from regressions before
-deployment.
-
-## Research Rules
-
-Treat each strategy and plugin version as an independent hypothesis. Use completed
-bars only, point-in-time universes, immutable candidate records, walk-forward splits,
-asset-relative normalization, and conservative fee/spread/slippage assumptions.
-Discovery rank, confidence, LLM commentary, and delivery status are not evidence of
-alpha or execution authorization.
+For a controlled live-data run, start `ws_gateway` under oxmgr and inspect
+market freshness before starting the orchestrator. Then inspect, in order,
+`data/health.json`, completed observations, cutoff/plugin results, raw-signal
+statuses, `data/alpha_outbox/`, the analyst ledger, executor intents, position
+snapshots, and PM decisions. Never commit `.env`, keys, webhooks, databases, or
+executor credentials. Signals and LLM prose are evidence, not proof of alpha or
+a fill.

@@ -2,9 +2,11 @@
 
 ## Status
 
-Build-ready implementation specification. Locked by operator grilling on
-2026-08-17. This document is the single source of truth for the platform
-redesign. It does not research, tune, calibrate, or promote a trading strategy.
+Historical platform design, retained for schema and plugin-contract reference.
+The current operational truth is `README.md` and `agent.md`: SQLite is split
+between the Bybit WS market writer and analyst writer, and the four compact
+strategies own the live admission path. Earlier CoinAnalyze, PM2, and multi-target
+deployment language below is superseded where it conflicts with those documents.
 
 ## Problem Statement
 
@@ -260,7 +262,7 @@ Split schema initialization:
   and cutoff-run tables
 - `init_alpha_db()` for publisher-owned event, delivery, candidate, outcome, and
   research-ledger tables
-- never create market tables inside `ALPHA_DB_PATH`
+- never create market tables inside `ANALYST_DB_PATH`
 
 Outcomes:
 
@@ -486,7 +488,7 @@ Required contract tests:
 - outcome evaluation no longer depends on empty publisher-local market tables
 
 Prior art: existing discovery, evaluator, outbox, publisher, topology, and
-schema-migration tests. Prefer local DuckDB fixtures and deterministic
+schema-migration tests. Prefer local SQLite fixtures and deterministic
 timestamps; no live provider calls in unit/contract tests.
 
 ## Out of Scope

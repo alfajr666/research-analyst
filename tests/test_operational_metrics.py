@@ -11,18 +11,22 @@ import orchestrator
 class OperationalMetricsTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        self.previous_db_path = config.DB_PATH
-        config.DB_PATH = os.path.join(self.directory.name, "market_data.db")
-        config.init_db()
+        self.previous_db_path = config.MARKET_DB_PATH
+        self.previous_analyst_path = config.ANALYST_DB_PATH
+        config.MARKET_DB_PATH = os.path.join(self.directory.name, "market_data.db")
+        config.init_market_db()
+        config.ANALYST_DB_PATH = os.path.join(self.directory.name, "analyst_data.db")
+        config.init_analyst_db()
 
     def tearDown(self):
-        config.DB_PATH = self.previous_db_path
+        config.MARKET_DB_PATH = self.previous_db_path
+        config.ANALYST_DB_PATH = self.previous_analyst_path
         self.directory.cleanup()
 
     def test_completed_run_persists_freshness_and_outbox_depth(self):
         run_id = "pipeline-run-1"
         orchestrator._start_pipeline_run(run_id, datetime.now(timezone.utc))
-        connection = config.get_db_connection()
+        connection = config.get_db_connection(db_path=config.MARKET_DB_PATH)
         try:
             ts = datetime.now(timezone.utc)
             payload = json.dumps({"close": 100})
@@ -30,11 +34,12 @@ class OperationalMetricsTests(unittest.TestCase):
                 "INSERT OR IGNORE INTO source_observations (observation_id, source, venue, native_symbol, asset, market_kind, interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json) VALUES (?, 'coinalyze', 'agg', 'SOLUSDT_PERP.A', 'SOL', 'perpetual', '15m', ?, ?, ?, 'live', ?)",
                 (f"op-{ts.isoformat()}", ts, ts, ts, payload)
             )
+            connection.commit()
         finally:
             connection.close()
 
         orchestrator._finish_pipeline_run(run_id, "completed")
-        connection = config.get_db_connection(read_only=True)
+        connection = config.get_db_connection(read_only=True, db_path=config.ANALYST_DB_PATH)
         try:
             status, completed_at, freshness = connection.execute("""
                 SELECT status, completed_at, data_freshness_seconds

@@ -139,7 +139,7 @@ class RateLimitedClient:
         url = f"{self.base_url}/{path.lstrip('/')}"
         qparams = dict(params or {})
         if self.api_key and self.auth_in_query and "api_key" not in qparams:
-            qparams["api_key"] = self.api_key  # CoinAnalyze style; OpenMarket may differ
+            qparams["api_key"] = self.api_key
 
         start = time.time()
         try:

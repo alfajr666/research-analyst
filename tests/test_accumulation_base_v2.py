@@ -182,7 +182,7 @@ class AccumulationBaseV2Tests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         db = Path(directory.name) / "m.db"
-        config.init_db(db)
+        config.init_market_db(db)
         cutoff = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
         start = cutoff - timedelta(days=14)
         conn = config.get_db_connection(db_path=db)

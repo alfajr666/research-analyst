@@ -23,6 +23,13 @@ def test_plan_bybit_streams_shards():
     assert shards[0][2] == "markPrice.BASE0USDT"
 
 
+def test_gateway_universe_is_independent_from_compact_evaluation_universe(monkeypatch):
+    monkeypatch.setattr(config, "WS_SYMBOL_SOURCE", "static")
+    monkeypatch.setattr(config, "load_static_symbols", lambda: ["BTC", "ETH", "PAXG", "QQQ", "SOL"])
+    assert wsg.select_universe() == ["BTC", "ETH", "PAXG", "QQQ", "SOL"]
+    assert config.COMPACT_STRATEGY_ASSETS == frozenset({"BTC", "ETH", "PAXG", "QQQ"})
+
+
 def test_plan_binance_streams_single_conn():
     streams = wsg.plan_binance_streams(["BTC", "ETH"])
     assert "btcusdt@kline_1m" in streams
@@ -98,7 +105,7 @@ def test_bar_record_to_row_shape():
 
 def test_resample_and_persist_writes_derived(tmp_path, monkeypatch):
     db = tmp_path / "m.db"
-    monkeypatch.setattr(config, "DB_PATH", str(db))
+    monkeypatch.setattr(config, "MARKET_DB_PATH", str(db))
     config.init_db(str(db))
     conn = config.get_db_connection(db_path=str(db))
     try:

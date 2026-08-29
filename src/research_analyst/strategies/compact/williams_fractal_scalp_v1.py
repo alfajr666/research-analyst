@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import config
-from alpha_outbox import write_event
 from strategy_v2_context import completed_cycle_for, has_active_event, last_completed_bar_fresh, list_candidate_symbols, load_bars_for_interval
 
 
@@ -102,15 +101,11 @@ def evaluate(conn, cutoff: datetime | None = None, *, cfg: WilliamsFractalScalpC
 
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("db_path"))
+    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
     try:
         events = evaluate(conn, snapshot=snapshot)
-        written = []
         for event in events:
             event["input_snapshot_id"] = cutoff_id
-            created, _ = write_event(event)
-            if created:
-                written.append(event)
-        return written
+        return events
     finally:
         conn.close()

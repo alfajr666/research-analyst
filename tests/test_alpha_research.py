@@ -10,24 +10,30 @@ import config
 class AlphaResearchPersistenceTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.old_db_path = config.DB_PATH
-        config.DB_PATH = os.path.join(self.temp_dir.name, "research.db")
-        config.init_db()
-        self.conn = config.get_db_connection(read_only=False)
+        self.old_market_path = config.MARKET_DB_PATH
+        self.old_analyst_path = config.ANALYST_DB_PATH
+        config.MARKET_DB_PATH = os.path.join(self.temp_dir.name, "market.db")
+        config.ANALYST_DB_PATH = os.path.join(self.temp_dir.name, "analyst.db")
+        config.init_market_db()
+        config.init_analyst_db()
+        self.market_conn = config.get_db_connection(db_path=config.MARKET_DB_PATH)
+        self.conn = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
 
     def tearDown(self):
         self.conn.close()
-        config.DB_PATH = self.old_db_path
+        self.market_conn.close()
+        config.MARKET_DB_PATH = self.old_market_path
+        config.ANALYST_DB_PATH = self.old_analyst_path
         self.temp_dir.cleanup()
 
     def test_records_tiered_snapshot_candidate_and_outcome(self):
         observed_at = datetime(2026, 8, 16, 10, 0, tzinfo=timezone.utc)
-        alpha_research.record_universe_snapshot(self.conn, observed_at, [
+        alpha_research.record_universe_snapshot(self.market_conn, observed_at, [
             {"binance_symbol": "BTCUSDT", "vol_24h_usd": 200_000_000, "last_price": 100_000},
             {"binance_symbol": "SMALLUSDT", "vol_24h_usd": 6_000_000, "last_price": 1.5},
         ], {"BTCUSDT"})
 
-        tiers = self.conn.execute("""
+        tiers = self.market_conn.execute("""
             SELECT binance_symbol, liquidity_tier, selected_for_scan
             FROM universe_snapshots ORDER BY binance_symbol
         """).fetchall()

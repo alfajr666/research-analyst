@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 import polars as pl
 
 import config
-from alpha_outbox import write_event
 from strategy_v2_context import (
     completed_cycle_for,
     has_active_event,
@@ -92,7 +91,7 @@ def evaluate_symbol(bars_5m: pl.DataFrame, bars_15m: pl.DataFrame, *, asset: str
 
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("db_path")); emitted = []
+    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path")); emitted = []
     try:
         cutoff = completed_cycle_for(snapshot.get("now"), "5m")
         for symbol, asset in list_candidate_symbols(conn, cutoff):
@@ -102,7 +101,6 @@ def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
             ev = evaluate_symbol(bars5, bars15, asset=asset, symbol=symbol, cutoff=cutoff)
             if ev and not has_active_event(STRATEGY_ID, asset.upper(), ev["direction"], now=cutoff):
                 ev["input_snapshot_id"] = cutoff_id
-                created, _ = write_event(ev)
-                if created: emitted.append(ev)
+                emitted.append(ev)
         return emitted
     finally: conn.close()

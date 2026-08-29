@@ -1,5 +1,4 @@
 polars==1.41.2
-duckdb==1.5.3
 httpx==0.28.1
 python-telegram-bot[job-queue]==22.7
 python-dotenv==1.2.2

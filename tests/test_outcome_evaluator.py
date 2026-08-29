@@ -13,8 +13,8 @@ class OutcomeEvaluatorContractTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.market_path = os.path.join(self.directory.name, "market.db")
         self.alpha_path = os.path.join(self.directory.name, "alpha.db")
-        config.init_db(self.market_path)
-        config.init_db(self.alpha_path)
+        config.init_market_db(self.market_path)
+        config.init_analyst_db(self.alpha_path)
 
     def tearDown(self):
         self.directory.cleanup()

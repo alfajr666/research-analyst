@@ -533,7 +533,7 @@ def evaluate(
 
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("db_path"))
+    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
     try:
         now = snapshot.get("now")
         eval_interval = snapshot.get("eval_interval", "15m")

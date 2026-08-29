@@ -3,18 +3,15 @@ import time
 import sys
 import os
 import argparse
+import threading
 from uuid import uuid4
 from datetime import datetime, timezone, timedelta
 import config
 from alpha_outbox import OUTBOX_DIR
-from ingest_coinalyze import ingest_coinalyze
-from ingest_deribit import ingest_deribit
-from ingest_venue_agg_failover import is_ca_limited
-from analyze import update_daily_summary, get_profile_summary
 
 def _get_or_create_cutoff_run(cutoff_at: datetime) -> str:
     cutoff_id = "cutoff-" + cutoff_at.strftime("%Y-%m-%dT%H-%M-00Z")
-    conn = config.get_db_connection()
+    conn = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
     try:
         row = conn.execute(
             "SELECT cutoff_id, status FROM cutoff_runs WHERE cutoff_at = ?",
@@ -35,9 +32,27 @@ def _get_or_create_cutoff_run(cutoff_at: datetime) -> str:
     finally:
         conn.close()
 
-# Startup tracking for grace period & hourly scanner
 STARTUP_TIME = time.time()
 DAEMON_MODE = False
+
+
+def _parse_timestamp(value):
+    """Normalize SQLite timestamp values before doing datetime arithmetic."""
+    if value is None or isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    else:
+        raise TypeError(f"unsupported timestamp value: {type(value).__name__}")
+    if parsed is not None and parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc) if parsed is not None else None
 
 def prune_db(conn, futures_retention_days: int, auxiliary_retention_days: int = 30):
     """Prunes auxiliary data and retains market history per-interval (phase 8 tiered TTL).
@@ -52,7 +67,6 @@ def prune_db(conn, futures_retention_days: int, auxiliary_retention_days: int = 
     try:
         # Prune option_chains
         res_opt = conn.execute("DELETE FROM option_chains WHERE timestamp < ?", (auxiliary_limit,)).rowcount
-        res_brain = conn.execute("DELETE FROM brain_outputs WHERE timestamp < ?", (auxiliary_limit,)).rowcount
 
         # Tiered source_observations pruning by interval.
         tiers = getattr(config, "PRUNE_INTERVAL_DAYS", {})
@@ -83,16 +97,16 @@ def prune_db(conn, futures_retention_days: int, auxiliary_retention_days: int = 
             res_fut += n
 
         conn.commit()
-        print(f"  Pruned: {res_opt} option chains, {res_fut} source_observation rows, {res_brain} brain outputs.")
+        print(f"  Pruned: {res_opt} option chains, {res_fut} source_observation rows.")
         
         # Vacuum database to reclaim disk space (only once a day between 00:00 and 01:00 UTC)
         now_utc = datetime.now(timezone.utc)
         if now_utc.hour == 0:
-            print("  Running daily DuckDB VACUUM to reclaim space...")
+            print("  Running daily SQLite VACUUM to reclaim space...")
             conn.execute("VACUUM;")
             print("  Database vacuum completed.")
         else:
-            print("  Skipping DuckDB VACUUM (runs daily at 00:00 UTC).")
+            print("  Skipping SQLite VACUUM (runs daily at 00:00 UTC).")
     except Exception as e:
         print(f"Error during database pruning: {e}", file=sys.stderr)
 
@@ -167,8 +181,7 @@ def check_and_alert_confluences(conn):
                     continue
 
                 # 4h Structural Trend Filter
-                from analyze import get_structural_trend
-                structure = get_structural_trend(conn, underlying, timeframe="4h")
+                structure = {"direction": "no_signal"}
                 struct_dir = structure.get("direction", "no_signal")
                 if struct_dir != "no_signal" and directional_bias != "neutral" and struct_dir != directional_bias:
                     print(f"  Suppressed 15m alert for {underlying}: 4h structural trend ({struct_dir}) conflicts with 15m alert ({directional_bias}).")
@@ -334,139 +347,11 @@ def _run_pipeline():
     print(f"PIPELINE RUN: {now_str} UTC")
     print(f"==========================================")
     
-    # 1. Ensure DB schemas are initialized
-    config.init_db()
+    # The gateway owns all market-database writes and schema initialization.
+    # The orchestrator only initializes/updates its analyst database.
+    config.init_analyst_db()
 
-    # Binance OI rotation writes are now owned exclusively by the dedicated
-    # binance-oi-rotation-scanner PM2 worker (separate DB: BINANCE_OI_DB_PATH).
-    # Orchestrator only reads status/feed to avoid writer contention.
-    if config.BINANCE_OI_ROTATION_ENABLED:
-        try:
-            from binance_oi_rotation_scanner import completed_hour
-            interval = completed_hour()
-            conn = config.get_db_connection(read_only=True, db_path=config.BINANCE_OI_DB_PATH)
-            try:
-                existing = conn.execute(
-                    """SELECT 1 FROM binance_oi_rotation_scans
-                    WHERE source = 'binance_usdm' AND completed_interval_at = ?
-                      AND scanner_version = ? AND bar_minutes = 60 AND status = 'complete' LIMIT 1""",
-                    (interval, config.BINANCE_OI_ROTATION_SCANNER_VERSION),
-                ).fetchone()
-            finally:
-                conn.close()
-            if existing:
-                print(f"Binance OI rotation scan already recorded for {interval.isoformat()}.")
-            else:
-                print(f"Binance OI rotation scan for {interval.isoformat()} pending (handled by dedicated worker).")
-        except Exception as e:
-            print(f"Error checking Binance OI rotation status: {e}", file=sys.stderr)
-    
-    # 2. Run hourly scanner if 1 hour has elapsed (check scanner_history table for last run)
-    conn = config.get_db_connection()
-    last_scan = conn.execute("SELECT MAX(timestamp) FROM scanner_history").fetchone()[0]
-    conn.close()
-    elapsed = (
-        (datetime.now(timezone.utc) - last_scan).total_seconds()
-        if config.LEGACY_SCANNER_ENABLED and last_scan
-        else (3601 if config.LEGACY_SCANNER_ENABLED else 0)
-    )
-    if not config.LEGACY_SCANNER_ENABLED:
-        print("Legacy REST scanner disabled; using WebSocket universe.")
-    if elapsed >= 3600:
-        print("Running hourly market scanner...")
-        try:
-            from scanner import run_scanner
-            json_data, accumulating_all = run_scanner()
-            
-            # Scanner results remain available to the accumulation monitor, but this
-            # legacy rotation no longer owns Telegram delivery.
-            if json_data:
-                print("Scanner rotation completed; Telegram delivery is disabled here.")
-
-            # Feed scanner-detected accumulations to the accumulation monitor
-            if accumulating_all:
-                pending_path = config.DEFAULT_DB_DIR / "scanner_pending_accums.json"
-                pending = {
-                    "scanner_timestamp": datetime.now(timezone.utc).isoformat(),
-                    "symbols": {
-                        r["symbol"]: {
-                            "underlying": r["underlying"],
-                            "vol_spike": r["volume_spike_multiple"],
-                            "price_change_1h": r["price_change_1h"],
-                            "vol_7d_usd": r["volume_7d_usd"],
-                            "oi_usd": r["open_interest_usd"],
-                        }
-                        for r in accumulating_all
-                    }
-                }
-                with open(pending_path, "w") as f:
-                    json.dump(pending, f, indent=2)
-                print(f"  Fed {len(accumulating_all)} scanner accumulations to monitor.")
-        except Exception as e:
-            print(f"Error during hourly scan: {e}", file=sys.stderr)
-
-    # CoinAnalyze remains available for historical tooling, not live evaluation.
-    if getattr(config, "COINANALYZE_EVAL_ENABLED", False):
-        try:
-            ingest_coinalyze()
-        except Exception as e:
-            print(f"Error during CoinAnalyze ingestion: {e}", file=sys.stderr)
-    else:
-        print("CoinAnalyze live ingestion disabled; using Bybit WebSocket data.")
-
-    # 3b. Venue agg failover (guarded by MARKET_FAILOVER_ENABLED=false by default)
-    try:
-        from ingest_venue_agg_failover import ingest_venue_agg_failover
-        failover_res = ingest_venue_agg_failover()
-        if failover_res.get("status") != "disabled":
-            print(f"  Failover summary: {failover_res}")
-    except Exception as e:
-        print(f"Error during venue-agg failover: {e}", file=sys.stderr)
-        
-    # 3. Ingest options data (DISABLED)
-    # try:
-    #     ingest_deribit()
-    # except Exception as e:
-    #     print(f"Error during Deribit ingestion: {e}", file=sys.stderr)
-        
-    # 4. Update daily ATM IV lookback table (DISABLED)
-    # try:
-    #     # Get write connection and save today's stats
-    #     conn = config.get_db_connection(read_only=False)
-    #     try:
-    #         update_daily_summary(conn)
-    #     finally:
-    #         conn.close()
-    # except Exception as e:
-    #     print(f"Error updating daily summary: {e}", file=sys.stderr)
-        
-    # 5. Retain futures history long enough for alpha research.
-    try:
-        conn = config.get_db_connection(read_only=False)
-        try:
-            prune_db(conn, futures_retention_days=config.FUTURES_RETENTION_DAYS)
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"Error executing database pruning: {e}", file=sys.stderr)
-        
-    # 6. Check for High Confluence Entry Alerts
-    try:
-        conn = config.get_db_connection(read_only=False)
-        try:
-            check_and_alert_confluences(conn)
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"Error checking confluence alerts: {e}", file=sys.stderr)
-
-    # The scheduled runtime has one DuckDB owner. Run context and evaluators
-    # sequentially after ingestion so they see the just-closed local data.
-    try:
-        from regime_evaluator import run_once as run_regime_evaluator
-        run_regime_evaluator()
-    except Exception as e:
-        print(f"Error running regime evaluator: {e}", file=sys.stderr)
+    print("Market pruning disabled in orchestrator; market DB ownership belongs to ws_gateway.")
 
     # Cutoff + plugins (data platform v2 path). Legacy direct evaluators cleaned up post cutover.
     try:
@@ -474,7 +359,7 @@ def _run_pipeline():
         cutoff_at = completed_cycle(datetime.now(timezone.utc))
         cutoff_id = _get_or_create_cutoff_run(cutoff_at)
         # finalize now that ingestion complete
-        conn = config.get_db_connection()
+        conn = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
         try:
             conn.execute(
                 "UPDATE cutoff_runs SET status='finalized', finalized_at=? WHERE cutoff_id=?",
@@ -486,23 +371,25 @@ def _run_pipeline():
 
         # Materialize v2 features (per spec step 5): bars/TA implied, labeled approx VP, FVG/OB zones, unavailable
         try:
-            feat_conn = config.get_db_connection(read_only=False)
+            feat_conn = config.get_db_connection(read_only=False, db_path=config.ANALYST_DB_PATH)
             nowf = datetime.now(timezone.utc)
-            assets = list(config.OPENMARKET_PERMANENT_ASSETS)[:5] or ["BTC", "ETH", "SOL"]
+            assets = sorted(config.COMPACT_STRATEGY_ASSETS)
 
-            # Load recent 15m bars from source_observations for zone computation
+            # Load recent 15m bars from the market-owned source observations.
+            market_conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
             bars_by_asset = {}
             for asset in assets:
-                rows = feat_conn.execute("""
+                rows = market_conn.execute("""
                     SELECT source_end, json_extract(payload_json, '$.open'), json_extract(payload_json, '$.high'),
                            json_extract(payload_json, '$.low'), json_extract(payload_json, '$.close')
                     FROM source_observations
                     WHERE asset = ? AND interval = '15m'
-                      AND json_extract(payload_json, '$.close')::DOUBLE > 0
+                      AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0
                     ORDER BY source_end DESC LIMIT 300
                 """, (asset,)).fetchall()
                 if rows:
                     bars_by_asset[asset] = rows  # newest first, will reverse
+            market_conn.close()
 
             # Compute FVG / Order Blocks on 1h + 4h for each asset (advisory)
             try:
@@ -577,8 +464,8 @@ def _run_pipeline():
             print(f"Feature mat err: {fe}")
 
         from strategy_plugins import invoke_plugins_for_intervals, ensure_plugin_states
-        ensure_plugin_states(config.DB_PATH)
-        pres = invoke_plugins_for_intervals(config.DB_PATH, now=datetime.now(timezone.utc))
+        ensure_plugin_states(config.ANALYST_DB_PATH)
+        pres = invoke_plugins_for_intervals(config.ANALYST_DB_PATH, now=datetime.now(timezone.utc), market_db_path=config.MARKET_DB_PATH)
         for iv, ivres in pres.items():
             print(f"Plugins [{iv}] for {cutoff_id}: { {k: v.get('emitted', v) for k,v in ivres.items()} }")
 
@@ -586,24 +473,18 @@ def _run_pipeline():
         if config.PM_SIDECAR_ENABLED:
             try:
                 from pm_sidecar import run_once as run_pm_sidecar
-                pm = run_pm_sidecar(config.DB_PATH, now=datetime.now(timezone.utc))
+                pm = run_pm_sidecar(config.ANALYST_DB_PATH, now=datetime.now(timezone.utc))
                 print(f"PM sidecar: {pm}")
             except Exception as pe:
                 print(f"PM sidecar err: {pe}")
 
         # Phase 9: rotation feed (disabled by default; also needs WS_SYMBOL_SOURCE=rotated|both).
-        if config.ROTATION_FEED_ENABLED:
-            try:
-                from rotation_feed import refresh_rotation_feed
-                rf = refresh_rotation_feed()
-                print(f"Rotation feed: {rf}")
-            except Exception as re:
-                print(f"Rotation feed err: {re}")
+        print("Legacy rotation feed disabled in live orchestrator.")
 
         # Dedicated outcome evaluator (market read-only)
         try:
             from outcome_evaluator import evaluate_expired_outcomes
-            n = evaluate_expired_outcomes(config.DB_PATH, config.DB_PATH, datetime.now(timezone.utc))
+            n = evaluate_expired_outcomes(config.MARKET_DB_PATH, config.ANALYST_DB_PATH, datetime.now(timezone.utc))
             if n: print(f"Outcomes evaluated: {n}")
         except Exception as oe:
             print(f"Outcome eval err: {oe}")
@@ -614,7 +495,7 @@ def _run_pipeline():
                 from api_clients.openmarket import OpenMarketClient
                 om_client = OpenMarketClient()
                 om_assets = (list(config.OPENMARKET_PERMANENT_ASSETS)[:3] or ["SOL"])
-                om_conn = config.get_db_connection(read_only=False)
+                om_conn = config.get_db_connection(read_only=False, db_path=config.ANALYST_DB_PATH)
                 for asset in om_assets:
                     prof = om_client.fetch_htf_profile([asset], cutoff_id)
                     flow = om_client.fetch_15m_flow([asset], cutoff_id)
@@ -630,7 +511,7 @@ def _run_pipeline():
         # Drop phase: after verification, drop legacy futures_data (opt-in via env for safety)
         if os.getenv("DROP_LEGACY_FUTURES", "0").lower() in ("1", "true", "yes"):
             try:
-                dropped = config.drop_legacy_futures_data(config.DB_PATH)
+                dropped = config.drop_legacy_futures_data(config.MARKET_DB_PATH)
                 if dropped:
                     print("Legacy futures_data dropped as part of post-cutover.")
             except Exception as de:
@@ -640,35 +521,24 @@ def _run_pipeline():
 
     # Health summary
     try:
-        conn = config.get_db_connection(read_only=True)
+        conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
         now = datetime.now(timezone.utc)
-        # Preferred (CA or venue_agg failover) freshness for health (spec)
+        # Freshness is measured from the WebSocket-owned market database.
         latest = conn.execute(
-            "SELECT max(source_end) FROM source_observations WHERE interval='15m' AND json_extract(payload_json, '$.close')::DOUBLE > 0"
+            "SELECT max(source_end) FROM source_observations WHERE interval='15m' AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0"
         ).fetchone()[0]
+        latest = _parse_timestamp(latest)
         age = round((now - latest).total_seconds() / 60, 1) if latest else None
         bars30 = conn.execute(
-            "SELECT count(*) FROM source_observations WHERE interval='15m' AND source_end > ? AND json_extract(payload_json, '$.close')::DOUBLE > 0",
+            "SELECT count(*) FROM source_observations WHERE interval='15m' AND source_end > ? AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0",
             (now - timedelta(minutes=30),)
         ).fetchone()[0] or 0
-        ca = conn.execute(
-            "SELECT status, count(*) FROM source_request_log WHERE source='coinalyze' AND requested_at > ? GROUP BY status",
-            (now - timedelta(minutes=15),)
-        ).fetchall()
         om = conn.execute(
             "SELECT status, count(*) FROM source_request_log WHERE source='openmarket' AND requested_at > ? GROUP BY status",
             (now - timedelta(minutes=15),)
         ).fetchall()
-        ca_limited = is_ca_limited()
-        failover_active = getattr(config, "MARKET_FAILOVER_ENABLED", False)
-        shaped_count = sum(c[1] for c in ca if str(c[0]) == "shaped_due_to_circuit") or 0
-        failover_source = getattr(config, "FAILOVER_SOURCE_NAME", "venue_agg_v1")
-        failover_bars30 = conn.execute(
-            "SELECT count(*) FROM source_observations WHERE interval='15m' AND source=? AND source_end > ? AND json_extract(payload_json, '$.close')::DOUBLE > 0",
-            (failover_source, now - timedelta(minutes=30))
-        ).fetchone()[0] or 0
         latest_str = latest.strftime("%Y-%m-%d %H:%M UTC") if hasattr(latest, "strftime") else str(latest)
-        print(f"Health: age={age}m bars30={bars30} latest={latest_str} caLimited={ca_limited} failoverActive={failover_active} shaped15m={shaped_count} failoverBars30m={failover_bars30} ca={dict(ca) or {}} om={dict(om) or {}}")
+        print(f"Health: age={age}m bars30={bars30} latest={latest_str} om={dict(om) or {}}")
 
         # Wire non-trading health to bot-health-watchdog (sketch implemented)
         try:
@@ -687,12 +557,7 @@ def _run_pipeline():
                     "ageMin": age,
                     "barsLast30m": bars30,
                 },
-                "ca": dict(ca) or {},
                 "om": dict(om) or {},
-                "caLimited": ca_limited,
-                "failoverActive": failover_active,
-                "caShaped15m": shaped_count,
-                "failoverBars30m": failover_bars30,
                 "ts": now.isoformat(),
             }
             tmp = hpath.with_suffix(".tmp")
@@ -709,12 +574,13 @@ def _run_pipeline():
 
 
 def _start_pipeline_run(run_id: str, started_at: datetime) -> None:
-    connection = config.get_db_connection()
+    connection = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
     try:
         connection.execute("""
             INSERT INTO pipeline_runs (run_id, started_at, status, details_json)
             VALUES (?, ?, 'running', '{}')
-        """, (run_id, started_at))
+            """, (run_id, started_at))
+        connection.commit()
     finally:
         connection.close()
 
@@ -723,9 +589,12 @@ def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = Non
     """Persist health data without letting metrics failure delay the next cycle."""
     try:
         completed_at = datetime.now(timezone.utc)
-        connection = config.get_db_connection()
+        connection = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
+        market_connection = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
         try:
-            latest_data_at = connection.execute("SELECT MAX(source_end) FROM source_observations").fetchone()[0]
+            latest_data_at = _parse_timestamp(
+                market_connection.execute("SELECT MAX(source_end) FROM source_observations").fetchone()[0]
+            )
             freshness = (completed_at - latest_data_at).total_seconds() if latest_data_at else None
             connection.execute("""
                 UPDATE pipeline_runs
@@ -738,7 +607,9 @@ def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = Non
                 json.dumps({"data_latest_at": latest_data_at.isoformat() if latest_data_at else None}),
                 run_id,
             ))
+            connection.commit()
         finally:
+            market_connection.close()
             connection.close()
     except Exception as metrics_error:
         print(f"Error recording pipeline metrics: {metrics_error}", file=sys.stderr)
@@ -746,7 +617,7 @@ def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = Non
 
 def run_pipeline():
     """Run the deterministic pipeline and record its durable operational state."""
-    config.init_db()
+    config.init_analyst_db()
     run_id = str(uuid4())
     _start_pipeline_run(run_id, datetime.now(timezone.utc))
     try:
@@ -761,6 +632,23 @@ def publish_events():
     """Persist and deliver queued events after each sequential pipeline cycle."""
     from signal_publisher import SignalPublisher
     print(f"Signal publisher: {SignalPublisher().run_once()}")
+
+
+def _publish_raw_signal_batch() -> None:
+    """Publish a completed raw-signal window without affecting runtime work."""
+    try:
+        from raw_signal_batch import publish_once
+        publish_once()
+    except Exception as exc:
+        # Discord is an advisory sink; never turn its outage into a cycle failure.
+        print(f"Raw signal batch publisher error: {exc}", file=sys.stderr)
+
+
+def trigger_raw_signal_batch() -> threading.Thread:
+    """Start the raw batch publisher asynchronously after a completed cycle."""
+    worker = threading.Thread(target=_publish_raw_signal_batch, name="raw-signal-batch", daemon=True)
+    worker.start()
+    return worker
 
 def main():
     parser = argparse.ArgumentParser(description="BTC/ETH Options and Futures Research Ingestion Orchestrator")
@@ -783,6 +671,7 @@ def main():
                 start_time = time.monotonic()
                 try:
                     run_pipeline()
+                    trigger_raw_signal_batch()
                 except KeyboardInterrupt:
                     print("backoff interrupted", flush=True)
                 except Exception as e:

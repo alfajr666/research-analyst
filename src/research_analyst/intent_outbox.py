@@ -54,13 +54,17 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
     """Convert an internal alpha event into a bybit-executor TradeIntent envelope.
 
     Precedence for routing fields: explicit argument > per-strategy INTENT_ROUTING
-    entry > global INTENT_* default. This lets different strategies target different
-    executor profiles (e.g. one -> bybit/account_y, another -> binance/account_b).
+    entry > global INTENT_* default. Compact strategies are subsequently forced to
+    the deployment profile (bybit/hyro).
     """
     route = (getattr(config, "INTENT_ROUTING", {}) or {}).get(event.get("strategy_id"), {}) or {}
     source = source or route.get("source") or getattr(config, "INTENT_SOURCE", "research-analyst")
     exchange_id = exchange_id or route.get("exchange_id") or getattr(config, "INTENT_EXCHANGE_ID", "bybit")
-    account_id = account_id or route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "account_a")
+    account_id = account_id or route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro")
+    # Compact strategies are the live four-strategy deployment and must never
+    # be diverted by stale routing config or caller-supplied overrides.
+    if event.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ()):
+        exchange_id, account_id = "bybit", "hyro"
     order_type = (order_type or route.get("order_type") or event.get("order_type")
                   or getattr(config, "INTENT_ORDER_TYPE", "limit")).lower()
     take_profit_mode = take_profit_mode or route.get("take_profit_mode") or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")

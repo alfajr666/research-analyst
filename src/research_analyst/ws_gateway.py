@@ -10,7 +10,7 @@ Design (see specs/ws-ingestion.md):
   with "pure_" so the alpha_outbox emit gate accepts them; the CA-truth failover
   gate still blocks non-pure venue_agg rows).
 - Single writer: all DB writes (live bars + resampled) happen in one asyncio task
-  over one DuckDB connection, preserving single-writer discipline for DB_PATH.
+   over one SQLite connection, preserving single-writer discipline for market.sqlite3.
 
 Run:  python src/research_analyst/ws_gateway.py  # foreground daemon from repo root
 """
@@ -83,7 +83,7 @@ def load_rotated_bases() -> List[str]:
 
 
 def select_universe() -> List[str]:
-    """Return canonical base symbols for the configured WS_SYMBOL_SOURCE."""
+    """Return the full market-feed universe; evaluation filtering is separate."""
     src = (getattr(config, "WS_SYMBOL_SOURCE", "static") or "static").lower()
     bases: List[str] = []
     if src in ("static", "both"):
@@ -239,6 +239,14 @@ def _ts(ms: Any) -> datetime:
     return datetime.fromtimestamp(val, tz=timezone.utc)
 
 
+def _row_timestamp(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return _ts(value)
+
+
 def bar_record_to_row(rec: Dict[str, Any], source: str, venue: str, retrieval_kind: str) -> Dict[str, Any]:
     """Shape a normalized kline record into a source_observations row dict."""
     end = _ts(rec["source_end_ms"])
@@ -285,7 +293,7 @@ def flush_pending() -> int:
         return 0
     rows = _PENDING.copy()
     _PENDING.clear()
-    conn = config.get_db_connection()
+    conn = config.get_db_connection(db_path=config.MARKET_DB_PATH)
     try:
         _executemany_rows(conn, rows)
     finally:
@@ -375,11 +383,11 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
         rows = conn.execute(
             """
             SELECT source_end,
-                   json_extract(payload_json,'$.open')::DOUBLE,
-                   json_extract(payload_json,'$.high')::DOUBLE,
-                   json_extract(payload_json,'$.low')::DOUBLE,
-                   json_extract(payload_json,'$.close')::DOUBLE,
-                   COALESCE(json_extract(payload_json,'$.volume')::DOUBLE,0.0)
+                   CAST(json_extract(payload_json,'$.open') AS REAL),
+                   CAST(json_extract(payload_json,'$.high') AS REAL),
+                   CAST(json_extract(payload_json,'$.low') AS REAL),
+                   CAST(json_extract(payload_json,'$.close') AS REAL),
+                   COALESCE(CAST(json_extract(payload_json,'$.volume') AS REAL),0.0)
             FROM source_observations
             WHERE asset=? AND interval='5m'
               AND source IN (?,?)
@@ -393,7 +401,7 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
             continue
         df = pl.DataFrame(
             {
-                "timestamp": [(_ts(int(r[0].timestamp() * 1000)) if hasattr(r[0], "timestamp") else _ts(int(r[0]))) for r in rows],
+                    "timestamp": [_row_timestamp(r[0]) for r in rows],
                 "open": [float(r[1]) for r in rows],
                 "high": [float(r[2]) for r in rows],
                 "low": [float(r[3]) for r in rows],
@@ -430,7 +438,7 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
 
 
 async def writer_task(queue: asyncio.Queue, bases: List[str], ws_source: str) -> None:
-    conn = config.get_db_connection()
+    conn = config.get_db_connection(db_path=config.MARKET_DB_PATH)
     batch: List[Dict[str, Any]] = []
     last_resample = time.monotonic()
     try:
@@ -529,7 +537,7 @@ async def _run(provider: str, bases: List[str], queue: asyncio.Queue, source: st
 
 
 async def run_async() -> None:
-    config.init_db()
+    config.init_market_db()
     bases = select_universe()
     if not bases:
         print("[ws_gateway] empty universe; check WS_SYMBOL_SOURCE / static_universe.json")

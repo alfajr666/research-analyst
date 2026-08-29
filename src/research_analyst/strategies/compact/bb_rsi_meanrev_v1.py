@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import config
-from alpha_outbox import write_event
 from strategy_v2_context import completed_cycle_for, last_completed_bar_fresh, load_bars_for_interval, list_candidate_symbols
 
 STRATEGY_ID = "bb-rsi-meanrev-v1"
@@ -59,7 +58,7 @@ def evaluate_symbol(bars, *, asset, symbol, cutoff, cfg=None):
     if widths[-1] < sum(widths[-30:]) / min(30, len(widths)) * cfg.skinny_ratio: return None
     rsi = _rsi(closes, cfg.rsi_length); current = rsi[-1]
     if current is None: return None
-    bull, bear = _divergence(bars, rsi, cfg.divergence_pivot); row = bars[-1]; entry = float(row["close"]); atr = _atr(bars, cfg.atr_length)
+    bull, bear = _divergence(bars, rsi, cfg.divergence_pivot); row = bars.row(-1, named=True); entry = float(row["close"]); atr = _atr(bars, cfg.atr_length)
     long_signal, short_signal = (entry < lower and current < 25) or bull, (entry > upper and current > 75) or bear
     if not (long_signal or short_signal) or atr <= 0: return None
     direction = "long" if long_signal else "short"; stop = min(float(row["low"]), lower)-atr*.25 if direction == "long" else max(float(row["high"]), upper)+atr*.25; observed = row["timestamp"]
@@ -67,14 +66,13 @@ def evaluate_symbol(bars, *, asset, symbol, cutoff, cfg=None):
     return {"schema_version": 1, "strategy_id": STRATEGY_ID, "asset": asset.upper(), "direction": direction, "setup_class": "bb_rsi_mean_reversion", "phase": "band_extreme_or_divergence", "observed_at": observed.isoformat(), "valid_until": (observed+timedelta(minutes=5)).isoformat(), "horizon_minutes": 5, "confidence": .5, "confidence_status": "uncalibrated", "entry_condition": {"type": "market", "price": entry}, "invalidation_price": stop, "targets": [mid], "plugin_version": PLUGIN_VERSION, "feature_snapshot": {"source_symbol": symbol, "execution_timeframe": "5m", "bb_length": 30, "bb_multiplier": 2, "rsi_length": 13, "rsi": current, "lower_band": lower, "middle_band": mid, "upper_band": upper, "atr": atr, "bullish_divergence": bull, "bearish_divergence": bear}}
 
 def run_plugin(cutoff_id, snapshot):
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("db_path")); emitted = []
+    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path")); emitted = []
     try:
         cutoff = completed_cycle_for(snapshot.get("now"), "5m")
         for symbol, asset in list_candidate_symbols(conn, cutoff):
             if asset.upper() not in SUPPORTED_ASSETS: continue
             event = evaluate_symbol(load_bars_for_interval(conn, symbol, "5m", cutoff), asset=asset, symbol=symbol, cutoff=cutoff)
             if event is not None:
-                event["input_snapshot_id"] = cutoff_id; created, _ = write_event(event)
-                if created: emitted.append(event)
+                event["input_snapshot_id"] = cutoff_id; emitted.append(event)
         return emitted
     finally: conn.close()

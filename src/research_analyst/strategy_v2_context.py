@@ -51,6 +51,8 @@ def completed_cycle_for(now: datetime | None, interval: str) -> datetime:
 
 
 def _ensure_utc(ts: datetime) -> datetime:
+    if isinstance(ts, str):
+        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     if ts.tzinfo is None:
         return ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(timezone.utc)
@@ -62,18 +64,18 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
     rows = conn.execute(
         """
         SELECT source_end, source,
-               json_extract(payload_json, '$.open')::DOUBLE,
-               json_extract(payload_json, '$.high')::DOUBLE,
-               json_extract(payload_json, '$.low')::DOUBLE,
-               json_extract(payload_json, '$.close')::DOUBLE,
-               COALESCE(json_extract(payload_json, '$.volume')::DOUBLE, 0.0),
-               json_extract(payload_json, '$.open_interest')::DOUBLE,
-               json_extract(payload_json, '$.funding_rate')::DOUBLE,
+               CAST(json_extract(payload_json, '$.open') AS REAL),
+               CAST(json_extract(payload_json, '$.high') AS REAL),
+               CAST(json_extract(payload_json, '$.low') AS REAL),
+               CAST(json_extract(payload_json, '$.close') AS REAL),
+               COALESCE(CAST(json_extract(payload_json, '$.volume') AS REAL), 0.0),
+               CAST(json_extract(payload_json, '$.open_interest') AS REAL),
+               CAST(json_extract(payload_json, '$.funding_rate') AS REAL),
                payload_json
          FROM source_observations
          WHERE asset = ? AND interval=?
            AND source_end < ? AND source_end >= ?
-           AND json_extract(payload_json, '$.close')::DOUBLE > 0
+            AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0
          ORDER BY source_end ASC
         """,
         (asset, interval, cutoff, start),
@@ -214,12 +216,16 @@ def list_candidate_symbols(conn, cutoff: datetime) -> list[tuple[str, str]]:
     cutoff = _ensure_utc(cutoff)
     watch = conn.execute(
         """
-        SELECT symbol, asset
-        FROM discovery_watchlist_history
-        QUALIFY ROW_NUMBER() OVER (
+            SELECT symbol, asset
+            FROM (
+              SELECT symbol, asset, state,
+                ROW_NUMBER() OVER (
             PARTITION BY pool, symbol ORDER BY observed_at DESC, event_id DESC
-        ) = 1
-          AND state IN ('active', 'warmed')
+                ) AS row_number
+              FROM discovery_watchlist_history
+            )
+            WHERE row_number = 1
+              AND state IN ('active', 'warmed')
         """
     ).fetchall()
     seen: dict[str, str] = {}
@@ -232,11 +238,11 @@ def list_candidate_symbols(conn, cutoff: datetime) -> list[tuple[str, str]]:
         """
         SELECT DISTINCT native_symbol, asset
         FROM source_observations
-        WHERE source_end < ? AND source_end >= ? - INTERVAL '28 hours'
-          AND json_extract(payload_json, '$.close')::DOUBLE > 0
+        WHERE source_end < ? AND source_end >= datetime(?, '-28 hours')
+          AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0
         ORDER BY native_symbol
         """,
-        (cutoff, cutoff),
+            (cutoff, cutoff),
     ).fetchall()
     return [(str(s), str(a)) for s, a in rows if s and a]
 
@@ -460,13 +466,11 @@ def has_active_event(
 ) -> bool:
     """True if a non-terminal live event exists for asset+direction under strategy_id."""
     now = _ensure_utc(now or datetime.now(timezone.utc))
-    alpha_path = Path(alpha_db_path or config.ALPHA_DB_PATH)
+    alpha_path = Path(alpha_db_path or config.ANALYST_DB_PATH)
     # Single-shot open: re-arm must not block the 15m path on publisher lock contention.
     if alpha_path.exists():
         try:
-            import duckdb
-
-            conn = duckdb.connect(str(alpha_path), read_only=True)
+            conn = config.get_db_connection(read_only=True, db_path=alpha_path)
             try:
                 row = conn.execute(
                     """

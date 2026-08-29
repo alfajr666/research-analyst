@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-import duckdb
+import sqlite3
 
 import config
 from alpha_outbox import dedupe_key
@@ -52,25 +52,37 @@ class FakeTransport:
 
 class SignalPublisherTests(unittest.TestCase):
     def setUp(self):
+        self.previous_llm = config.LLM_RESEARCH_ENABLED
+        self.previous_include = config.LLM_INCLUDE_IN_TELEGRAM
+        self.previous_include_discord = config.LLM_INCLUDE_IN_DISCORD
+        config.LLM_RESEARCH_ENABLED = False
+        config.LLM_INCLUDE_IN_TELEGRAM = False
+        config.LLM_INCLUDE_IN_DISCORD = False
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
         self.outbox = self.root / "alpha_outbox"
         self.outbox.mkdir()
         self.db = self.root / "events.db"
+        config.init_analyst_db(self.db)
+        self.market_db = self.root / "market.sqlite3"
+        config.init_market_db(self.market_db)
         self.current_time = datetime(2026, 8, 16, 10, 30, tzinfo=timezone.utc)
 
     def tearDown(self):
+        config.LLM_RESEARCH_ENABLED = self.previous_llm
+        config.LLM_INCLUDE_IN_TELEGRAM = self.previous_include
+        config.LLM_INCLUDE_IN_DISCORD = self.previous_include_discord
         self.directory.cleanup()
 
     def write(self, payload):
         (self.outbox / f"{payload['dedupe_key']}.json").write_text(json.dumps(payload))
 
     def publisher(self, transport):
-        return SignalPublisher(self.db, self.outbox, transport, now=lambda: self.current_time, market_db_path=self.db)
+        return SignalPublisher(self.db, self.outbox, transport, now=lambda: self.current_time, market_db_path=self.market_db)
 
     def test_default_ledger_is_separate_from_market_data_database(self):
-        self.assertNotEqual(Path(config.ALPHA_DB_PATH).resolve(), Path(config.DB_PATH).resolve())
-        self.assertEqual(SignalPublisher().db_path, config.ALPHA_DB_PATH)
+        self.assertNotEqual(Path(config.ANALYST_DB_PATH).resolve(), Path(config.MARKET_DB_PATH).resolve())
+        self.assertEqual(SignalPublisher().db_path, config.ANALYST_DB_PATH)
 
     def test_publisher_uses_alpha_ledger_while_market_database_is_locked(self):
         market_db = self.root / "market.db"
@@ -79,8 +91,8 @@ class SignalPublisherTests(unittest.TestCase):
         self.write(payload)
         lock = subprocess.Popen(
             [sys.executable, "-c", (
-                "import duckdb, sys, time; "
-                "connection = duckdb.connect(sys.argv[1]); "
+                "import sqlite3, sys, time; "
+                "connection = sqlite3.connect(sys.argv[1]); "
                 "print('locked', flush=True); time.sleep(10)"
             ), str(market_db)],
             stdout=subprocess.PIPE,
@@ -88,7 +100,7 @@ class SignalPublisherTests(unittest.TestCase):
         )
         try:
             self.assertEqual(lock.stdout.readline().strip(), "locked")
-            with patch.object(config, "DB_PATH", str(market_db)), patch.object(config, "ALPHA_DB_PATH", str(alpha_db)):
+            with patch.object(config, "MARKET_DB_PATH", str(market_db)), patch.object(config, "ANALYST_DB_PATH", str(alpha_db)):
                 self.assertEqual(
                     SignalPublisher(outbox_dir=self.outbox, transport=FakeTransport(), now=lambda: self.current_time).run_once(),
                     {"persisted": 1, "sent": 1, "failed": 0, "invalid": 0},
@@ -99,7 +111,7 @@ class SignalPublisherTests(unittest.TestCase):
             lock.stdout.close()
 
     def rows(self, query):
-        connection = duckdb.connect(str(self.db), read_only=True)
+        connection = sqlite3.connect(str(self.db))
         try:
             return connection.execute(query).fetchall()
         finally:
@@ -115,7 +127,7 @@ class SignalPublisherTests(unittest.TestCase):
         self.assertEqual(publisher.run_once(), {"persisted": 0, "sent": 0, "failed": 0, "invalid": 0})
         self.assertEqual(len(transport.messages), 1)
         self.assertEqual(self.rows("SELECT count(*) FROM alpha_events"), [(1,)])
-        self.assertEqual(self.rows("SELECT status, error_code FROM research_requests"), [("skipped", "disabled")])
+        self.assertEqual(self.rows("SELECT count(*) FROM research_requests"), [(0,)])
         self.assertEqual(self.rows("SELECT status, attempt_number FROM signal_deliveries"), [("sent", 1)])
         self.assertEqual(
             self.rows("SELECT confidence, observation_status, reason FROM alpha_confidence_observations"),
@@ -161,6 +173,7 @@ class SignalPublisherTests(unittest.TestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM alpha_events"), [(1,)])
         self.assertEqual(self.rows("SELECT attempt_number, status FROM signal_deliveries ORDER BY attempt_number"), [(1, "failed"), (2, "sent")])
 
+    @unittest.skip("LLM research module was removed from the live architecture")
     def test_llm_mode_waits_for_review_then_appends_it_to_delivery(self):
         payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
         self.write(payload)
@@ -175,7 +188,7 @@ class SignalPublisherTests(unittest.TestCase):
              patch("research_repository.latest_event_report", return_value=report):
             self.assertEqual(self.publisher(transport).run_once(), {"persisted": 1, "sent": 0, "failed": 0, "invalid": 0})
             self.assertEqual(self.rows("SELECT status FROM research_requests"), [("pending",)])
-            connection = duckdb.connect(str(self.db))
+            connection = sqlite3.connect(str(self.db))
             try:
                 connection.execute("UPDATE research_requests SET status = 'completed'")
             finally:
@@ -183,6 +196,7 @@ class SignalPublisherTests(unittest.TestCase):
             self.assertEqual(self.publisher(transport).run_once(), {"persisted": 0, "sent": 1, "failed": 0, "invalid": 0})
         self.assertIn("Research note (advisory)", transport.messages[0])
 
+    @unittest.skip("LLM research module was removed from the live architecture")
     def test_llm_failure_falls_back_to_deterministic_delivery(self):
         payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
         self.write(payload)
@@ -190,7 +204,7 @@ class SignalPublisherTests(unittest.TestCase):
         with patch.object(config, "LLM_RESEARCH_ENABLED", True), \
              patch("research_repository.ResearchCoordinator.process", return_value={}):
             self.publisher(transport).run_once()
-            connection = duckdb.connect(str(self.db))
+            connection = sqlite3.connect(str(self.db))
             try:
                 connection.execute("UPDATE research_requests SET status = 'failed'")
             finally:
@@ -218,7 +232,7 @@ class SignalPublisherTests(unittest.TestCase):
         self.write(payload)
         publisher = self.publisher(FakeTransport())
         publisher.run_once()
-        connection = duckdb.connect(str(self.db))
+        connection = config.get_db_connection(db_path=self.market_db)
         try:
             # seed source_observations (sole source post-drop)
             for ts, h, l, c in [
@@ -230,6 +244,7 @@ class SignalPublisherTests(unittest.TestCase):
                     "INSERT OR IGNORE INTO source_observations (observation_id, source, venue, native_symbol, asset, market_kind, interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json) VALUES (?, 'coinalyze', 'agg', 'SOLUSDT_PERP.A', 'SOL', 'perpetual', '15m', ?, ?, ?, 'live', ?)",
                     (f"sig-{ts.isoformat()}", ts, ts, ts, payload)
                 )
+            connection.commit()
         finally:
             connection.close()
         self.current_time += timedelta(minutes=45)  # make it expired for record
@@ -243,13 +258,14 @@ class SignalPublisherTests(unittest.TestCase):
         self.write(payload)
         publisher = self.publisher(FakeTransport())
         publisher.run_once()
-        connection = duckdb.connect(str(self.db))
+        connection = config.get_db_connection(db_path=self.market_db)
         try:
             payload = json.dumps({"open": 100, "high": 149, "low": 99, "close": 145, "volume": 100})
             connection.execute(
                 "INSERT OR IGNORE INTO source_observations (observation_id, source, venue, native_symbol, asset, market_kind, interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json) VALUES (?, 'coinalyze', 'agg', 'SOLUSDT_PERP.A', 'SOL', 'perpetual', '15m', ?, ?, ?, 'live', ?)",
                 (f"sig2-{self.current_time.isoformat()}", self.current_time - timedelta(minutes=30), self.current_time - timedelta(minutes=30), self.current_time - timedelta(minutes=30), payload)
             )
+            connection.commit()
         finally:
             connection.close()
         self.current_time += timedelta(minutes=45)
@@ -273,7 +289,7 @@ class SignalPublisherTests(unittest.TestCase):
             self.outbox,
             transports={"telegram": telegram, "discord": discord},
             now=lambda: self.current_time,
-            market_db_path=self.db,
+            market_db_path=self.market_db,
         )
         self.assertEqual(publisher.run_once(), {"persisted": 1, "sent": 2, "failed": 0, "invalid": 0})
         self.assertEqual(publisher.run_once(), {"persisted": 0, "sent": 0, "failed": 0, "invalid": 0})
@@ -294,7 +310,7 @@ class SignalPublisherTests(unittest.TestCase):
             self.outbox,
             transports={"telegram": telegram, "discord": discord},
             now=lambda: self.current_time,
-            market_db_path=self.db,
+            market_db_path=self.market_db,
         )
         result = publisher.run_once()
         self.assertEqual(result["sent"], 1)

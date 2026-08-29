@@ -20,8 +20,11 @@ class PMSidecarTests(unittest.TestCase):
         config.LLM_API_KEY = ""  # force offline (hold) path; no live LLM calls
         os.environ.pop("LLM_API_KEY", None)
         self.directory = tempfile.TemporaryDirectory()
-        self.db = Path(self.directory.name) / "m.db"
-        config.init_db(self.db)
+        self.db = Path(self.directory.name) / "analyst.db"
+        self.market_db = Path(self.directory.name) / "market.sqlite3"
+        config.init_market_db(self.market_db)
+        config.init_analyst_db(self.db)
+        config.MARKET_DB_PATH = str(self.market_db)
         conn = config.get_db_connection(read_only=False, db_path=self.db)
         try:
             conn.execute(
@@ -91,7 +94,7 @@ class PMSidecarTests(unittest.TestCase):
 
     def test_load_snapshot_positions(self):
         snap = Path(self.directory.name) / "snaps"
-        acc = snap / "bybit" / "account_a"
+        acc = snap / "bybit" / "hyro"
         acc.mkdir(parents=True)
         payload = {
             "positions": [{
@@ -104,7 +107,7 @@ class PMSidecarTests(unittest.TestCase):
         out = pm_sidecar._load_open_positions_from_snapshots(str(snap))
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["exchange_id"], "bybit")
-        self.assertEqual(out[0]["account_id"], "account_a")
+        self.assertEqual(out[0]["account_id"], "hyro")
         self.assertEqual(out[0]["asset"], "SOL")
         self.assertEqual(out[0]["strategy_id"], "s")
         # closed positions are skipped
@@ -123,7 +126,7 @@ class PMSidecarTests(unittest.TestCase):
         config.EXECUTOR_DECISION_DIR = str(decision_dir)
         try:
             pos = {"position_id": "P2", "symbol": "ETHUSDT",
-                   "exchange_id": "bybit", "account_id": "account_a"}
+                   "exchange_id": "bybit", "account_id": "hyro"}
             cutoff = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
             observed = datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc)
             self.assertTrue(
@@ -143,10 +146,10 @@ class PMSidecarTests(unittest.TestCase):
         prev_snap = getattr(config, "EXECUTOR_SNAPSHOT_DIR", "")
         prev_dec = getattr(config, "EXECUTOR_DECISION_DIR", "")
         snap = Path(self.directory.name) / "snaps"
-        acc_dir = snap / "bybit" / "account_a"
+        acc_dir = snap / "bybit" / "hyro"
         acc_dir.mkdir(parents=True)
         payload = {
-            "schema_version": 1, "exchange_id": "bybit", "account_id": "account_a",
+            "schema_version": 1, "exchange_id": "bybit", "account_id": "hyro",
             "positions": [{
                 "position_id": "POS1", "symbol": "BTCUSDT", "side": "long",
                 "status": "OPEN", "quantity": 1.0, "entry_price": 60000.0,
@@ -169,7 +172,7 @@ class PMSidecarTests(unittest.TestCase):
             data = json.loads(files[0].read_text())
             self.assertEqual(data["action"], "HOLD")
             self.assertEqual(data["exchange_id"], "bybit")
-            self.assertEqual(data["account_id"], "account_a")
+            self.assertEqual(data["account_id"], "hyro")
             self.assertEqual(data["symbol"], "BTCUSDT")
             self.assertEqual(data["position_id"], "POS1")
             self.assertEqual(data["schema_version"], 1)

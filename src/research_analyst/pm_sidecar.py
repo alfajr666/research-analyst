@@ -8,7 +8,7 @@ set, each advice is also exported as a PMDecision JSON file the executor consume
 (HOLD/REDUCE/EXIT). It never holds credentials, sizes, selects a venue, or places
 orders.
 
-Disabled by default (`PM_SIDECAR_ENABLED=false`). On any LLM failure/timeout/parse
+Enabled by default (`PM_SIDECAR_ENABLED=true`). On any LLM failure/timeout/parse
 error it emits `hold` (do no harm).
 """
 
@@ -51,7 +51,7 @@ def _load_open_positions(conn) -> List[Dict[str, Any]]:
     # Carry the default profile so the decision writer knows where to deliver.
     for p in out:
         p.setdefault("exchange_id", getattr(config, "INTENT_EXCHANGE_ID", "bybit"))
-        p.setdefault("account_id", getattr(config, "INTENT_ACCOUNT_ID", "account_a"))
+        p.setdefault("account_id", getattr(config, "INTENT_ACCOUNT_ID", "hyro"))
     return out
 
 
@@ -304,7 +304,7 @@ def _write_decision_file(pos: Dict[str, Any], action: str, reason: str,
         "schema_version": 1,
         "decision_id": decision_id,
         "exchange_id": pos.get("exchange_id") or getattr(config, "INTENT_EXCHANGE_ID", "bybit"),
-        "account_id": pos.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "account_a"),
+        "account_id": pos.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro"),
         "position_id": pos.get("position_id") or "",
         "symbol": pos.get("symbol"),
         "action": action_up,
@@ -337,6 +337,7 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
     now = now or _utcnow()
     cutoff = completed_cycle_for(now, f"{getattr(config, 'PM_CADENCE_MINUTES', 5)}m")
     conn = config.get_db_connection(read_only=False, db_path=db_path)
+    market_conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
     try:
         positions: List[Dict[str, Any]] = []
         snapshot_dir = getattr(config, "EXECUTOR_SNAPSHOT_DIR", "") or ""
@@ -349,9 +350,9 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
         for pos in positions:
             asset = pos["asset"]
             intent = _get_active_intent(conn, pos["strategy_id"], asset)
-            htf_bias, _ = _htf_bias(conn, asset, cutoff)
-            ta = _ta_5m(conn, asset, cutoff)
-            swings = _swings(conn, asset, cutoff)
+            htf_bias, _ = _htf_bias(market_conn, asset, cutoff)
+            ta = _ta_5m(market_conn, asset, cutoff)
+            swings = _swings(market_conn, asset, cutoff)
             rr = _compute_rr(
                 pos["side"], pos["entry"], ta.get("last_close"),
                 (intent or {}).get("invalidation_price"),
@@ -369,6 +370,7 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
         return {"enabled": True, "positions": len(positions),
                 "advices": advices, "decisions_written": written}
     finally:
+        market_conn.close()
         conn.close()
 
 

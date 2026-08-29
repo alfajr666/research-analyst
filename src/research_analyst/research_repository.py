@@ -76,8 +76,11 @@ class ResearchCoordinator:
             WHERE request_id = ?""", (status, now if status in {"completed", "failed", "skipped"} else None, next_attempt_at, code, (message or "")[:500] or None, request_id))
 
     def _monthly_cost(self, connection, now: datetime) -> float:
-        rows = connection.execute("""SELECT provider_usage_json FROM research_artifacts WHERE generated_at >= date_trunc('month', ?)
-            AND generated_at < date_trunc('month', ?) + INTERVAL 1 MONTH""", (now, now)).fetchall()
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        rows = connection.execute(
+            "SELECT provider_usage_json FROM research_artifacts WHERE generated_at >= ?",
+            (month_start,),
+        ).fetchall()
         return sum(float((json.loads(row[0]) if row[0] else {}).get("cost_usd", 0)) for row in rows)
 
     def _cost_usage(self, usage: dict) -> dict:
@@ -108,8 +111,11 @@ class ResearchCoordinator:
         queue_depth, oldest = connection.execute("""SELECT COUNT(*), MIN(created_at) FROM research_requests
             WHERE status = 'pending'""").fetchone()
         oldest_report = connection.execute("SELECT MIN(generated_at) FROM research_artifacts").fetchone()[0]
-        latency = connection.execute("""SELECT AVG(EXTRACT(EPOCH FROM completed_at - started_at)) FROM research_requests
-            WHERE completed_at >= ? AND started_at IS NOT NULL""", (now - timedelta(days=1),)).fetchone()[0]
+        durations = connection.execute(
+            "SELECT completed_at, started_at FROM research_requests WHERE completed_at >= ? AND started_at IS NOT NULL",
+            (now - timedelta(days=1),),
+        ).fetchall()
+        latency = sum((completed - started).total_seconds() for completed, started in durations) / len(durations) if durations else None
         connection.execute("INSERT INTO research_run_metrics VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (
             str(uuid4()), now, queue_depth, (now - oldest).total_seconds() if oldest else None,
             self._monthly_cost(connection, now), results["completed"], results["rejected"], latency,
@@ -145,8 +151,7 @@ class ResearchCoordinator:
                 client = self.client or configured_client(self.settings)
                 completion = client.complete(SYSTEM_PROMPT, task_prompt(packet.get("question")), canonical_json(packet))
                 report = validate_event_review_output(completion.output, packet, self.settings.LLM_MAX_OUTPUT_CHARS)
-                # DuckDB disallows updating a referenced parent row, so finalize
-                # the request before adding its immutable child artifact.
+                # Finalize the request before adding its immutable child artifact.
                 self._finish(connection, request_id, "completed", now)
                 self._persist_artifact(connection, request_id, report, packet, completion, now)
                 results["completed"] += 1

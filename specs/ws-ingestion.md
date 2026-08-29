@@ -2,8 +2,9 @@
 
 ## Goal
 
-Replace REST polling (CoinAnalyze / venue_agg) with a public WebSocket ingestion
-layer that maintains a continuous, resampled market-data feed for the 97-symbol
+Use public WebSocket ingestion rather than provider polling for the live market
+feed. The gateway maintains a continuous, resampled market-data feed for the
+static universe
 static universe (plus optional rotation). Evaluators keep reading the same
 `source_observations` tables; only the ingestion path changes.
 
@@ -75,7 +76,7 @@ ResampleWorker (separate tick loop)
 
 ## Tiered retention (prune TTL)
 
-DuckDB is embedded and never auto-trims; WS is a continuous firehose, so keep a
+SQLite is embedded; WS is a continuous firehose, so keep a
 tiered prune (extends existing `prune_db`):
 
 | Data | Keep | Rationale |

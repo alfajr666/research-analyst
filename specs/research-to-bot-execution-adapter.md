@@ -127,7 +127,7 @@ persistence.
 
 ### Delivery State
 
-Persist delivery state in research's DuckDB database. A delivery is unique by
+Persist delivery state in research's analyst SQLite database. A delivery is unique by
 `(alpha_id, target)`.
 
 | Field | Meaning |
@@ -197,7 +197,7 @@ copied into bot trade metadata unless a specific diagnostic use requires it.
 ## Bot Inbox Consumer
 
 Each target receives one deliberately small consumer module. It does not know
-how research is calculated and it does not need access to research's DuckDB.
+how research is calculated and it does not need access to research's SQLite database.
 
 ### Required Consumer Steps
 

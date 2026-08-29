@@ -10,15 +10,19 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Any, Callable, Dict, List
 
 import config
-from alpha_outbox import write_event
+from alpha_outbox import write_event, dedupe_key
+from raw_signal_batch import capture, record_status
+from trade_admission import resolve
 from strategy_v2_context import completed_cycle_for
 
 # Per spec: re-export from config for modules that imported here before
 PRICE_STRUCTURE_STRATEGY_IDS = getattr(config, "PRICE_STRUCTURE_STRATEGY_IDS", set())
 MIXED_STRATEGY_IDS = getattr(config, "MIXED_STRATEGY_IDS", set())
+ADMISSION_STRATEGY_IDS = {"failed-break-v3", "bb-rsi-meanrev-v1",
+                          "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1"}
 
 
 def _get_bar_purity(conn, asset: str, observed_at: Any, interval: str = "15m") -> Dict[str, Any]:
@@ -39,28 +43,22 @@ def _get_bar_purity(conn, asset: str, observed_at: Any, interval: str = "15m") -
         src, pj = row
         p = json.loads(pj) if pj else {}
         prov = p.get("provenance", {}) or {}
-        if src == "coinalyze":
-            purity = "pure_ca"
-            price_source = "coinalyze"
-        elif src in (getattr(config, "BYBIT_WS_SOURCE", "bybit_ws"), getattr(config, "BINANCE_WS_SOURCE", "binance_ws")):
+        if src in (getattr(config, "BYBIT_WS_SOURCE", "bybit_ws"), getattr(config, "BINANCE_WS_SOURCE", "binance_ws")):
             purity = getattr(config, "WS_DATA_PURITY", "pure_ws")
             price_source = src
         else:
-            purity = getattr(config, "FAILOVER_SOURCE_NAME", "venue_agg_v1")
-            price_source = getattr(config, "FAILOVER_SOURCE_NAME", "venue_agg_v1")
+            purity = "unknown"
+            price_source = src or "unknown"
         return {
             "data_purity": purity,
             "price_source": price_source,
             "fallback_reason": None if purity.startswith("pure_") else "ca_missing_bar",
         }
     except Exception:
-        return {"data_purity": "pure_ca", "price_source": "coinalyze"}
+        return {"data_purity": "unknown", "price_source": "unknown"}
 
 
 KNOWN_STRATEGIES = {
-    "accumulation-base-v1",
-    "impulse-ignition-v1",
-    "continuation-breakout-balanced-v1",
     "accumulation-base-v2",
     "impulse-ignition-v2",
     "continuation-breakout-v2",
@@ -71,16 +69,6 @@ KNOWN_STRATEGIES = {
     "williams-fractal-scalp-v1",
     "ema9-continuation-stochrsi-v1",
 }
-
-# Pre-refactor evaluators (built on alpha_evaluator / accumulation_evaluator).
-# Retired via the active/inactive flag (phase 6): kept registered so they can be
-# re-activated, but defaulted to 'inactive' in plugin_states.
-LEGACY_STRATEGY_IDS = {
-    "accumulation-base-v1",
-    "impulse-ignition-v1",
-    "continuation-breakout-balanced-v1",
-}
-
 
 @dataclass
 class StrategyPlugin:
@@ -99,70 +87,6 @@ def register(plugin: StrategyPlugin) -> None:
 
 
 def _load_builtin_plugins():
-    # Import here to avoid circulars at module load; existing evaluators provide the logic.
-    from accumulation_evaluator import evaluate as acc_evaluate, event_from_setup as acc_event_from_setup
-    from alpha_evaluator import ignition_candidates, acceleration_candidates, event_from_candidate, completed_cycle
-    from alpha_outbox import write_event as _write_event  # local to avoid name clash
-    from structure_zones import attach_zone_evidence
-
-    def _acc_run(cutoff_id: str, snapshot: dict) -> List[dict]:
-        conn = config.get_db_connection(read_only=True, db_path=snapshot.get("db_path"))
-        try:
-            now = snapshot.get("now") or datetime.now(timezone.utc)
-            # Use the existing evaluate which returns setups for symbols
-            setups = acc_evaluate(conn, now)
-            emitted = []
-            for symbol, cand in setups.items():
-                ev = acc_event_from_setup(cand["asset"], symbol, cand["source"], cand["accumulation"], cand["setup"])
-                ev["plugin_version"] = "v1"
-                ev["input_snapshot_id"] = cutoff_id
-                zs = snapshot.get("zones", []) if "zones" in snapshot else []
-                attach_zone_evidence(ev, zs)
-                created, _ = _write_event(ev)
-                if created:
-                    emitted.append(ev)
-            return emitted
-        finally:
-            conn.close()
-
-    def _ign_run(cutoff_id: str, snapshot: dict) -> List[dict]:
-        conn = config.get_db_connection(read_only=True, db_path=snapshot.get("db_path"))
-        try:
-            now = snapshot.get("now") or datetime.now(timezone.utc)
-            cands = ignition_candidates(conn, cutoff=completed_cycle(now))
-            emitted = []
-            for cand in cands:
-                ev = event_from_candidate(cand, "ignition")
-                ev["plugin_version"] = "v1"
-                ev["input_snapshot_id"] = cutoff_id
-                zs = snapshot.get("zones", []) if "zones" in snapshot else []
-                attach_zone_evidence(ev, zs)
-                created, _ = _write_event(ev)
-                if created:
-                    emitted.append(ev)
-            return emitted
-        finally:
-            conn.close()
-
-    def _cont_run(cutoff_id: str, snapshot: dict) -> List[dict]:
-        conn = config.get_db_connection(read_only=True, db_path=snapshot.get("db_path"))
-        try:
-            now = snapshot.get("now") or datetime.now(timezone.utc)
-            cands = acceleration_candidates(conn, cutoff=completed_cycle(now))
-            emitted = []
-            for cand in cands:
-                ev = event_from_candidate(cand, "continuation")
-                ev["plugin_version"] = "v1"
-                ev["input_snapshot_id"] = cutoff_id
-                zs = snapshot.get("zones", []) if "zones" in snapshot else []
-                attach_zone_evidence(ev, zs)
-                created, _ = _write_event(ev)
-                if created:
-                    emitted.append(ev)
-            return emitted
-        finally:
-            conn.close()
-
     from strategies.v2.accumulation_base_v2 import run_plugin as acc_v2_run
     from strategies.v2.impulse_ignition_v2 import run_plugin as ign_v2_run
     from strategies.v2.continuation_breakout_v2 import run_plugin as cont_v2_run
@@ -173,9 +97,6 @@ def _load_builtin_plugins():
     from strategies.compact.williams_fractal_scalp_v1 import run_plugin as williams_run
     from strategies.compact.ema9_continuation_stochrsi_v1 import run_plugin as ema9_run
 
-    register(StrategyPlugin("accumulation-base-v1", "v1", ("bars_15m",), ("fvg_1h",), _acc_run))
-    register(StrategyPlugin("impulse-ignition-v1", "v1", ("bars_15m",), ("vp",), _ign_run))
-    register(StrategyPlugin("continuation-breakout-balanced-v1", "v1", ("bars_15m",), ("acceleration",), _cont_run))
     register(StrategyPlugin("accumulation-base-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), acc_v2_run))
     register(StrategyPlugin("impulse-ignition-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), ign_v2_run))
     register(StrategyPlugin("continuation-breakout-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), cont_v2_run))
@@ -222,14 +143,13 @@ def plugin_effective_active(conn, strategy_id: str) -> bool:
         return row[0] == "active"
     if explicit:
         return strategy_id in explicit
-    # No DB row, no explicit env: legacy ids default to inactive (retired).
-    return strategy_id not in LEGACY_STRATEGY_IDS
+    return True
 
 
 def load_active_plugins(conn=None) -> List[StrategyPlugin]:
     own = conn is None
     if own:
-        conn = config.get_db_connection(read_only=True)
+        conn = config.get_db_connection(read_only=True, db_path=config.ANALYST_DB_PATH)
     try:
         return [p for p in load_enabled_plugins() if plugin_effective_active(conn, p.id)]
     finally:
@@ -238,7 +158,7 @@ def load_active_plugins(conn=None) -> List[StrategyPlugin]:
 
 
 def get_plugin_state(strategy_id: str, db_path: str | Path | None = None) -> dict:
-    conn = config.get_db_connection(read_only=True, db_path=db_path)
+    conn = config.get_db_connection(read_only=True, db_path=db_path or config.ANALYST_DB_PATH)
     try:
         row = conn.execute(
             "SELECT state, updated_at, reason, updated_by FROM plugin_states WHERE strategy_id = ?",
@@ -260,7 +180,7 @@ def set_plugin_state(strategy_id: str, state: str, reason: str | None = None,
                     updated_by: str | None = None, db_path: str | Path | None = None) -> None:
     if state not in ("active", "inactive", "paused"):
         raise ValueError(f"invalid plugin state: {state}")
-    conn = config.get_db_connection(read_only=False, db_path=db_path)
+    conn = config.get_db_connection(read_only=False, db_path=db_path or config.ANALYST_DB_PATH)
     try:
         conn.execute(
             """
@@ -280,11 +200,9 @@ def set_plugin_state(strategy_id: str, state: str, reason: str | None = None,
 
 
 def ensure_plugin_states(db_path: str | Path | None = None) -> None:
-    """Seed plugin_states on first run so the active/inactive flag is explicit.
-    Legacy evaluators default to 'inactive' (retired); everything else 'active'
-    unless overridden by STRATEGY_ACTIVE_IDS."""
+    """Seed plugin_states on first run so the active/inactive flag is explicit."""
     explicit = _explicit_active_set()
-    conn = config.get_db_connection(read_only=False, db_path=db_path)
+    conn = config.get_db_connection(read_only=False, db_path=db_path or config.ANALYST_DB_PATH)
     try:
         now = datetime.now(timezone.utc)
         for sid in KNOWN_STRATEGIES:
@@ -293,7 +211,7 @@ def ensure_plugin_states(db_path: str | Path | None = None) -> None:
             elif explicit:
                 state = "active" if sid in explicit else "inactive"
             else:
-                state = "inactive" if sid in LEGACY_STRATEGY_IDS else "active"
+                state = "active"
             conn.execute(
                 """
                 INSERT OR IGNORE INTO plugin_states
@@ -311,7 +229,7 @@ def deactivate_all_strategies(db_path: str | Path | None = None,
                               reason: str = "deactivated via control",
                               updated_by: str = "user") -> None:
     """Bulk-deactivate every known strategy (master off lever for the active/inactive flag)."""
-    conn = config.get_db_connection(read_only=False, db_path=db_path)
+    conn = config.get_db_connection(read_only=False, db_path=db_path or config.ANALYST_DB_PATH)
     try:
         now = datetime.now(timezone.utc)
         for sid in KNOWN_STRATEGIES:
@@ -334,7 +252,7 @@ def activate_all_strategies(db_path: str | Path | None = None,
                            reason: str = "activated via control",
                            updated_by: str = "user") -> None:
     """Bulk-reactivate every known strategy (inverse of deactivate_all)."""
-    conn = config.get_db_connection(read_only=False, db_path=db_path)
+    conn = config.get_db_connection(read_only=False, db_path=db_path or config.ANALYST_DB_PATH)
     try:
         now = datetime.now(timezone.utc)
         for sid in KNOWN_STRATEGIES:
@@ -354,7 +272,7 @@ def activate_all_strategies(db_path: str | Path | None = None,
 
 
 def list_plugin_states(db_path: str | Path | None = None) -> List[dict]:
-    conn = config.get_db_connection(read_only=True, db_path=db_path)
+    conn = config.get_db_connection(read_only=True, db_path=db_path or config.ANALYST_DB_PATH)
     try:
         rows = conn.execute(
             "SELECT strategy_id, state, updated_at, reason, updated_by FROM plugin_states"
@@ -369,8 +287,7 @@ def list_plugin_states(db_path: str | Path | None = None) -> List[dict]:
             out.append({"strategy_id": sid, "state": r[1], "updated_at": r[2],
                         "reason": r[3], "updated_by": r[4]})
         else:
-            active = sid not in LEGACY_STRATEGY_IDS
-            out.append({"strategy_id": sid, "state": "active" if active else "inactive",
+            out.append({"strategy_id": sid, "state": "active",
                         "updated_at": None, "reason": None, "updated_by": None})
     return out
 
@@ -387,7 +304,7 @@ def _interval_cutoff_id(interval: str, cutoff: datetime) -> str:
 
 def _ensure_cutoff_run_finalized(db_path: str | Path, cutoff_id: str, interval: str, cutoff: datetime) -> None:
     """Upsert a finalized cutoff_run row so plugins can read a consistent snapshot."""
-    conn = config.get_db_connection(read_only=False, db_path=db_path)
+    conn = config.get_db_connection(read_only=False, db_path=db_path or config.ANALYST_DB_PATH)
     try:
         conn.execute(
             """
@@ -402,8 +319,9 @@ def _ensure_cutoff_run_finalized(db_path: str | Path, cutoff_id: str, interval: 
         conn.close()
 
 
-def _build_snapshot(db_path: str | Path, cutoff_id: str, now: datetime | None) -> dict:
-    snapshot = {"db_path": str(db_path), "now": now, "cutoff_id": cutoff_id,
+def _build_snapshot(db_path: str | Path, cutoff_id: str, now: datetime | None,
+                    market_db_path: str | Path | None = None) -> dict:
+    snapshot = {"db_path": str(db_path), "market_db_path": str(market_db_path or config.MARKET_DB_PATH), "now": now, "cutoff_id": cutoff_id,
                 "required_datasets": {}, "feature_snapshots": {}}
     feat_conn = config.get_db_connection(read_only=True, db_path=db_path)
     try:
@@ -437,7 +355,8 @@ def _build_snapshot(db_path: str | Path, cutoff_id: str, now: datetime | None) -
 
 
 def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime | None,
-                            require_finalized: bool, snapshot: dict | None = None) -> Dict[str, object]:
+                             require_finalized: bool, snapshot: dict | None = None,
+                             market_db_path: str | Path | None = None) -> Dict[str, object]:
     """Run active plugins against one finalized cutoff. Failures isolated."""
     results: Dict[str, object] = {}
     conn = config.get_db_connection(read_only=True, db_path=db_path)
@@ -449,7 +368,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         conn.close()
 
     if snapshot is None:
-        snapshot = _build_snapshot(db_path, cutoff_id, now)
+        snapshot = _build_snapshot(db_path, cutoff_id, now, market_db_path)
     eval_interval = snapshot.get("eval_interval", "15m")
 
     for p in plugins:
@@ -478,30 +397,48 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                 ev.setdefault("confidence_status", "uncalibrated")
                 ev["feature_snapshot"] = dict(snapshot.get("feature_snapshots", {}).get(ev.get("asset", ""), {}))
                 try:
-                    connp = config.get_db_connection(read_only=True)
+                    connp = config.get_db_connection(read_only=True, db_path=snapshot["market_db_path"])
                     purity_info = _get_bar_purity(connp, ev.get("asset", ""), ev.get("observed_at"), interval=eval_interval)
                     connp.close()
-                    ev.setdefault("data_purity", purity_info.get("data_purity", "pure_ca"))
-                    ev.setdefault("price_source", purity_info.get("price_source", "coinalyze"))
+                    ev.setdefault("data_purity", purity_info.get("data_purity", "unknown"))
+                    ev.setdefault("price_source", purity_info.get("price_source", "unknown"))
                     if purity_info.get("fallback_reason"):
                         ev.setdefault("fallback_reason", purity_info["fallback_reason"])
                 except Exception:
-                    ev.setdefault("data_purity", "pure_ca")
-                    ev.setdefault("price_source", "coinalyze")
+                    ev.setdefault("data_purity", "unknown")
+                    ev.setdefault("price_source", "unknown")
+                ev.setdefault("candidate_id", dedupe_key(ev))
             results[p.id] = {"emitted": len(events), "events": events}
         except Exception as exc:
             results[p.id] = {"failed": str(exc)[:200]}
+    candidates = [ev for sid, result in results.items() if sid in ADMISSION_STRATEGY_IDS
+                  and isinstance(result, dict) for ev in result.get("events", [])]
+    raw_ids = {ev.get("candidate_id"): capture(ev) for ev in candidates}
+    decision = resolve(candidates)
+    selected = set(decision["selected_candidate_ids"])
+    by_id = {ev["candidate_id"]: ev for ev in candidates}
+    for result in decision["results"]:
+        raw_id = raw_ids.get(result["candidate_id"])
+        if raw_id:
+            record_status(raw_id, hard_gate_status=result["hard_gate"], score_status=result["status"],
+                          clash_status=result["status"], executor_intent_status="selected" if result["candidate_id"] in selected else "advisory_only",
+                          reason="; ".join(result["hard_gate_reasons"]))
+    for cid in selected:
+        event = by_id[cid]
+        event["_admission_result"] = next(r for r in decision["results"] if r["candidate_id"] == cid)
+        write_event(event)
     return results
 
 
 def invoke_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime | None = None, require_finalized: bool = True) -> Dict[str, object]:
     """Legacy single-cutoff entry point (15m). Kept for tests/orchestrator."""
-    return _run_plugins_for_cutoff(db_path, cutoff_id, now, require_finalized)
+    return _run_plugins_for_cutoff(db_path, cutoff_id, now, require_finalized, market_db_path=config.MARKET_DB_PATH)
 
 
 def invoke_plugins_for_intervals(db_path: str | Path, now: datetime | None = None,
                                   require_finalized: bool = True,
-                                  eval_intervals: list[str] | None = None) -> Dict[str, Dict[str, object]]:
+                                  eval_intervals: list[str] | None = None,
+                                  market_db_path: str | Path | None = None) -> Dict[str, Dict[str, object]]:
     """Run enabled plugins on every eval interval (1m/5m/15m by default).
     Each interval gets its own finalized cutoff_run and its own snapshot carrying
     `eval_interval`, so plugins evaluate on the correct bars. HTF (1h/4h) is NOT
@@ -514,7 +451,7 @@ def invoke_plugins_for_intervals(db_path: str | Path, now: datetime | None = Non
         cutoff = completed_cycle_for(now, iv)
         cutoff_id = _interval_cutoff_id(iv, cutoff)
         _ensure_cutoff_run_finalized(db_path, cutoff_id, iv, cutoff)
-        snapshot = _build_snapshot(db_path, cutoff_id, now)
+        snapshot = _build_snapshot(db_path, cutoff_id, now, market_db_path)
         snapshot["eval_interval"] = iv
-        out[iv] = _run_plugins_for_cutoff(db_path, cutoff_id, now, require_finalized, snapshot=snapshot)
+        out[iv] = _run_plugins_for_cutoff(db_path, cutoff_id, now, require_finalized, snapshot=snapshot, market_db_path=market_db_path)
     return out

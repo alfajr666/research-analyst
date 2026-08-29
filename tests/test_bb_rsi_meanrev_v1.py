@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import polars as pl
 
@@ -29,6 +29,23 @@ class BBRsiMeanRevTests(unittest.TestCase):
             self.assertEqual(plugin.required_datasets, ("bars_5m",))
         finally:
             config.STRATEGY_ENABLED_IDS = previous
+
+    def test_evaluation_extracts_scalar_values_from_last_polars_row(self):
+        start = datetime(2026, 8, 28, tzinfo=timezone.utc)
+        timestamps = [start + timedelta(minutes=i * 5) for i in range(60)]
+        closes = [100.0 + (i % 3) for i in range(60)]
+        bars = pl.DataFrame({
+            "timestamp": timestamps,
+            "open": closes,
+            "high": [value + 1 for value in closes],
+            "low": [value - 1 for value in closes],
+            "close": closes,
+            "volume": [1.0] * 60,
+        })
+        # This exercises the last-row access without requiring a signal setup.
+        self.assertIsNone(evaluate_symbol(
+            bars, asset="BTC", symbol="BTCUSDT", cutoff=timestamps[-1],
+        ))
 
 
 if __name__ == "__main__":

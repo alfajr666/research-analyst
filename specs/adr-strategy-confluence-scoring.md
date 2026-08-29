@@ -2,8 +2,10 @@
 
 ## Status
 
-Accepted (design). Implementation follows in strategy plugins and the existing
-LLM research path. Does not authorize execution or calibrated trade sizing.
+Accepted (superseded in part). The detailed admission and clash policy is locked
+in `specs/trade-admission-and-clash-resolution.md`. This ADR remains the source
+for bounded confluence scoring and LLM boundaries, but its earlier hard-gate list
+is superseded by that specification.
 
 ## Context
 
@@ -38,12 +40,12 @@ finalized cutoff snapshot
 Prefer asset-relative and ATR-normalized distances and within-cutoff ranking over
 fixed absolute thresholds (e.g. “within 0.3% of POC”).
 
-- **Hard gates** (few): direction, HTF bias consistency, valid trigger geometry,
-  liquidity / data freshness requirements.
-- **Soft score** (many): VP proximity, FVG/OB stack tightness, TA confirm,
-  LTF-inside-HTF alignment, contradiction penalties.
-- Emit when gates pass. Score ranks priority and alert weight; it does not replace
-  geometry. Avoid pure “best of a bad batch” with no absolute floor.
+- **Hard gates**: valid SL/TP geometry, minimum RR, stop-distance bounds, expiry,
+  deterministic identity, and strategy-local data required for computation.
+- **Soft score**: HTF bias, swings, FVG/OB proximity, VP proximity, TA confirm,
+  LTF-inside-HTF alignment, freshness, agreement, and contradiction penalties.
+- Emit when hard admission passes. Score resolves same-symbol candidates and
+  opposite-direction clashes; it does not replace geometry or RR admission.
 
 ### 3. Confluence archetype (ideal, not mandatory)
 

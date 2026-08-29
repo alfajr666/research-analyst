@@ -1,32 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 import config
-from api_clients.coinalyze import CoinAnalyzeClient
 from api_clients.openmarket import OpenMarketClient
-
-
-class TestCoinAnalyzeClient(unittest.TestCase):
-    def setUp(self):
-        self.client = CoinAnalyzeClient()
-
-    @patch("api_clients.base.RateLimitedClient.request")
-    def test_fetch_returns_data_on_ok(self, mock_request):
-        mock_request.return_value = {"status": "ok", "data": [{"symbol": "BTC", "value": 123}]}
-        res = self.client.fetch("open-interest", {"symbols": "BTCUSDT_PERP.A"})
-        self.assertEqual(len(res), 1)
-        self.assertEqual(res[0]["symbol"], "BTC")
-
-    @patch("api_clients.base.RateLimitedClient.request")
-    def test_fetch_returns_empty_on_rate_limit(self, mock_request):
-        mock_request.return_value = {"status": "unavailable", "reason": "rate_limited"}
-        res = self.client.fetch("funding-rate", {"symbols": "BTC"})
-        self.assertEqual(res, [])
-
-    @patch("api_clients.base.RateLimitedClient.request")
-    def test_fetch_batched(self, mock_request):
-        mock_request.return_value = {"status": "ok", "data": [{"symbol": "BTC"}]}
-        res = self.client.fetch_batched("open-interest", ["BTC", "ETH"], batch_size=1)
-        self.assertGreaterEqual(len(res), 1)
 
 
 class TestOpenMarketClient(unittest.TestCase):

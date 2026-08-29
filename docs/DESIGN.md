@@ -32,7 +32,7 @@ The engine **never holds exchange credentials and never places orders**.
 ```
                  ┌─────────────────────────────────────────────────────────┐
    public WS      │                 ws_gateway  [TARGET]                     │
-   (Bybit on,     │  ConnectionPool → StreamRouter → IngestBuffer → DuckDB   │
+   (Bybit on,     │  ConnectionPool → StreamRouter → IngestBuffer → SQLite   │
     Binance off)  │  ResampleWorker: 1m → 5m → 15m → 1h → 4h                │
                  └───────────────────────────┬─────────────────────────────┘
                                              │ source_observations (ws_bars)
@@ -65,7 +65,7 @@ The engine **never holds exchange credentials and never places orders**.
 
 | Module | Responsibility |
 | --- | --- |
-| `config.py` | Env-driven config, DuckDB schema (`init_db`), **static-universe loader** (`load_static_symbols`, `expand_perp_symbols`), WS toggles. |
+| `config.py` | Env-driven config, SQLite schemas (`init_db`), **static-universe loader** (`load_static_symbols`, `expand_perp_symbols`), WS toggles. |
 | `orchestrator.py` | Main loop. `_run_pipeline()` runs ingest → scanner → prune → confluence alerts → regime evaluator → cutoff → feature materialization → plugins → outcome eval → `health.json`. |
 | `scanner.py` + `two_pool_discovery.py` | Hourly two-pool discovery (`ignition`, `continuation`). Ranks eligible Binance perps by volume/OI/price action. Seeds `deep_backfill_jobs`. |
 | `strategy_plugins.py` | Plugin **registry + invocation**. `StrategyPlugin` dataclass, `STRATEGY_ENABLED_IDS`, `invoke_plugins_for_cutoff()` (failure-isolated). |
@@ -88,11 +88,11 @@ The engine **never holds exchange credentials and never places orders**.
 
 ---
 
-## 4. Data model (DuckDB tables)
+## 4. Data model (SQLite tables)
 
 Split by ownership to preserve single-writer discipline.
 
-**Market data (`DB_PATH`, orchestrator-owned):**
+**Market data (`MARKET_DB_PATH`, gateway-owned):**
 - `source_observations` — the canonical bar store: `asset, native_symbol, interval, source, source_end, payload_json`. Holds 1m/5m/15m (and HTF resampled) bars.
 - `source_request_log` — ingestion rate-limit/freshness log (CA/OM circuits).
 - `cutoff_runs` — `cutoff_id, cutoff_at, status (running|finalized)`, gates plugin runs.
@@ -101,7 +101,7 @@ Split by ownership to preserve single-writer discipline.
 - `universe_snapshots`, `broad_discovery_snapshots`, `discovery_watchlist_history`, `deep_backfill_jobs` — point-in-time discovery + durable backfill.
 - `regime_signals`, `confluence_alerts`, `scanner_history`, `brain_outputs`, `option_chains`, `alpha_candidates` — research/regime records.
 
-**Alpha ledger (`ALPHA_DB_PATH`, signal-publisher-owned):**
+**Analyst state (`ANALYST_DB_PATH`, orchestrator-owned):**
 - `alpha_events` — authoritative persisted events (dedupe_key PK). `status ∈ active|expired|invalidated`.
 - `alpha_event_status_history`, `alpha_confidence_observations`, `signal_deliveries` (per-channel attempt/retry), `execution_deliveries`, `research_requests/artifacts/evidence/run_metrics`, `pipeline_runs`.
 
@@ -151,7 +151,7 @@ Mapping (internal α-event → executor intent):
 | `delivery_id` | `alpha_id` (stable; executor journal dedupes) |
 | `source` | `INTENT_SOURCE` (default `research-analyst`) |
 | `exchange_id` | `INTENT_EXCHANGE_ID` (default `bybit`) |
-| `account_id` | `INTENT_ACCOUNT_ID` (default `account_a`) |
+| `account_id` | `INTENT_ACCOUNT_ID` (default `hyro`; compact strategies are forced here) |
 | `asset` | `asset` |
 | `symbol` | `to_ccxt_perp_symbol(asset)` → `BTC/USDT:USDT` |
 | `direction` | `direction` upper (`long/bullish`→`LONG`, `short/bearish`→`SHORT`) |
@@ -200,19 +200,16 @@ the executor.
 
 ---
 
-## 7. Market-data ingestion — current vs target
+## 7. Market-data ingestion — current implementation
 
-**Today (REST):** `ingest_coinalyze` polls CoinAnalyze 15m; `ingest_venue_agg_failover`
-shapes CA calls and fails over to Binance+Bybit (`venue_agg_v1`) on 429s. The
-evaluator world is **15m-only**.
-
-**Target (WS) [TARGET]:** `specs/ws-ingestion.md`.
+`ws_gateway` is the live market-data owner; CoinAnalyze and venue-aggregate
+ingestion are not live defaults. `specs/ws-ingestion.md` documents the active
+path:
 - `WS_BYBIT_ENABLED=true` (default), `WS_BINANCE_ENABLED=false`.
 - Stream **1m + 5m kline + markPrice**; **resample 15m/1h/4h locally from the 5m base** via
   `strategy_v2_context.resample_ohlcv`. Matches the "higher TF is resampled" rule while
   keeping 1m/5m available as direct eval feeds (per the 1m+5m correction).
-- Seed history from REST (`bootstrap_trend_history`-style), maintain via WS,
-  gap-fill on reconnect.
+- Seed a short warm window from REST, then maintain it via WS.
 - Stamp `source`/`data_purity` so the existing emit gate and `_get_bar_purity`
   keep working unchanged.
 
@@ -220,7 +217,7 @@ evaluator world is **15m-only**.
 
 ## 8. Timeframe handling
 
-- **Eval timeframes:** 1m, 5m, 15m — all streamed by `ws_gateway`; plugins run on each
+- **Eval timeframes:** 1m, 5m, 15m — 1m/5m are streamed and 15m is locally resampled; plugins run on each
   via `invoke_plugins_for_intervals` (`config.EVAL_INTERVALS`). Each interval gets its own
   finalized `cutoff_runs` row and a snapshot carrying `eval_interval`.
 - **HTF context:** 1h and 4h are **resampled** from the 5m base (never streamed), and feed
@@ -254,8 +251,9 @@ evaluator world is **15m-only**.
 
 - **Registry:** `strategy_plugins._REGISTRY` keyed by `strategy_id`; `StrategyPlugin`
   = `{id, version, required_datasets, optional_datasets, run}`.
-- **Enable/disable:** `config.STRATEGY_ENABLED_IDS` (allowlist). `load_enabled_plugins()`
-  raises on unknown/unregistered ids. Today's defaults run v1+v2 in parallel.
+- **Enable/disable:** `config.STRATEGY_ENABLED_IDS` (allowlist), plus
+  `STRATEGY_ACTIVE_IDS` and `plugin_states`. The four compact strategies are the
+  live admission set; other registered plugins remain available for research.
 - **Active/inactive [TARGET nuance]:** currently "enabled" = participates in the
   cutoff. Add a **runtime `active` flag** (per-plugin, toggleable without restart)
   distinct from the compiled `enabled` allowlist, so a strategy can be
@@ -302,7 +300,7 @@ the same advisory model.
 
 `specs/llm-position-sidecar.md`. Emit-only:
 
-- Toggle `PM_SIDECAR_ENABLED=false` (default off).
+- Toggle `PM_SIDECAR_ENABLED=false` to disable (default on for this deployment).
 - **Cadence:** every 5m.
 - **Inputs (read-only):** `positions_feed` (executor-written) + active trade-intent
   + HTF bias + swings + RR + 5m TA.
@@ -333,7 +331,7 @@ through pruning.
 
 ## 14. Safety & boundaries (carry-over, non-negotiable)
 
-- Single writer per DB (`DB_PATH` orchestrator, `ALPHA_DB_PATH` publisher,
+- Single writer per DB (`MARKET_DB_PATH` gateway, `ANALYST_DB_PATH` orchestrator,
   `BINANCE_OI_DB_PATH` rotation worker). Never duplicate writers.
 - Evaluators read **only** local warmed data; they never call external market APIs
   and never write raw market data.
@@ -384,13 +382,13 @@ through pruning.
  6. **Active/inactive flag** ✅ — `STRATEGY_ACTIVE_IDS` (env allowlist; empty = all enabled) +
     `plugin_states` table (runtime override: `active`/`inactive`/`paused`). `ensure_plugin_states()`
     seeds defaults; `load_active_plugins()` filters `enabled AND effective_active`. **Legacy v1
-    evaluators** (`accumulation-base-v1`, `impulse-ignition-v1`, `continuation-breakout-balanced-v1`)
+    evaluators** (research-only v2 plugins; the live set is the four compact strategies)
     are **retired** — kept registered but defaulted to `inactive` so they no longer evaluate; they can
     be re-activated via the flag. Hard-deletion of the legacy code is a separate, optional step.
  7. **LLM PM sidecar** ✅ — `pm_sidecar.py` + `positions_feed`/`pm_advice` tables. Emit-only
     `hold|exit|reduce` + ≤120-char reason on a 5m-cutoff cadence; reads `positions_feed`
     + trade-intent + HTF bias (`structure_bias_4h`) + swings (`market_structure` pivots) +
-    RR + 5m TA; falls back to `hold` on any LLM error/timeout. `PM_SIDECAR_ENABLED=false`.
+    RR + 5m TA; falls back to `hold` on any LLM error/timeout. `PM_SIDECAR_ENABLED=true`.
     One advice per position per cutoff (deterministic `advice_id` dedupe). (`specs/llm-position-sidecar.md`)
  8. **Tiered prune** ✅ — `prune_db` now deletes `source_observations` per interval via
     `config.PRUNE_INTERVAL_DAYS` (1m=7d, 5m=30d, 15m=90d, 1h/4h=365d; `0` disables a tier).

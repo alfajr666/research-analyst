@@ -161,8 +161,8 @@ class SignalPublisher:
         now: Callable[[], datetime] = utc_now,
         market_db_path: str | Path | None = None,
     ):
-        self.db_path = str(db_path or config.ALPHA_DB_PATH)
-        self.market_db_path = str(market_db_path or config.DB_PATH)
+        self.db_path = str(db_path or config.ANALYST_DB_PATH)
+        self.market_db_path = str(market_db_path or config.MARKET_DB_PATH)
         self.outbox_dir = Path(outbox_dir)
         self.transports = dict(transports) if transports is not None else default_transports(transport)
         # Backward-compatible single-transport handle used by older tests/callers.
@@ -170,7 +170,7 @@ class SignalPublisher:
         self.now = now
 
     def _connect(self):
-        config.init_db(self.db_path)
+        config.init_alpha_db(self.db_path)
         return config.get_db_connection(db_path=self.db_path)
 
     def _persist_event(self, connection, event: dict, now: datetime) -> bool:
@@ -237,11 +237,13 @@ class SignalPublisher:
         if status == "sent" or attempt >= MAX_DELIVERY_ATTEMPTS:
             return None
         if status == "claimed":
-            if next_retry_at is None or next_retry_at <= now:
+            retry_at = parse_timestamp(next_retry_at) if isinstance(next_retry_at, str) else next_retry_at
+            if retry_at is None or retry_at <= now:
                 # lease expired, allow reclaim (reuse attempt)
                 return attempt
             return None
-        if next_retry_at is not None and next_retry_at > now:
+        retry_at = parse_timestamp(next_retry_at) if isinstance(next_retry_at, str) else next_retry_at
+        if retry_at is not None and retry_at > now:
             return None
         return attempt + 1
 
@@ -263,7 +265,8 @@ class SignalPublisher:
 
     def _deliver(self, connection, event: dict, now: datetime, channel: str, transport: MessageTransport) -> str | None:
         row = connection.execute("SELECT status, valid_until FROM alpha_events WHERE dedupe_key = ?", (event["dedupe_key"],)).fetchone()
-        if row is None or row[0] != "active" or row[1] <= now:
+        valid_until = parse_timestamp(row[1]) if row is not None else None
+        if row is None or row[0] != "active" or valid_until <= now:
             return None
         attempt = self._next_attempt(connection, event["dedupe_key"], now, channel)
         if attempt is None:
@@ -303,9 +306,11 @@ class SignalPublisher:
     def _record_expired_outcomes(self, connection, now: datetime) -> None:
         """Delegate to dedicated evaluator (market read-only from source_observations -> alpha). Post futures_data drop."""
         from outcome_evaluator import evaluate_expired_outcomes
-        market = getattr(self, "market_db_path", config.DB_PATH)
-        alpha = getattr(self, "db_path", config.DB_PATH)
-        evaluate_expired_outcomes(market, alpha, now, market_conn=connection if market == alpha else None)
+        market = getattr(self, "market_db_path", config.MARKET_DB_PATH)
+        alpha = getattr(self, "db_path", config.ANALYST_DB_PATH)
+        evaluate_expired_outcomes(market, alpha, now,
+                                  market_conn=connection if market == alpha else None,
+                                  alpha_conn=connection)
 
     def run_once(self) -> dict[str, int]:
         results = {"persisted": 0, "sent": 0, "failed": 0, "invalid": 0}
@@ -320,6 +325,7 @@ class SignalPublisher:
                 UPDATE alpha_events SET status = 'expired'
                 WHERE status = 'active' AND valid_until <= ?
             """, (now,))
+            connection.commit()
             for (alpha_id,) in expired:
                 connection.execute("""
                     INSERT INTO alpha_event_status_history VALUES (?, ?, 'expired', ?, 'valid_until_elapsed')
@@ -341,19 +347,21 @@ class SignalPublisher:
                 now = self.now()
                 if self._persist_event(connection, event, now):
                     results["persisted"] += 1
-                    from research_repository import queue_event_review
-                    queue_event_review(connection, event["alpha_id"], parse_timestamp(event["observed_at"]), config.LLM_RESEARCH_ENABLED)
+                    if config.LLM_RESEARCH_ENABLED:
+                        from research_repository import queue_event_review
+                        queue_event_review(connection, event["alpha_id"], parse_timestamp(event["observed_at"]), True)
                 elif config.LLM_RESEARCH_ENABLED:
                     # Events persisted before LLM mode was enabled still need a review.
                     from research_repository import queue_event_review
                     queue_event_review(connection, event["alpha_id"], parse_timestamp(event["observed_at"]), True)
                 valid_events.append(event)
             # Research runs before LLM-enabled delivery, but cannot alter the event.
-            try:
-                from research_repository import ResearchCoordinator
-                ResearchCoordinator().process(connection)
-            except Exception as error:
-                print(f"Research coordinator error: {error}", file=sys.stderr)
+            if config.LLM_RESEARCH_ENABLED:
+                try:
+                    from research_repository import ResearchCoordinator
+                    ResearchCoordinator().process(connection)
+                except Exception as error:
+                    print(f"Research coordinator error: {error}", file=sys.stderr)
             for event in valid_events:
                 if not self._research_ready_for_delivery(connection, event):
                     continue
@@ -368,6 +376,7 @@ class SignalPublisher:
                 ExecutionAdapter().deliver(connection)
             except Exception as error:
                 print(f"Execution adapter error: {error}", file=sys.stderr)
+            connection.commit()
         finally:
             connection.close()
         return results

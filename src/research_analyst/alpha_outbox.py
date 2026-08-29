@@ -31,6 +31,33 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     - MIXED strategies require data_purity == 'pure_ca' else refuse (log)
     - PRICE_STRUCTURE allowed with stamp
     """
+    # Capture before any purity/admission gate; failures are deliberately isolated.
+    from raw_signal_batch import capture
+    from trade_admission import admit
+    from raw_signal_batch import record_status
+    raw_id = capture(event)
+    admission_event = dict(event)
+    admission_event.setdefault("candidate_id", event.get("alpha_id") or event.get("dedupe_key"))
+    if not admission_event.get("valid_until") and event.get("observed_at"):
+        from datetime import datetime, timedelta, timezone
+        observed = event["observed_at"]
+        if isinstance(observed, str):
+            observed = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        admission_event["valid_until"] = observed + timedelta(minutes=getattr(config, "INTENT_VALIDITY_MINUTES", 5))
+    # Older advisory alpha envelopes omit expiry; executor construction supplies
+    # the configured validity. New strategy candidates must provide it explicitly.
+    if not event.get("valid_until"):
+        admission_event["valid_until"] = datetime.now(timezone.utc) + timedelta(minutes=1)
+    admission = event.get("_admission_result") or admit(admission_event)
+    complete_candidate = (admission_event.get("entry_price") is not None or
+                          (admission_event.get("entry_condition") or {}).get("price") is not None) and \
+        admission_event.get("invalidation_price", admission_event.get("stop_loss")) is not None and \
+        bool(admission_event.get("targets") or admission_event.get("take_profit")) and bool(event.get("valid_until"))
+    if raw_id and complete_candidate:
+        record_status(raw_id, hard_gate_status=admission["hard_gate"],
+                      reason="; ".join(admission["hard_gate_reasons"]))
     sid = event.get("strategy_id", "")
     dp = event.get("data_purity", "pure_ca")
     MIXED = getattr(config, "MIXED_STRATEGY_IDS", set())
@@ -41,6 +68,9 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     if sid in MIXED and not is_pure:
         print(f"write_event blocked: mixed {sid} on non-pure {dp}")
         # still "write" metadata? no: refuse
+        return False, outbox_dir / "blocked.json"
+    if complete_candidate and admission["hard_gate"] != "pass":
+        print(f"write_event blocked by hard admission: {admission['hard_gate_reasons']}")
         return False, outbox_dir / "blocked.json"
     if sid not in (MIXED | PRICE) and not is_pure:
         # unknown -> fail closed
@@ -66,6 +96,8 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         except FileExistsError:
             return False, destination
         _maybe_deliver_intent(payload)
+        if raw_id:
+            record_status(raw_id, executor_intent_status="written")
         return True, destination
     finally:
         try:

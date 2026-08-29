@@ -32,7 +32,7 @@ class ExecutionAdapterTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.db_path = Path(self.directory.name) / "events.db"
-        config.init_db(self.db_path)
+        config.init_analyst_db(self.db_path)
         self.connection = config.get_db_connection(db_path=self.db_path)
         self.now = datetime(2026, 8, 17, 8, tzinfo=timezone.utc)
         self.outbox = Path(self.directory.name) / "execution_outbox"
