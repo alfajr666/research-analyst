@@ -173,7 +173,6 @@ strictly validated by both producer and consumer.
   "asset": "VIRTUAL",
   "symbol": "VIRTUAL/USDT:USDT",
   "direction": "SHORT",
-  "order_type": "limit",
   "entry_price": 0.5558,
   "stop_loss": 0.564903,
   "take_profit": 0.542146,
@@ -193,6 +192,10 @@ All timestamps are RFC 3339 UTC timestamps. `delivery_id` is deterministic.
 The `confidence` placeholder represents the required numeric value copied from
 the immutable alpha event. The research event's feature snapshot must not be
 copied into bot trade metadata unless a specific diagnostic use requires it.
+
+The inbox contract deliberately has no `order_type` field. Research supplies a
+trade intent and reference entry price only; the receiving executor selects and
+validates the entry order policy from its own execution profile.
 
 ## Bot Inbox Consumer
 
@@ -288,7 +291,9 @@ They must not increase permitted risk merely to meet a venue minimum notional.
 
 ### Entry
 
-The entry is always a limit order at `entry_price`. The bot may round to venue
+Research supplies `entry_price` as a reference price. The receiving executor
+selects the entry order type from its execution profile and, when configured
+for a limit entry, submits at that reference price. The bot may round to venue
 price precision only when the rounded result still preserves valid direction
 geometry. If rounding makes the stop or target invalid, reject the delivery.
 

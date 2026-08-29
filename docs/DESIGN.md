@@ -155,8 +155,7 @@ Mapping (internal α-event → executor intent):
 | `asset` | `asset` |
 | `symbol` | `to_ccxt_perp_symbol(asset)` → `BTC/USDT:USDT` |
 | `direction` | `direction` upper (`long/bullish`→`LONG`, `short/bearish`→`SHORT`) |
-| `order_type` | `INTENT_ORDER_TYPE` (`limit`=IOC default, or `market`) |
-| `entry_price` | `entry_condition.price` (null when `market`) |
+| `entry_price` | `entry_condition.price` as the research reference price |
 | `stop_loss` | `invalidation_price` |
 | `take_profit` | `targets[0]` |
 | `take_profit_mode` | `INTENT_TAKE_PROFIT_MODE` (default `fixed_full_close`) |
@@ -171,6 +170,11 @@ default) and SL distance between `INTENT_MIN_STOP_DISTANCE_PCT` (0.1%) and
 `INTENT_MAX_STOP_DISTANCE_PCT` (5%). Invalid events are skipped (the advisory event
 still emits). The intent envelope is written atomically to `INTENT_INBOX` by
 `delivery_id`, idempotent on replay.
+
+The analyst does not emit `order_type`. Entry order policy is selected solely by
+the receiving executor profile (`limit` with IOC by default, or an executor-
+configured market policy). `entry_price` is the research reference price and,
+when the executor selects limit, the submitted limit price.
 
 Enable: `INTENT_DELIVERY_ENABLED=true` and point `INTENT_INBOX` at the
 executor's `INTENT_INBOX` (e.g. `/home/ubuntu/bybit-executor/data/intents`).

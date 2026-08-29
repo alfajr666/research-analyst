@@ -15,7 +15,7 @@ service has no exchange credentials and never sizes or places orders.
   fills, lifecycle, protective SL, and fixed TP.
 - The PM sidecar reads executor snapshots and emits advice; it does not trade.
 
-Never add `quantity`, `risk_amount`, leverage, or credentials to an analyst
+Never add `quantity`, `risk_amount`, leverage, `order_type`, or credentials to an analyst
 intent. Never call old multi-target adapters for the live compact path.
 
 ## Market data
@@ -62,10 +62,11 @@ and conflicts are advisory-only and must remain auditable.
 ## Intent contract
 
 Gate delivery with `INTENT_DELIVERY_ENABLED`. Writes are atomic and idempotent.
-The analyst supplies direction, entry condition, invalidation, target, expiry,
-and strategy identity only. The executor decides whether and how to size, place,
-protect, reconcile, and close the position. A written intent is not an
-acceptance, order, or fill.
+The analyst supplies direction, entry condition/reference price, invalidation,
+target, expiry, and strategy identity only. It never emits an order-type
+instruction. The executor profile selects the entry order type and the executor
+decides how to size, place, protect, reconcile, and close the position. A
+written intent is not an acceptance, order, or fill.
 
 ## PM sidecar
 

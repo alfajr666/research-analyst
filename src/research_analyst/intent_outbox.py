@@ -10,8 +10,8 @@ Geometry rules mirrored from the contract:
   LONG  -> stop_loss < entry_price < take_profit
   SHORT -> take_profit < entry_price < stop_loss
 
-Limit-order admission also requires the configured minimum reward/risk and stop
-distance, keeping the TradeIntent schema unchanged.
+Entry admission requires the configured minimum reward/risk and stop distance.
+The emitted TradeIntent deliberately contains no order-type instruction.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _norm_direction(d: str) -> str:
 
 
 def build_executor_intent(event: dict, *, source=None, exchange_id=None,
-                          account_id=None, order_type=None, take_profit_mode=None,
+                          account_id=None, take_profit_mode=None,
                           validity_minutes=None) -> dict:
     """Convert an internal alpha event into a bybit-executor TradeIntent envelope.
 
@@ -65,8 +65,6 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
     # be diverted by stale routing config or caller-supplied overrides.
     if event.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ()):
         exchange_id, account_id = "bybit", "hyro"
-    order_type = (order_type or route.get("order_type") or event.get("order_type")
-                  or getattr(config, "INTENT_ORDER_TYPE", "limit")).lower()
     take_profit_mode = take_profit_mode or route.get("take_profit_mode") or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
     validity_minutes = (
         validity_minutes if validity_minutes is not None
@@ -92,7 +90,7 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
         entry_valid_until = _iso(base + timedelta(minutes=validity_minutes))
 
     entry_condition = event.get("entry_condition") or {}
-    entry_price = None if order_type == "market" else (event.get("entry_price") or entry_condition.get("price"))
+    entry_price = event.get("entry_price") or entry_condition.get("price")
 
     stop_loss = event.get("invalidation_price")
     targets = event.get("targets") or []
@@ -118,7 +116,6 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
         "asset": asset,
         "symbol": to_ccxt_perp_symbol(asset),
         "direction": direction,
-        "order_type": order_type,
         "entry_price": entry_price,
         "stop_loss": stop_loss,
         "take_profit": take_profit,

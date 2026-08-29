@@ -81,9 +81,10 @@ and produces no intent. Losing and failed candidates remain auditable.
 When `INTENT_DELIVERY_ENABLED=true`, a selected candidate is atomically written
 to the executor intent inbox. Compact intents are forcibly routed to
 `exchange_id=bybit`, `account_id=hyro`; old multi-target routing is not the live
-path. The analyst sends thesis fields only. The executor owns credentials,
-quantity, risk sizing, leverage, venue precision, portfolio gates, orders,
-fills, lifecycle, hard protective SL, and fixed full-close TP.
+path. The analyst sends thesis fields only and never emits an `order_type`
+instruction. The executor profile selects the entry order policy. The executor
+owns credentials, quantity, risk sizing, leverage, venue precision, portfolio
+gates, orders, fills, lifecycle, hard protective SL, and fixed full-close TP.
 
 Keep delivery disabled until the executor paper path, account, symbol universe,
 and protection behavior are verified. A Discord or LLM failure must not create,
