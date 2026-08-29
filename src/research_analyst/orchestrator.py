@@ -543,16 +543,17 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         now = datetime.now(timezone.utc)
         # Freshness is measured from the WebSocket-owned market database.
         latest = conn.execute(
-            "SELECT max(source_end) FROM source_observations WHERE interval='15m' AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0"
+            "SELECT max(source_end) FROM source_observations WHERE interval='5m' AND source_end <= ? AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0",
+            (now,)
         ).fetchone()[0]
         latest = _parse_timestamp(latest)
         age = round((now - latest).total_seconds() / 60, 1) if latest else None
-        bars30 = conn.execute(
-            "SELECT count(*) FROM source_observations WHERE interval='15m' AND source_end > ? AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0",
-            (now - timedelta(minutes=30),)
+        bars5 = conn.execute(
+            "SELECT count(*) FROM source_observations WHERE interval='5m' AND source_end > ? AND source_end <= ? AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0",
+            (now - timedelta(minutes=5), now)
         ).fetchone()[0] or 0
         latest_str = latest.strftime("%Y-%m-%d %H:%M UTC") if hasattr(latest, "strftime") else str(latest)
-        print(f"Health: age={age}m bars30={bars30} latest={latest_str}")
+        print(f"Health: age={age}m bars5={bars5} latest={latest_str}")
 
         # Wire non-trading health to bot-health-watchdog (sketch implemented)
         try:
@@ -564,12 +565,12 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
                 "bot": "research-analyst",
                 "cycleIntervalMs": 900000,
                 "lastCycleAt": now.isoformat(),
-                "evalsLastCycle": bars30,
+                "evalsLastCycle": LAST_EVALUATION_OBSERVABILITY.get("strategy_evaluations", 0),
                 "dataLatestAt": latest_iso,
                 "dataFreshness": {
-                    "max15mSourceEnd": latest_iso,
+                    "max5mSourceEnd": latest_iso,
                     "ageMin": age,
-                    "barsLast30m": bars30,
+                    "barsLast5m": bars5,
                 },
                 "evaluation": dict(LAST_EVALUATION_OBSERVABILITY),
                 "llm": {"status": "disabled", "enabled": False},
