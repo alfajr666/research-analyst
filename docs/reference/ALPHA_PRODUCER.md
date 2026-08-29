@@ -224,7 +224,7 @@ orchestrator -> raw data + active watchlists -> evaluators -> alpha outbox
 | Process | Cadence | Watchlist | Responsibility |
 | --- | --- | --- | --- |
 | `ws_gateway` | continuous | static/optional rotated universe | Bybit WS 1m/5m/mark; local resampling |
-| `orchestrator` | configured cutoff loop | compact universe | Finalized cutoffs, four compact plugins, admission, delivery |
+| `orchestrator` | configured cutoff loop | strategy-specific assets / static universe | Finalized cutoffs, active plugins, admission, delivery |
 | `pm_sidecar` | 5m cutoff | open executor positions | LLM HOLD/REDUCE/EXIT, fail-safe HOLD |
 | raw Discord batch | 30m UTC windows | captured candidates | Non-blocking observation delivery |
 
@@ -235,9 +235,10 @@ multi-writer contention.
 
 ## Signal Publisher: Alpha and Intent
 
-`signal_publisher.py` persists and delivers the alpha ledger. Selected compact
-candidates also follow the immediate atomic intent path to the fixed `bybit / hyro`
-executor; this is independent of Discord delivery.
+`signal_publisher.py` persists and delivers the alpha ledger. Selected candidates
+follow the immediate atomic intent path to the shared executor inbox, with routing
+determined by each intent's `exchange_id` and `account_id`; this is independent of
+Discord delivery.
 
 ```text
 evaluator outbox event

@@ -256,8 +256,10 @@ path:
 - **Registry:** `strategy_plugins._REGISTRY` keyed by `strategy_id`; `StrategyPlugin`
   = `{id, version, required_datasets, optional_datasets, run}`.
 - **Enable/disable:** `config.STRATEGY_ENABLED_IDS` (allowlist), plus
-  `STRATEGY_ACTIVE_IDS` and `plugin_states`. The four compact strategies are the
-  live admission set; other registered plugins remain available for research.
+  `STRATEGY_ACTIVE_IDS` and `plugin_states`. Active plugins form the live admission
+  set; legacy compact strategies retain their restricted assets while Dual-Zone
+  strategies evaluate the static universe. Other registered plugins remain available
+  for research.
 - **Active/inactive [TARGET nuance]:** currently "enabled" = participates in the
   cutoff. Add a **runtime `active` flag** (per-plugin, toggleable without restart)
   distinct from the compiled `enabled` allowlist, so a strategy can be
@@ -386,8 +388,8 @@ through pruning.
  6. **Active/inactive flag** ✅ — `STRATEGY_ACTIVE_IDS` (env allowlist; empty = all enabled) +
     `plugin_states` table (runtime override: `active`/`inactive`/`paused`). `ensure_plugin_states()`
     seeds defaults; `load_active_plugins()` filters `enabled AND effective_active`. **Legacy v1
-    evaluators** (research-only v2 plugins; the live set is the four compact strategies)
-    are **retired** — kept registered but defaulted to `inactive` so they no longer evaluate; they can
+     evaluators** (research-only plugins outside the active set)
+     are **retired** — kept registered but defaulted to `inactive` so they no longer evaluate; they can
     be re-activated via the flag. Hard-deletion of the legacy code is a separate, optional step.
  7. **LLM PM sidecar** ✅ — `pm_sidecar.py` + `positions_feed`/`pm_advice` tables. Emit-only
     `hold|exit|reduce` + ≤120-char reason on a 5m-cutoff cadence; reads `positions_feed`
