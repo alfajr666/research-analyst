@@ -28,7 +28,7 @@ and venue-aggregate ingestion are not live defaults. Binance is opt-in.
 Market and analyst databases are separate. Use read-only market connections from
 analyst code and never start duplicate writers.
 
-## Live compact set
+## Live strategy set
 
 | ID | Evaluation |
 | --- | --- |
@@ -37,10 +37,16 @@ analyst code and never start duplicate writers.
 | `williams-fractal-scalp-v1` | 1m |
 | `ema9-continuation-stochrsi-v1` | 1m trigger, 5m setup |
 
-The default compact assets are `BTC`, `ETH`, `PAXG`, and `QQQ`. Registration is
+The live static universe is `symbols/static_universe.json` and currently contains
+92 Bybit-compatible bases. Legacy compact strategies retain their strategy-specific
+asset restrictions; Dual-Zone strategies iterate the full static universe. Registration is
 controlled by `STRATEGY_ENABLED_IDS`; activation is also constrained by
 `STRATEGY_ACTIVE_IDS` and `plugin_states`. Registered v2 strategies are not
 implicitly live execution strategies.
+
+Trade intents are written to the shared executor inbox at
+`/home/ubuntu/bybit-executor/data/intents`. Do not create or use a second local intent
+inbox.
 
 ## Candidate lifecycle
 

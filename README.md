@@ -1,7 +1,8 @@
 # Research Analyst
 
 `research-analyst` is a read-and-decide market research service. It consumes
-completed Bybit perpetual bars, evaluates the four live compact strategies,
+completed Bybit perpetual bars and evaluates configured live strategies across the
+92-symbol Bybit-compatible static universe,
 keeps an auditable analyst ledger, publishes advisory alpha, and can hand a
 selected intent to the existing `bybit / hyro` executor. It does not hold
 exchange credentials, size positions, place orders, or claim that an intent was
@@ -14,11 +15,11 @@ Bybit public WS: 1m + 5m kline, mark price
   -> ws_gateway -> market.sqlite3/source_observations
        5m -> local 15m/1h/4h resampling
   -> orchestrator -> finalized cutoff snapshots
-       -> four compact strategies
+        -> configured strategies across the static universe
        -> raw_signals (before admission)
        -> hard admission -> soft context scoring -> live clash resolution
             -> analyst.sqlite3 alpha ledger / Discord alpha outbox
-            -> immediate bybit / hyro TradeIntent, when selected
+             -> immediate routed TradeIntent, when selected
   bybit-executor 1m position snapshots
   -> LLM PM sidecar -> HOLD/REDUCE/EXIT PMDecision files
   raw_signals -> non-blocking 30m Discord observation batch
@@ -39,8 +40,8 @@ small REST warm backfill at startup, but the live stream is Bybit WS.
 
 ## Live strategies
 
-The live compact universe is `BTC`, `ETH`, `PAXG`, and `QQQ` from
-`symbols/static_universe.json`. The active execution-admission set is:
+The live static universe is defined in `symbols/static_universe.json` and currently
+contains 92 Bybit-compatible bases. The active execution-admission set is:
 
 | Strategy | Primary evaluation |
 | --- | --- |
@@ -53,7 +54,7 @@ The live compact universe is `BTC`, `ETH`, `PAXG`, and `QQQ` from
 registration and runtime activation. Other registered v2 plugins are research
 capabilities, not part of the four-strategy live compact admission path.
 
-The four compact strategies are forced to Bybit account `hyro`. The dual-zone
+The four legacy compact strategies are forced to Bybit account `hyro`. The dual-zone
 strategies explicitly route to Bybit account `fundamo`:
 
 | Strategy | Account |
