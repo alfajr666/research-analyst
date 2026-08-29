@@ -16,8 +16,8 @@ Bybit public WS: 1m + 5m kline, mark price
        5m -> local 15m/1h/4h resampling
   -> orchestrator -> finalized cutoff snapshots
         -> configured strategies across the static universe
-       -> raw_signals (before admission)
-       -> hard admission -> soft context scoring -> live clash resolution
+        -> raw_signals (before admission)
+        -> hard admission (including freshness) -> soft context scoring -> live clash resolution
             -> analyst.sqlite3 alpha ledger / Discord alpha outbox
              -> immediate routed TradeIntent, when selected
   bybit-executor 1m position snapshots
@@ -74,13 +74,17 @@ that later fail or are suppressed. Admission then applies only deterministic
 hard safety rules:
 
 - valid finite positive prices and future expiry;
+- market data freshness within `DATA_FRESHNESS_MAX_SECONDS` (default `600`);
 - long: `stop < entry < target`; short: `target < entry < stop`;
 - reward/risk at least `INTENT_MIN_RR` (default `2.0`);
 - stop distance from `0.1%` through `5%` of entry;
 - deterministic candidate identity and required strategy-local data.
 
-HTF bias, confirmed swings, FVGs, order blocks, alignment, freshness, strategy
-evidence, agreement, and contradictions are soft bounded score components.
+HTF bias, confirmed swings, FVGs, order blocks, alignment, strategy evidence,
+agreement, and contradictions are soft bounded score components. Freshness is
+not a score component for admission: it is a hard gate. Missing or stale market
+data rejects the candidate entirely. Health metrics use completed 5m observations
+only and exclude open/future bars.
 Missing context is `unavailable`, not fabricated support and not an automatic
 rejection. Scores rank candidates but cannot rescue a failed hard gate.
 
