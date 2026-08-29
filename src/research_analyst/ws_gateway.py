@@ -31,6 +31,7 @@ import polars as pl
 
 import config
 from strategy_v2_context import resample_ohlcv
+from evaluation_trigger import publish as publish_evaluation_trigger
 
 
 MARKET_KIND = "usdt_perp"
@@ -482,10 +483,14 @@ async def writer_task(queue: asyncio.Queue, bases: List[str], ws_source: str) ->
                 batch.append(item)
                 if len(batch) >= 500:
                     _executemany_rows(conn, batch)
+                    for cutoff in {r["source_end"] for r in batch if r.get("interval") == "5m"}:
+                        publish_evaluation_trigger(cutoff)
                     batch.clear()
             except asyncio.TimeoutError:
                 if batch:
                     _executemany_rows(conn, batch)
+                    for cutoff in {r["source_end"] for r in batch if r.get("interval") == "5m"}:
+                        publish_evaluation_trigger(cutoff)
                     batch.clear()
                 if time.monotonic() - last_resample >= 60:
                     resample_and_persist(conn, bases, datetime.now(timezone.utc), ws_source)

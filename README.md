@@ -167,8 +167,14 @@ are observation-only and never go to Telegram or the executor.
 
 Production services are managed by the host's `oxmgr` definitions: one
 `ws_gateway`, one orchestrator, and one PM sidecar role. The repository's
-`ecosystem.config.js` is retired and must not be used to resurrect PM2
-processes. Run only one owner for each database.
+orchestrator consumes durable completed-5m triggers from the WebSocket gateway.
+Run only one owner for each database.
+
+The production evaluation path is event-driven: the gateway publishes one
+deduplicated trigger after each completed 5m bar is committed, and the
+orchestrator evaluates that explicit cutoff. There is no timer-based evaluation
+fallback. Trigger claims have a lease, failed work is retried up to the configured
+limit, and stranded claims are recovered after restart.
 
 ## Setup and verification
 
@@ -177,7 +183,7 @@ cp .env.example .env
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
 ./venv/bin/python src/research_analyst/config.py
-./venv/bin/python src/research_analyst/orchestrator.py --once
+./venv/bin/python src/research_analyst/orchestrator.py --once  # controlled manual run
 ./venv/bin/python -m pytest -q
 git diff --check
 ```

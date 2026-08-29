@@ -57,7 +57,11 @@ BINANCE_OI_DISCORD_SKIP_EMPTY = os.getenv("BINANCE_OI_DISCORD_SKIP_EMPTY", "true
 # Config Settings
 MARKET_DB_PATH = os.getenv("MARKET_DB_PATH", str(DEFAULT_DB_DIR / "market.sqlite3"))
 ANALYST_DB_PATH = os.getenv("ANALYST_DB_PATH", str(DEFAULT_DB_DIR / "analyst.sqlite3"))
-INGEST_INTERVAL_MINS = int(os.getenv("INGEST_INTERVAL_MINS", "15"))
+INGEST_INTERVAL_MINS = int(os.getenv("INGEST_INTERVAL_MINS", "5"))
+EVALUATION_TRIGGER_DIR = Path(os.getenv("EVALUATION_TRIGGER_DIR", str(DEFAULT_DB_DIR / "evaluation_triggers")))
+EVALUATION_RECOVERY_SCAN_SECONDS = int(os.getenv("EVALUATION_RECOVERY_SCAN_SECONDS", "5"))
+EVALUATION_LEASE_SECONDS = int(os.getenv("EVALUATION_LEASE_SECONDS", "600"))
+EVALUATION_MAX_RETRIES = int(os.getenv("EVALUATION_MAX_RETRIES", "5"))
 MIN_CONVICTION = os.getenv("MIN_CONVICTION", "LOW")
 DAILY_BRIEF_TIME_WITA = os.getenv("DAILY_BRIEF_TIME_WITA", "08:00")
 FUTURES_RETENTION_DAYS = int(os.getenv("FUTURES_RETENTION_DAYS", "365"))
@@ -130,12 +134,12 @@ BINANCE_OI_10M_HISTORY_BARS = int(os.getenv("BINANCE_OI_10M_HISTORY_BARS", "672"
 BINANCE_OI_10M_DISCORD_ENABLED = os.getenv("BINANCE_OI_10M_DISCORD_ENABLED", "true").lower() == "true"
 BINANCE_OI_10M_FEED_MERGE_HOURLY = os.getenv("BINANCE_OI_10M_FEED_MERGE_HOURLY", "true").lower() == "true"
 
-# Static agreed symbol universe (sourced from nautilus trading agent CRYPTO_STATIC).
+# Static agreed symbol universe from the approved tradeable-assets snapshot.
 # Persisted in the repo at symbols/static_universe.json so it is version-controlled and
 # survives restarts/prunes. Canonical bases (e.g. BTC); expand to XUSDT perps at load time.
 STATIC_SYMBOLS_PATH = os.getenv("STATIC_SYMBOLS_PATH", str(BASE_DIR / "symbols" / "static_universe.json"))
 STATIC_SYMBOLS_OVERRIDE = os.getenv("STATIC_SYMBOLS", "").strip()
-# Universe mode for WS/eval: "static" (nautilus list only), "rotated" (rotation feed only),
+# Universe mode for WS/eval: "static" (approved list only), "rotated" (rotation feed only),
 # "both" (static + rotated union).
 WS_SYMBOL_SOURCE = os.getenv("WS_SYMBOL_SOURCE", "static").strip().lower()
 # WS provider toggles. Bybit is the default public source; Binance is opt-in/off.

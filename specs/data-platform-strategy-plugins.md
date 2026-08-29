@@ -5,7 +5,7 @@
 Historical platform design, retained for schema and plugin-contract reference.
 The current operational truth is `README.md` and `agent.md`: SQLite is split
 between the Bybit WS market writer and analyst writer, and the four compact
-strategies own the live admission path. Earlier CoinAnalyze, PM2, and multi-target
+strategies own the live admission path. Earlier CoinAnalyze and multi-target
 deployment language below is superseded where it conflicts with those documents.
 
 ## Problem Statement
@@ -241,14 +241,14 @@ This work does not redesign downstream signal-producer behavior:
 
 ### Runtime topology
 
-PM2 runs:
+The runtime manager runs:
 
 1. `orchestrator` — sole writer of the market database
 2. `signal-publisher` — sole writer of the alpha ledger
 
 Binance OI rotation is united under the orchestrator:
 
-- remove `binance-oi-rotation-worker` from PM2
+- remove `binance-oi-rotation-worker` from the runtime manager
 - preserve external behavior: hourly completed-interval scan and atomic bot
   discovery feed file
 - bots continue consuming the feed file
@@ -452,7 +452,7 @@ contracts are recorded as unavailable rather than failing the cycle.
 
 ### Migration sequence
 
-1. Fix topology: remove separate Binance OI worker from PM2; orchestrator owns
+1. Fix topology: remove separate Binance OI worker from the runtime manager; orchestrator owns
    the scan and feed publication.
 2. Split market/alpha schema initialization.
 3. Add `source_observations`, cutoff runs, request log, and feature tables.

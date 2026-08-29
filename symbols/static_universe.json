@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "description": "Static agreed symbol universe for research-analyst WS/eval. Sourced from the nautilus trading agent's CRYPTO_STATIC tradeable assets. Canonical bases; expand to XUSDT for Binance/Bybit perps at load time.",
-  "source": "propr_python.tradeable_assets (CRYPTO) via nautilus-trading-agent",
+  "description": "Static agreed symbol universe for research-analyst WS/eval. Sourced from the approved CRYPTO tradeable-assets snapshot. Canonical bases; expand to XUSDT for Binance/Bybit perps at load time.",
+  "source": "approved propr_python.tradeable_assets snapshot",
   "generated_at": "2026-08-28T13:43:03.745971+00:00",
   "count": 92,
   "cap_target": 150,
-  "note": "Nautilus CRYPTO_STATIC currently yields 97 bases. To reach 150, extend this list (e.g. add HIP3-mapped or additional approved bases) \u2014 do not invent symbols.",
+  "note": "The approved snapshot currently yields 97 bases. To reach 150, extend this list with additional approved bases \u2014 do not invent symbols.",
   "symbols": [
     "AAVE",
     "ADA",

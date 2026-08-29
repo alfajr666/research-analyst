@@ -71,7 +71,7 @@ For research-analyst (orchestrator):
      id: 'research-analyst',
      label: 'research-analyst',
      healthPath: '/home/ubuntu/research-analyst/data/health.json',
-     pm2Names: ['orchestrator'],
+      processNames: ['research-analyst-orchestrator'],
      defaultIntervalMs: 900_000,
      isTradingBot: false
    }
@@ -91,10 +91,10 @@ For research-analyst (orchestrator):
      LLM_PROVIDER=openrouter  # may need small adapter if current code assumes openai
    - Optional: use LLM in health writer to generate a short "healthSummary" field for alerts (e.g. "Freshness good, 3 CA 429s on ohlcv but core ok").
 
-5. PM2 / ecosystem:
+5. Process manager:
    - Ensure data/ dir exists.
    - Add to research-analyst ecosystem if separate.
-   - Watchdog already monitors pm2 'orchestrator'.
+   - Watchdog monitors the configured research-analyst process.
 
 6. Migration / backcompat:
    - Keep printing the "Health: ..." line in orchestrator logs for humans.

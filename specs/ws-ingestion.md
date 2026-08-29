@@ -8,19 +8,19 @@ static universe
 static universe (plus optional rotation). Evaluators keep reading the same
 `source_observations` tables; only the ingestion path changes.
 
-## Static universe (persistent, from nautilus)
+## Static universe (persistent, approved snapshot)
 
-The agreed symbol list is **sourced from the nautilus trading agent** (`propr_python.tradeable_assets`
-CRYPTO type = nautilus `CRYPTO_STATIC`) and persisted in the repo at
+The agreed symbol list is sourced from the approved `propr_python.tradeable_assets`
+CRYPTO snapshot and persisted in the repo at
 **`symbols/static_universe.json`** (version-controlled, survives restarts/prunes). It stores
 canonical bases (e.g. `BTC`); `config.expand_perp_symbols(base, venue)` maps them to
 `BTCUSDT` perps per venue at load time.
 
 - Loaded via `config.load_static_symbols()` (env override `STATIC_SYMBOLS` comma list or
   `STATIC_SYMBOLS_PATH`).
-- Current nautilus source yields **97 bases** (not 150). To reach 150, extend the JSON —
+- The approved snapshot yields **97 bases** (not 150). To reach 150, extend the JSON —
   do not invent symbols. The file records `count` and `cap_target` for audit.
-- `WS_SYMBOL_SOURCE` selects the eval universe: `static` (nautilus list), `rotated`
+- `WS_SYMBOL_SOURCE` selects the eval universe: `static` (approved list), `rotated`
   (rotation feed only), or `both` (union).
 
 ## Defaults

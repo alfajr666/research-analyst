@@ -13,7 +13,7 @@ A research-grade, venue-neutral **discovery + strategy-evaluation** engine for
 crypto perpetuals. It continuously:
 
 1. Maintains a market-data feed for a **static 97-symbol universe** (sourced from
-   the nautilus trading agent), with optional **rotated symbols** when enabled.
+    an approved tradeable-assets snapshot), with optional **rotated symbols** when enabled.
 2. Evaluates **strategies as plugins** on **1m / 5m / 15m** bars, using **HTF
    (1h/4h) swing + FVG/OB** context resampled from the base feed.
 3. Emits a **trade intent** per evaluation — a falsifiable directional thesis
@@ -37,7 +37,7 @@ The engine **never holds exchange credentials and never places orders**.
                  └───────────────────────────┬─────────────────────────────┘
                                              │ source_observations (ws_bars)
                                              ▼
-   static_universe.json (nautilus 97)  ──►  discovery / universe selection
+   static_universe.json (approved snapshot, 97)  ──►  discovery / universe selection
                                              │
                                              ▼
                  ┌─────────────────────────────────────────────────────────┐
@@ -84,7 +84,7 @@ The engine **never holds exchange credentials and never places orders**.
 | `llm_client.py` + `research_*.py` | Provider-neutral bounded LLM client + research coordinator (advisory only today). |
 | `backfill.py`, `bootstrap_trend_history.py` | Warm 14-day history for newly selected symbols. |
 | `specs/` | ADR-style specs, including `ws-ingestion.md` **[TARGET]** and `llm-position-sidecar.md` **[TARGET]**. |
-| `symbols/static_universe.json` | **Persistent static universe** (nautilus `CRYPTO_STATIC`, 97 bases). Version-controlled. |
+| `symbols/static_universe.json` | **Persistent static universe** (approved CRYPTO snapshot, 97 bases). Version-controlled. |
 
 ---
 
@@ -190,8 +190,8 @@ the executor.
 ## 6. Static universe & rotation
 
 - **Static (97 symbols).** `symbols/static_universe.json` is the persisted,
-  git-tracked source, generated from nautilus `propr_python.tradeable_assets`
-  `CRYPTO` type (= nautilus `CRYPTO_STATIC`). Canonical bases (e.g. `BTC`).
+  git-tracked source, generated from an approved `propr_python.tradeable_assets`
+  `CRYPTO` type. Canonical bases (e.g. `BTC`).
   - `config.load_static_symbols()` reads it (env override `STATIC_SYMBOLS`, or
     `STATIC_SYMBOLS_PATH`).
   - `config.expand_perp_symbols(base, venue)` → `BTCUSDT` perps for Bybit/Binance.
@@ -408,10 +408,10 @@ through pruning.
 
 ## 17. Open items
 
-- **Count:** nautilus `CRYPTO_STATIC` currently yields **97** bases, not 150.
+- **Count:** the approved CRYPTO snapshot currently yields **97** bases, not 150.
   Working set = 97 unless the universe is extended.
 - **Swing levels** are enrichment inside `structure_zones` (scored like FVG/OB), not
   a standalone detector.
 - **Binance WS** off by default; enable only after Bybit path is proven.
 - **PM sidecar** requires the executor to publish `positions_feed`; define that
-  contract with the nautilus trading team.
+  contract with the approved universe owner.

@@ -341,7 +341,7 @@ def check_and_alert_confluences(conn):
         except Exception as e:
             print(f"  Error checking alert for {underlying}: {e}")
 
-def _run_pipeline():
+def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] | None = None):
     """Runs the full sequential ingestion, scanning, and alerts pipeline."""
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n==========================================")
@@ -357,7 +357,7 @@ def _run_pipeline():
     # Cutoff + plugins (data platform v2 path). Legacy direct evaluators cleaned up post cutover.
     try:
         from strategy_v2_context import completed_cycle
-        cutoff_at = completed_cycle(datetime.now(timezone.utc))
+        cutoff_at = cutoff_at or completed_cycle(datetime.now(timezone.utc))
         cutoff_id = _get_or_create_cutoff_run(cutoff_at)
         # finalize now that ingestion complete
         conn = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
@@ -471,7 +471,13 @@ def _run_pipeline():
 
         from strategy_plugins import invoke_plugins_for_intervals, ensure_plugin_states
         ensure_plugin_states(config.ANALYST_DB_PATH)
-        pres = invoke_plugins_for_intervals(config.ANALYST_DB_PATH, now=datetime.now(timezone.utc), market_db_path=config.MARKET_DB_PATH)
+        pres = invoke_plugins_for_intervals(
+            config.ANALYST_DB_PATH,
+            now=datetime.now(timezone.utc),
+            market_db_path=config.MARKET_DB_PATH,
+            eval_intervals=eval_intervals,
+            cutoff_at=cutoff_at,
+        )
         strategies = list(config.STRATEGY_ENABLED_IDS)
         symbols = sorted(config.load_static_symbols())
         per_interval = {}
@@ -624,13 +630,13 @@ def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = Non
         print(f"Error recording pipeline metrics: {metrics_error}", file=sys.stderr)
 
 
-def run_pipeline():
+def run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] | None = None):
     """Run the deterministic pipeline and record its durable operational state."""
     config.init_analyst_db()
     run_id = str(uuid4())
     _start_pipeline_run(run_id, datetime.now(timezone.utc))
     try:
-        _run_pipeline()
+        _run_pipeline(cutoff_at=cutoff_at, eval_intervals=eval_intervals)
     except Exception as error:
         _finish_pipeline_run(run_id, "failed", error)
         raise
@@ -671,22 +677,26 @@ def main():
     else:
         global DAEMON_MODE
         DAEMON_MODE = True
-        interval_secs = config.INGEST_INTERVAL_MINS * 60
-        print(f"Starting orchestrator daemon. Loop interval: {config.INGEST_INTERVAL_MINS} minutes ({interval_secs}s)...")
-        next_pipeline_at = 0.0
+        from evaluation_trigger import claim, pending, retry
+        print("Starting orchestrator daemon in 5m event-triggered mode...", flush=True)
         while True:
-            now = time.monotonic()
-            if now >= next_pipeline_at:
-                start_time = time.monotonic()
-                try:
-                    run_pipeline()
-                    trigger_raw_signal_batch()
-                except KeyboardInterrupt:
-                    print("backoff interrupted", flush=True)
-                except Exception as e:
-                    print(f"Critical error in orchestrator pipeline: {e}", file=sys.stderr)
-                next_pipeline_at = start_time + interval_secs
-            time.sleep(min(30, max(1, next_pipeline_at - time.monotonic())))
+            triggers = pending(config.EVALUATION_TRIGGER_DIR)
+            if not triggers:
+                time.sleep(config.EVALUATION_RECOVERY_SCAN_SECONDS)
+                continue
+            trigger = claim(triggers[0])
+            try:
+                payload = json.loads(trigger.read_text(encoding="utf-8"))
+                cutoff_at = datetime.fromisoformat(payload["cutoff_at"].replace("Z", "+00:00"))
+                run_pipeline(cutoff_at=cutoff_at, eval_intervals=["5m"])
+                trigger.rename(trigger.with_suffix(".processed"))
+                trigger_raw_signal_batch()
+            except KeyboardInterrupt:
+                raise
+            except Exception as error:
+                print(f"Critical error processing {trigger.name}: {error}", file=sys.stderr)
+                retry(trigger, str(error), config.EVALUATION_TRIGGER_DIR)
+                time.sleep(config.EVALUATION_RECOVERY_SCAN_SECONDS)
 
 if __name__ == "__main__":
     main()

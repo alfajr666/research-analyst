@@ -475,7 +475,8 @@ def invoke_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime
 def invoke_plugins_for_intervals(db_path: str | Path, now: datetime | None = None,
                                   require_finalized: bool = True,
                                   eval_intervals: list[str] | None = None,
-                                  market_db_path: str | Path | None = None) -> Dict[str, Dict[str, object]]:
+                                  market_db_path: str | Path | None = None,
+                                  cutoff_at: datetime | None = None) -> Dict[str, Dict[str, object]]:
     """Run enabled plugins on every eval interval (1m/5m/15m by default).
     Each interval gets its own finalized cutoff_run and its own snapshot carrying
     `eval_interval`, so plugins evaluate on the correct bars. HTF (1h/4h) is NOT
@@ -485,7 +486,7 @@ def invoke_plugins_for_intervals(db_path: str | Path, now: datetime | None = Non
     now = now or datetime.now(timezone.utc)
     out: Dict[str, Dict[str, object]] = {}
     for iv in eval_intervals:
-        cutoff = completed_cycle_for(now, iv)
+        cutoff = cutoff_at if cutoff_at is not None and iv == "5m" else completed_cycle_for(now, iv)
         cutoff_id = _interval_cutoff_id(iv, cutoff)
         _ensure_cutoff_run_finalized(db_path, cutoff_id, iv, cutoff)
         snapshot = _build_snapshot(db_path, cutoff_id, now, market_db_path)

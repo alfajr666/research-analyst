@@ -92,21 +92,23 @@ delays the immediate executor intent path. Treat it as observation-only.
 ## Operations and safety
 
 Use host `oxmgr` definitions for one gateway, one orchestrator, and one PM
-sidecar role. Do not use the retired PM2 ecosystem file or launch duplicate
-database writers. Keep intent delivery off until paper execution and protection
-checks pass. Keep secrets and runtime artifacts untracked.
+sidecar role. The gateway publishes durable completed-5m evaluation triggers and
+the orchestrator consumes them; there is no timer-based evaluation fallback. Do
+not launch duplicate database writers. Keep intent delivery off until paper
+execution and protection checks pass. Keep secrets and runtime artifacts
+untracked.
 
 ```bash
 ./venv/bin/python src/research_analyst/config.py
-./venv/bin/python src/research_analyst/orchestrator.py --once
+./venv/bin/python src/research_analyst/orchestrator.py --once  # controlled manual run
 ./venv/bin/python -m pytest -q
 git diff --check
 ```
 
 When diagnosing missing output, inspect static universe and active IDs, fresh
-completed observations, cutoff/features, plugin results, raw-signal statuses,
-alpha outbox/ledger, executor inbox, snapshots, and PM decisions. Report
-advisory, selected, accepted, and filled as distinct states.
+completed observations, trigger spool/claims, cutoff/features, plugin results,
+raw-signal statuses, alpha outbox/ledger, executor inbox, snapshots, and PM
+decisions. Report advisory, selected, accepted, and filled as distinct states.
 
 ## Message contracts
 
