@@ -96,17 +96,21 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
 
 
 def _prefer_rows(raw_rows: List[Dict]) -> List[Dict]:
-    """For each timestamp pick CA usable if present else venue_agg_v1."""
+    """For each timestamp prefer configured live WS data, then failover."""
     from collections import defaultdict
     by_ts: Dict[datetime, List[Dict]] = defaultdict(list)
     for r in raw_rows:
         by_ts[r["timestamp"]].append(r)
     preferred = []
     for ts, lst in sorted(by_ts.items()):
-        ca = [x for x in lst if x["source"] == "coinalyze"]
-        if ca:
-            # take first (or last); assume one
-            preferred.append(ca[0])
+        if getattr(config, "COINANALYZE_EVAL_ENABLED", False):
+            ca = [x for x in lst if x["source"] == "coinalyze"]
+            if ca:
+                preferred.append(ca[0])
+                continue
+        ws = [x for x in lst if str(x["source"]).endswith("_ws")]
+        if ws:
+            preferred.append(ws[0])
             continue
         vagg = [x for x in lst if x["source"] == getattr(config, "FAILOVER_SOURCE_NAME", "venue_agg_v1")]
         if vagg:

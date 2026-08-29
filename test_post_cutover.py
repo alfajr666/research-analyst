@@ -15,11 +15,17 @@ class PostCutoverContractTests(unittest.TestCase):
     """
 
     def setUp(self):
+        self.prev_enabled = config.STRATEGY_ENABLED_IDS
+        self.prev_active = config.STRATEGY_ACTIVE_IDS
+        config.STRATEGY_ENABLED_IDS = ("accumulation-base-v2",)
+        config.STRATEGY_ACTIVE_IDS = config.STRATEGY_ENABLED_IDS
         self.directory = tempfile.TemporaryDirectory()
         self.db = os.path.join(self.directory.name, "cutover.db")
         config.init_db(self.db)
 
     def tearDown(self):
+        config.STRATEGY_ENABLED_IDS = self.prev_enabled
+        config.STRATEGY_ACTIVE_IDS = self.prev_active
         self.directory.cleanup()
 
     def test_plugins_produce_via_outbox_not_legacy(self):

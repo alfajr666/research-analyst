@@ -28,12 +28,14 @@ Bybit WS (on) / Binance WS (off): 1m + 5m kline + markPrice
 
 - **Universe:** static 97-symbol list (`symbols/static_universe.json`); optional
   Binance OI rotation members via `WS_SYMBOL_SOURCE=rotated|both`.
-- **Ingestion:** WebSocket (`ws_gateway`), Bybit on / Binance off; `1m`+`5m` streamed,
-  `15m/1h/4h` resampled locally. Bars stamped `data_purity=pure_ws`.
-- **Strategies:** v2 plugins (`accumulation-base-v2`, `impulse-ignition-v2`,
-  `continuation-breakout-v2`) + `rsi-reclaim-v1` + `liquidity-sweep-reversal-v1`
-  (opt-in). Evaluated on `1m/5m/15m`; `1h/4h` are enrichment only. Enabled via
-  `STRATEGY_ENABLED_IDS` (registry) and `STRATEGY_ACTIVE_IDS` (runtime toggle).
+- **Ingestion:** Bybit WebSocket only for live evaluation; Binance and CoinAnalyze
+  live ingestion are off. `1m`+`5m` are streamed and `15m/1h/4h` are resampled
+  locally. CoinAnalyze remains available only for historical tooling when explicitly
+  enabled with `COINANALYZE_EVAL_ENABLED=true`.
+- **Strategies:** the four compact ports (`failed-break-v3`, `bb-rsi-meanrev-v1`,
+  `williams-fractal-scalp-v1`, `ema9-continuation-stochrsi-v1`) are the default
+  enabled set, restricted to BTC/ETH/PAXG/QQQ. Enabled via `STRATEGY_ENABLED_IDS`
+  and runtime-controlled via `STRATEGY_ACTIVE_IDS`.
 - **Outboxes:** advisory alpha event → `data/alpha_outbox/` → Discord; trade intent
   → `INTENT_INBOX` → `bybit-executor`.
 

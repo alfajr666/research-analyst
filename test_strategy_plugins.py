@@ -10,12 +10,14 @@ import config
 class StrategyPluginRegistryTests(unittest.TestCase):
     def setUp(self):
         self.prev_enabled = getattr(config, "STRATEGY_ENABLED_IDS", ())
+        self.prev_active = getattr(config, "STRATEGY_ACTIVE_IDS", ())
         self.directory = tempfile.TemporaryDirectory()
         self.db = Path(self.directory.name) / "m.db"
         config.init_db(self.db)
 
     def tearDown(self):
         config.STRATEGY_ENABLED_IDS = self.prev_enabled
+        config.STRATEGY_ACTIVE_IDS = self.prev_active
         self.directory.cleanup()
 
     def test_unknown_strategy_id_fails_startup(self):
@@ -42,6 +44,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
 
     def test_plugin_failure_is_isolated(self):
         config.STRATEGY_ENABLED_IDS = ("accumulation-base-v2", "impulse-ignition-v2")
+        config.STRATEGY_ACTIVE_IDS = config.STRATEGY_ENABLED_IDS
         from strategy_plugins import load_enabled_plugins, invoke_plugins_for_cutoff
         plugins = load_enabled_plugins()
 

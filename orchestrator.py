@@ -399,11 +399,14 @@ def _run_pipeline():
         except Exception as e:
             print(f"Error during hourly scan: {e}", file=sys.stderr)
 
-    # 3. Ingest futures data (this now dynamically loads scanned symbols)
-    try:
-        ingest_coinalyze()
-    except Exception as e:
-        print(f"Error during CoinAnalyze ingestion: {e}", file=sys.stderr)
+    # CoinAnalyze remains available for historical tooling, not live evaluation.
+    if getattr(config, "COINANALYZE_EVAL_ENABLED", False):
+        try:
+            ingest_coinalyze()
+        except Exception as e:
+            print(f"Error during CoinAnalyze ingestion: {e}", file=sys.stderr)
+    else:
+        print("CoinAnalyze live ingestion disabled; using Bybit WebSocket data.")
 
     # 3b. Venue agg failover (guarded by MARKET_FAILOVER_ENABLED=false by default)
     try:

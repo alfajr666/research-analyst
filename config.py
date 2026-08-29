@@ -118,6 +118,7 @@ WS_SYMBOL_SOURCE = os.getenv("WS_SYMBOL_SOURCE", "static").strip().lower()
 # WS provider toggles. Bybit is the default public source; Binance is opt-in/off.
 WS_BYBIT_ENABLED = os.getenv("WS_BYBIT_ENABLED", "true").lower() == "true"
 WS_BINANCE_ENABLED = os.getenv("WS_BINANCE_ENABLED", "false").lower() == "true"
+COINANALYZE_EVAL_ENABLED = os.getenv("COINANALYZE_EVAL_ENABLED", "false").lower() == "true"
 WS_STREAM_TIMEFRAMES = os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").strip().lower().split(",")
 WS_MARKPRICE_ENABLED = os.getenv("WS_MARKPRICE_ENABLED", "true").lower() == "true"
 # Shard size for Bybit (per-connection topic cap). Binance uses one combined conn.
@@ -310,9 +311,8 @@ def init_binance_oi_db(db_path: str | Path | None = None):
 STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
         "STRATEGY_ENABLED_IDS",
-        "accumulation-base-v1,impulse-ignition-v1,continuation-breakout-balanced-v1,"
-        "accumulation-base-v2,impulse-ignition-v2,continuation-breakout-v2,"
-        "liquidity-sweep-reversal-v1"
+        "failed-break-v3,bb-rsi-meanrev-v1,williams-fractal-scalp-v1,"
+        "ema9-continuation-stochrsi-v1"
     ).split(",") if s.strip()
 )
 
