@@ -365,7 +365,13 @@ def _run_pipeline():
     conn = config.get_db_connection()
     last_scan = conn.execute("SELECT MAX(timestamp) FROM scanner_history").fetchone()[0]
     conn.close()
-    elapsed = (datetime.now(timezone.utc) - last_scan).total_seconds() if last_scan else 3601
+    elapsed = (
+        (datetime.now(timezone.utc) - last_scan).total_seconds()
+        if config.LEGACY_SCANNER_ENABLED and last_scan
+        else (3601 if config.LEGACY_SCANNER_ENABLED else 0)
+    )
+    if not config.LEGACY_SCANNER_ENABLED:
+        print("Legacy REST scanner disabled; using WebSocket universe.")
     if elapsed >= 3600:
         print("Running hourly market scanner...")
         try:

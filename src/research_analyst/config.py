@@ -492,6 +492,7 @@ OPENMARKET_RETENTION_DAYS = int(os.getenv("OPENMARKET_RETENTION_DAYS", "30"))
 # CA + venue-aggregate failover for 15m backbone (specs/ca-truth-venue-agg-failover.md)
 # Shipped dark (enabled=false). Core=OPENMARKET_PERMANENT_ASSETS; hot expansion capped.
 MARKET_FAILOVER_ENABLED = os.getenv("MARKET_FAILOVER_ENABLED", "false").lower() == "true"
+LEGACY_SCANNER_ENABLED = os.getenv("LEGACY_SCANNER_ENABLED", "false").lower() == "true"
 
 # Emit classification (normative, see spec)
 PRICE_STRUCTURE_STRATEGY_IDS = {
