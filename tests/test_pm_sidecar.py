@@ -149,6 +149,44 @@ class PMSidecarTests(unittest.TestCase):
         self.assertEqual(
             len(pm_sidecar._load_open_positions_from_snapshots(str(snap))), 1)
 
+    def test_snapshot_without_strategy_uses_explicit_unmanaged_identity(self):
+        snap = Path(self.directory.name) / "unmanaged-snaps" / "bybit" / "hyro"
+        snap.mkdir(parents=True)
+        (snap / "latest.json").write_text(json.dumps({"positions": [{
+            "position_id": "external-1", "symbol": "SOLUSDT", "side": "long",
+            "status": "OPEN", "quantity": 1, "entry_price": 100,
+            "original_json": "{}",
+        }]}))
+
+        out = pm_sidecar._load_open_positions_from_snapshots(str(snap.parent.parent))
+
+        self.assertEqual(out[0]["strategy_id"], pm_sidecar.UNMANAGED_STRATEGY_ID)
+
+    def test_unmanaged_snapshot_is_neutral_hold_without_llm_call(self):
+        config.PM_SIDECAR_ENABLED = True
+        snap = Path(self.directory.name) / "unmanaged-pm" / "bybit" / "hyro"
+        snap.mkdir(parents=True)
+        (snap / "latest.json").write_text(json.dumps({"positions": [{
+            "position_id": "external-2", "symbol": "SOLUSDT", "side": "long",
+            "status": "OPEN", "quantity": 1, "entry_price": 100,
+            "original_json": "{}",
+        }]}))
+        decision_dir = Path(self.directory.name) / "unmanaged-decisions"
+        prev_snap = config.EXECUTOR_SNAPSHOT_DIR
+        prev_dec = config.EXECUTOR_DECISION_DIR
+        config.EXECUTOR_SNAPSHOT_DIR = str(snap.parent.parent)
+        config.EXECUTOR_DECISION_DIR = str(decision_dir)
+        try:
+            result = pm_sidecar.run_once(
+                self.db, now=datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc))
+            self.assertEqual(result["advices"], 1)
+            payload = json.loads(next(decision_dir.glob("*.json")).read_text())
+            self.assertEqual(payload["action"], "HOLD")
+            self.assertIn("unmanaged", payload["reason"])
+        finally:
+            config.EXECUTOR_SNAPSHOT_DIR = prev_snap
+            config.EXECUTOR_DECISION_DIR = prev_dec
+
     def test_write_decision_file_reduce_fraction(self):
         decision_dir = Path(self.directory.name) / "dec"
         prev = getattr(config, "EXECUTOR_DECISION_DIR", "")

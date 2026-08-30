@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from alpha_outbox import dedupe_key, write_event
@@ -32,6 +33,15 @@ class AlphaOutboxTests(unittest.TestCase):
                 written = json.load(handle)
             self.assertEqual(written["dedupe_key"], dedupe_key(_event()))
             self.assertIn("alpha_id", written)
+
+    def test_duplicate_write_retries_existing_intent_delivery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = Path(directory)
+            with patch("alpha_outbox._maybe_deliver_intent") as deliver:
+                write_event(_event(), outbox)
+                write_event(_event(), outbox)
+
+            self.assertEqual(deliver.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -94,6 +94,11 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         try:
             os.link(temporary, destination)
         except FileExistsError:
+            try:
+                existing = json.loads(destination.read_text(encoding="utf-8"))
+                _maybe_deliver_intent(existing)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                print(f"duplicate alpha outbox event unreadable: {exc}")
             return False, destination
         _maybe_deliver_intent(payload)
         if raw_id:

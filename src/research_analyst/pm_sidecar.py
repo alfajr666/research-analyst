@@ -36,6 +36,9 @@ class InvalidPMResponseError(ValueError):
     """The model response was not a usable PM decision object."""
 
 
+UNMANAGED_STRATEGY_ID = "unmanaged"
+
+
 def _log_event(event: str, **fields: Any) -> None:
     print(json.dumps({"event": event, **fields}, sort_keys=True), flush=True)
 
@@ -148,7 +151,7 @@ def _load_open_positions_from_snapshots(snapshot_dir) -> List[Dict[str, Any]]:
                 "entry": p.get("entry_price"),
                 "size": p.get("quantity"),
                 "opened_at": p.get("updated_at"),
-                "strategy_id": original.get("strategy_id") or (original.get("metadata") or {}).get("strategy_id"),
+                "strategy_id": original.get("strategy_id") or (original.get("metadata") or {}).get("strategy_id") or UNMANAGED_STRATEGY_ID,
                 "current_pnl": None,
                 "status": p.get("status"),
                 "exchange_id": exchange_id,
@@ -457,6 +460,17 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
         written = 0
         for pos in positions:
             asset = pos["asset"]
+            if pos.get("strategy_id") == UNMANAGED_STRATEGY_ID:
+                reason = "unmanaged position; no originating intent for PM analysis"
+                _log_event("pm_unmanaged_position_hold",
+                           strategy_id=UNMANAGED_STRATEGY_ID, asset=asset,
+                           position_id=pos.get("position_id"), reason=reason,
+                           cutoff=cutoff.isoformat())
+                if _emit_advice(conn, pos, "hold", reason, None, None, cutoff, now):
+                    advices += 1
+                    if _write_decision_file(pos, "hold", reason, cutoff, now):
+                        written += 1
+                continue
             intent = _get_active_intent(conn, pos["strategy_id"], asset)
             htf_bias, _ = _htf_bias(market_conn, asset, cutoff)
             ta = _ta_5m(market_conn, asset, cutoff)

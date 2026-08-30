@@ -1,5 +1,7 @@
 # Research Analyst
 
+**Last reviewed:** 2026-08-30
+
 `research-analyst` is a read-and-decide market research service. It consumes
 completed Bybit perpetual bars and evaluates configured live strategies across the
 92-symbol Bybit-compatible static universe,
@@ -103,6 +105,11 @@ instruction. The executor profile selects the entry order policy. The executor
 owns credentials, quantity, risk sizing, leverage, venue precision, portfolio
 gates, orders, fills, lifecycle, hard protective SL, and fixed full-close TP.
 
+Pipeline failures remain retryable and do not acknowledge their gateway trigger.
+After a successful pipeline cycle, the daemon invokes the same signal publisher
+used by the one-shot path; publisher failures are isolated from ingestion and
+remain visible in logs and delivery state.
+
 Each intent is `schema_version: 1` JSON containing `delivery_id`, `source`,
 `exchange_id`, `account_id`, `asset`, unified perpetual `symbol`, normalized
 `direction`, `entry_price`, `stop_loss`, `take_profit`, `take_profit_mode`,
@@ -119,12 +126,18 @@ delay, or suppress an executor intent.
 ## PM sidecar
 
 The PM sidecar is an independent process from the orchestrator and runs both
-LLM and mechanical management on a 1-minute cadence. It reads executor 1m
+LLM and mechanical management on the configured five-minute cadence by default.
+It reads executor 1m
 snapshots from `EXECUTOR_SNAPSHOT_DIR`, joins the originating intent and market
 context, and emits `HOLD`, `REDUCE`, or `EXIT` to `pm_advice` and
 `EXECUTOR_DECISION_DIR`. Missing credentials, timeout, parse failure, or invalid
 output fails safe to `HOLD`. It is emit-only and cannot change entry, stop,
 target, direction, sizing, or executor hard protections.
+
+Positions promoted from an executor snapshot without an originating intent use
+the explicit `unmanaged` strategy identity. The sidecar emits a neutral,
+durable `HOLD` advice and decision for them without an LLM call; it never lets
+an unmanaged position receive an arbitrary `REDUCE` or `EXIT`.
 
 PM logs include a cycle summary and one correlated event per existing LLM request:
 `llm_request_succeeded`, `llm_request_failed`, and `llm_management_decision`.

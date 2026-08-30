@@ -527,6 +527,7 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
                 print(f"Drop err: {de}")
     except Exception as e:
         print(f"Cutoff/plugins error: {e}", file=sys.stderr)
+        raise
 
     # Health summary
     try:
@@ -681,6 +682,12 @@ def main():
                 payload = json.loads(trigger.read_text(encoding="utf-8"))
                 cutoff_at = datetime.fromisoformat(payload["cutoff_at"].replace("Z", "+00:00"))
                 run_pipeline(cutoff_at=cutoff_at, eval_intervals=["5m"])
+                try:
+                    publish_events()
+                except Exception as error:
+                    # Publishing is durable and retried by the next cycle; it
+                    # must not turn a successful market evaluation into a retry.
+                    print(f"Publisher error after successful pipeline: {error}", file=sys.stderr)
                 trigger.rename(trigger.with_suffix(".processed"))
                 trigger_raw_signal_batch()
             except KeyboardInterrupt:
