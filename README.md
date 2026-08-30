@@ -126,6 +126,12 @@ context, and emits `HOLD`, `REDUCE`, or `EXIT` to `pm_advice` and
 output fails safe to `HOLD`. It is emit-only and cannot change entry, stop,
 target, direction, sizing, or executor hard protections.
 
+PM logs include a cycle summary and one correlated event per existing LLM request:
+`llm_request_succeeded`, `llm_request_failed`, and `llm_management_decision`.
+Failure events classify sanitized causes such as `rate_limit`, `timeout`,
+`server_error`, or `invalid_response`; prompts, responses, and credentials are
+not logged.
+
 ## Raw Discord batch
 
 After a completed daemon cycle, raw candidates are published by a daemon thread

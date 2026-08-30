@@ -32,6 +32,28 @@ from strategy_v2_context import (
 )
 
 
+def _log_event(event: str, **fields: Any) -> None:
+    print(json.dumps({"event": event, **fields}, sort_keys=True), flush=True)
+
+
+def _classify_llm_error(exc: Exception) -> Tuple[str, Optional[int]]:
+    status = getattr(exc, "status_code", None)
+    name = type(exc).__name__.lower()
+    if status == 429 or "ratelimit" in name:
+        return "rate_limit", status
+    if status is not None and status >= 500:
+        return "server_error", status
+    if "timeout" in name or isinstance(exc, TimeoutError):
+        return "timeout", status
+    if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
+        return "invalid_response", status
+    if "connection" in name or "connect" in str(exc).lower():
+        return "connection_error", status
+    if status is not None:
+        return "client_error", status
+    return "unknown", status
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -259,10 +281,14 @@ def _build_prompt(pos: Dict[str, Any], intent, htf_bias, ta, swings, rr) -> str:
     )
 
 
-def call_pm_llm(prompt: str) -> Optional[Dict[str, str]]:
+def call_pm_llm(prompt: str, *, request_id: Optional[str] = None,
+                cycle_id: Optional[str] = None, symbol: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Call the configured LLM. Returns {action, reason} or None on any failure."""
+    request_id = request_id or str(uuid.uuid4())
     api_key = getattr(config, "LLM_API_KEY", "") or os.getenv("LLM_API_KEY", "")
     if not api_key:
+        _log_event("llm_request_skipped", request_id=request_id, cycle_id=cycle_id,
+                   symbol=symbol, error_class="missing_api_key")
         return None
     try:
         from openai import OpenAI
@@ -272,7 +298,8 @@ def call_pm_llm(prompt: str) -> Optional[Dict[str, str]]:
     retries = max(0, getattr(config, "PM_LLM_RETRIES", 1))
     timeout = getattr(config, "PM_LLM_TIMEOUT_S", 20)
     base_url = getattr(config, "LLM_BASE_URL", "") or None
-    for _ in range(retries + 1):
+    for attempt in range(1, retries + 2):
+        started = time.monotonic()
         try:
             client = OpenAI(api_key=api_key, base_url=base_url)
             resp = client.chat.completions.create(
@@ -289,8 +316,17 @@ def call_pm_llm(prompt: str) -> Optional[Dict[str, str]]:
             if action not in ("hold", "exit", "reduce"):
                 action = "hold"
             reason = str(data.get("reason", ""))[: getattr(config, "PM_REASON_MAX_CHARS", 120)]
+            _log_event("llm_request_succeeded", request_id=request_id, cycle_id=cycle_id,
+                       symbol=symbol, model=model, attempt=attempt,
+                       duration_ms=round((time.monotonic() - started) * 1000), action=action)
             return {"action": action, "reason": reason}
-        except Exception:
+        except Exception as exc:
+            error = _classify_llm_error(exc)
+            _log_event("llm_request_failed", request_id=request_id, cycle_id=cycle_id,
+                       symbol=symbol, model=model, attempt=attempt,
+                       duration_ms=round((time.monotonic() - started) * 1000),
+                       error_class=error[0], http_status=error[1],
+                       retryable=attempt <= retries)
             continue
     return None
 
@@ -384,6 +420,10 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
             positions = _load_open_positions_from_snapshots(snapshot_dir)
         if not positions:
             positions = _load_open_positions(conn)
+        cycle_id = cutoff.strftime("%Y%m%dT%H%MZ")
+        _log_event("pm_cycle_positions", cycle_id=cycle_id,
+                   position_count=len(positions),
+                   symbols=[p.get("symbol") or p.get("asset") for p in positions])
         advices = 0
         written = 0
         for pos in positions:
@@ -402,7 +442,9 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
             prompt = _build_prompt(pos, intent, htf_bias, ta, swings, rr)
             if mechanical:
                 prompt += "\nMECHANICAL EXIT TRIGGERED. Return veto_mechanical_exit only to hold a reduced position; otherwise return exit."
-            decision = call_pm_llm(prompt)
+            request_id = str(uuid.uuid4())
+            decision = call_pm_llm(prompt, request_id=request_id,
+                                   cycle_id=cycle_id, symbol=pos.get("symbol") or asset)
             if decision is None:
                 action, reason = "hold", "llm unavailable/error; defaulting to hold"
             else:
@@ -414,7 +456,11 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
                 reason = reason or "LLM vetoed mechanical exit"
             if mechanical and action not in ("veto_mechanical_exit", "reduce"):
                 action = "exit"
-            print(json.dumps({"event": "llm_management_decision", "strategy_id": pos.get("strategy_id"), "asset": asset, "position_id": pos.get("position_id"), "mechanical_trigger": bool(mechanical), "action": action, "reason": reason, "cutoff": cutoff.isoformat()}, sort_keys=True))
+            _log_event("llm_management_decision", request_id=request_id,
+                       strategy_id=pos.get("strategy_id"), asset=asset,
+                       position_id=pos.get("position_id"),
+                       mechanical_trigger=bool(mechanical), action=action,
+                       reason=reason, cutoff=cutoff.isoformat())
             if _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, now):
                 advices += 1
                 if _write_decision_file(pos, action, reason, cutoff, now):

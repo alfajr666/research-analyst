@@ -94,6 +94,19 @@ class PMSidecarTests(unittest.TestCase):
     def test_call_pm_llm_returns_none_without_key(self):
         self.assertIsNone(pm_sidecar.call_pm_llm("ignored prompt"))
 
+    def test_llm_error_classification_is_sanitized(self):
+        class RateLimitedError(Exception):
+            status_code = 429
+
+        self.assertEqual(
+            pm_sidecar._classify_llm_error(RateLimitedError("secret prompt")),
+            ("rate_limit", 429),
+        )
+        self.assertEqual(
+            pm_sidecar._classify_llm_error(TimeoutError("secret prompt")),
+            ("timeout", None),
+        )
+
     def test_load_snapshot_positions(self):
         snap = Path(self.directory.name) / "snaps"
         acc = snap / "bybit" / "hyro"
