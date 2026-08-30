@@ -107,6 +107,20 @@ class PMSidecarTests(unittest.TestCase):
             ("timeout", None),
         )
 
+    def test_parse_pm_response_accepts_fenced_or_wrapped_json(self):
+        self.assertEqual(
+            pm_sidecar._parse_pm_response('```json\n{"action":"reduce","reason":"trim"}\n```'),
+            {"action": "reduce", "reason": "trim"},
+        )
+        self.assertEqual(
+            pm_sidecar._parse_pm_response('Decision: {"action":"exit","reason":"invalidated"}'),
+            {"action": "exit", "reason": "invalidated"},
+        )
+
+    def test_parse_pm_response_rejects_non_json(self):
+        with self.assertRaises(pm_sidecar.InvalidPMResponseError):
+            pm_sidecar._parse_pm_response("I recommend holding this position.")
+
     def test_load_snapshot_positions(self):
         snap = Path(self.directory.name) / "snaps"
         acc = snap / "bybit" / "hyro"

@@ -32,6 +32,10 @@ from strategy_v2_context import (
 )
 
 
+class InvalidPMResponseError(ValueError):
+    """The model response was not a usable PM decision object."""
+
+
 def _log_event(event: str, **fields: Any) -> None:
     print(json.dumps({"event": event, **fields}, sort_keys=True), flush=True)
 
@@ -45,13 +49,41 @@ def _classify_llm_error(exc: Exception) -> Tuple[str, Optional[int]]:
         return "server_error", status
     if "timeout" in name or isinstance(exc, TimeoutError):
         return "timeout", status
-    if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
+    if isinstance(exc, (InvalidPMResponseError, json.JSONDecodeError, UnicodeDecodeError)):
         return "invalid_response", status
     if "connection" in name or "connect" in str(exc).lower():
         return "connection_error", status
     if status is not None:
         return "client_error", status
     return "unknown", status
+
+
+def _parse_pm_response(content: Any) -> Dict[str, str]:
+    if not isinstance(content, str):
+        raise InvalidPMResponseError("response content is not text")
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            start = text.index("{")
+            data, _ = json.JSONDecoder().raw_decode(text[start:])
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise InvalidPMResponseError("response is not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise InvalidPMResponseError("response is not a JSON object")
+    action = str(data.get("action", "hold")).lower()
+    if action not in ("hold", "exit", "reduce"):
+        action = "hold"
+    reason = str(data.get("reason", ""))[: getattr(config, "PM_REASON_MAX_CHARS", 120)]
+    return {"action": action, "reason": reason}
 
 
 def _utcnow() -> datetime:
@@ -311,15 +343,12 @@ def call_pm_llm(prompt: str, *, request_id: Optional[str] = None,
                 response_format={"type": "json_object"},
                 timeout=timeout,
             )
-            data = json.loads(resp.choices[0].message.content)
-            action = str(data.get("action", "hold")).lower()
-            if action not in ("hold", "exit", "reduce"):
-                action = "hold"
-            reason = str(data.get("reason", ""))[: getattr(config, "PM_REASON_MAX_CHARS", 120)]
+            decision = _parse_pm_response(resp.choices[0].message.content)
             _log_event("llm_request_succeeded", request_id=request_id, cycle_id=cycle_id,
                        symbol=symbol, model=model, attempt=attempt,
-                       duration_ms=round((time.monotonic() - started) * 1000), action=action)
-            return {"action": action, "reason": reason}
+                       duration_ms=round((time.monotonic() - started) * 1000),
+                       action=decision["action"])
+            return decision
         except Exception as exc:
             error = _classify_llm_error(exc)
             _log_event("llm_request_failed", request_id=request_id, cycle_id=cycle_id,
