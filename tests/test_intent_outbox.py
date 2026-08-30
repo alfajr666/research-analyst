@@ -148,13 +148,16 @@ class IntentDeliveryTests(unittest.TestCase):
     def setUp(self):
         self.prev_enabled = config.INTENT_DELIVERY_ENABLED
         self.prev_inbox = config.INTENT_INBOX
+        self.prev_legacy = config.INTENT_BUS_LEGACY_INBOX_ENABLED
         self.dirname = tempfile.TemporaryDirectory()
         config.INTENT_DELIVERY_ENABLED = True
         config.INTENT_INBOX = Path(self.dirname.name)
+        config.INTENT_BUS_LEGACY_INBOX_ENABLED = True
 
     def tearDown(self):
         config.INTENT_DELIVERY_ENABLED = self.prev_enabled
         config.INTENT_INBOX = self.prev_inbox
+        config.INTENT_BUS_LEGACY_INBOX_ENABLED = self.prev_legacy
         self.dirname.cleanup()
 
     def test_write_event_delivers_intent_when_enabled(self):

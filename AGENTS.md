@@ -18,6 +18,15 @@
 - The scorer ranks candidates that pass all hard gates; it is not another gate.
 - Never point both services at one database or run duplicate database writers.
 
+- The shared SQLite bus at `/home/ubuntu/shared/intent-bus/intent_bus.sqlite3`
+  is the authoritative executor handoff. Publish only after admission and
+  routing; never claim receipts or execution state in this repository.
+- `INTENT_BUS_DB` must be an explicit absolute path and
+  `INTENT_BUS_BYBIT_ENABLED` must be enabled for Bybit delivery. Legacy JSON
+  inbox writing is compatibility-only and defaults off.
+- Compact strategies route to `bybit/hyro`; dual-zone strategies route to
+  `bybit/fundamo`.
+
 ## Verification
 
 Run `python3 -m pytest -q` and `git diff --check` before committing. Production

@@ -444,6 +444,15 @@ except (ValueError, TypeError):
 INTENT_ROUTING.setdefault("dual-zone-follower-v1", {"exchange_id": "bybit", "account_id": "fundamo"})
 INTENT_ROUTING.setdefault("dual-zone-short-follower-v1", {"exchange_id": "bybit", "account_id": "fundamo"})
 
+# --- Shared SQLite Intent Bus (spec SHARED_SQLITE_INTENT_BUS_SPEC.md §14) ---
+# Per spec the research-analyst publisher is gated by INTENT_BUS_DB (path) and
+# INTENT_BUS_BYBIT_ENABLED. INTENT_DELIVERY_ENABLED (elsewhere) is the overall
+# delivery gate. All default OFF; no implicit path.
+INTENT_BUS_BYBIT_ENABLED = os.getenv("INTENT_BUS_BYBIT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+INTENT_BUS_DB = os.getenv("INTENT_BUS_DB") or None
+# JSON inbox delivery is compatibility-only; SQLite is authoritative.
+INTENT_BUS_LEGACY_INBOX_ENABLED = os.getenv("INTENT_BUS_LEGACY_INBOX_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+
 # PM sidecar <-> bybit-executor handoff (the executor's PM Decision Contract).
 # EXECUTOR_SNAPSHOT_DIR: where the executor writes its 1m position snapshots
 #   (<dir>/<exchange_id>/<account_id>/latest.json). When set, the PM sidecar reads

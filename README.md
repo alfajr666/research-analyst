@@ -95,8 +95,8 @@ and produces no intent. Losing and failed candidates remain auditable.
 
 ## Intent and execution safety
 
-When `INTENT_DELIVERY_ENABLED=true`, a selected candidate is atomically written
-to the executor intent inbox. Compact intents are forcibly routed to
+When `INTENT_DELIVERY_ENABLED=true`, a selected candidate is atomically
+published to the shared executor bus. Compact intents are forcibly routed to
 `exchange_id=bybit`, `account_id=hyro`; dual-zone intents use their explicit
 `fundamo` route. The analyst sends thesis fields only and never emits an `order_type`
 instruction. The executor profile selects the entry order policy. The executor
@@ -109,8 +109,8 @@ Each intent is `schema_version: 1` JSON containing `delivery_id`, `source`,
 `observed_at`, `entry_valid_until`, and non-sizing metadata. The default entry TTL
 is five minutes. Geometry requires `LONG: stop < entry < target` or
 `SHORT: target < entry < stop`, with RR at least `2.0` and stop distance `0.1%..5%`.
-Files are atomic and idempotent by `delivery_id`; expired files are not valid
-execution opportunities.
+Bus deliveries are idempotent by `delivery_id`; expired deliveries are not
+valid execution opportunities.
 
 Keep delivery disabled until the executor paper path, account, symbol universe,
 and protection behavior are verified. A Discord or LLM failure must not create,
@@ -233,5 +233,14 @@ market freshness before starting the orchestrator. Then inspect, in order,
 `data/health.json`, completed observations, cutoff/plugin results, raw-signal
 statuses, `data/alpha_outbox/`, the analyst ledger, executor intents, position
 snapshots, and PM decisions. Never commit `.env`, keys, webhooks, databases, or
-executor credentials. Signals and LLM prose are evidence, not proof of alpha or
-a fill.
+ executor credentials. Signals and LLM prose are evidence, not proof of alpha or
+ a fill.
+
+## Shared SQLite Bus
+
+Research Analyst publishes validated schema-v1 intents to `target=bybit` at the
+shared bus path configured by `INTENT_BUS_DB`. Enable delivery with
+`INTENT_BUS_BYBIT_ENABLED=true`; compact strategies route to `bybit/hyro` and
+dual-zone strategies to `bybit/fundamo`. The legacy filesystem inbox is
+compatibility-only and disabled by default. Research Analyst never claims bus
+deliveries or reads execution receipts.
