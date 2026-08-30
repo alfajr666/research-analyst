@@ -148,7 +148,7 @@ def _load_open_positions_from_snapshots(snapshot_dir) -> List[Dict[str, Any]]:
                 "entry": p.get("entry_price"),
                 "size": p.get("quantity"),
                 "opened_at": p.get("updated_at"),
-                "strategy_id": original.get("strategy_id"),
+                "strategy_id": original.get("strategy_id") or (original.get("metadata") or {}).get("strategy_id"),
                 "current_pnl": None,
                 "status": p.get("status"),
                 "exchange_id": exchange_id,

@@ -52,6 +52,7 @@ class IntentBuildTests(unittest.TestCase):
         # Analyst never sizes: intent carries no quantity/risk_amount.
         self.assertNotIn("quantity", intent["metadata"])
         self.assertNotIn("risk_amount", intent["metadata"])
+        self.assertEqual(intent["metadata"]["strategy_id"], "impulse-ignition-v1")
 
     def test_order_type_is_executor_owned(self):
         intent = build_executor_intent(_alpha_event(direction="SHORT", order_type="market"))

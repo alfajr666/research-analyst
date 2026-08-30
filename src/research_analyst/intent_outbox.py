@@ -101,6 +101,8 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
     # sizes from its account profile when no quantity/risk_amount is present.
     meta = {k: v for k, v in (event.get("metadata") or {}).items()
             if k not in ("quantity", "amount", "risk_amount")}
+    if event.get("strategy_id"):
+        meta.setdefault("strategy_id", event["strategy_id"])
 
     delivery_id = (
         event.get("alpha_id") or event.get("dedupe_key")
