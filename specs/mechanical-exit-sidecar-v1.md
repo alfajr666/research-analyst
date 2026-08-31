@@ -28,7 +28,7 @@ Default deployment scope:
 exchange: bybit
 account: fundamo
 universe: 97 static symbols
-management cadence: completed 5m cutoff
+management cadence: completed 1m cutoff
 ```
 
 ## Responsibilities

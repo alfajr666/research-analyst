@@ -78,7 +78,7 @@ written intent is not an acceptance, order, or fill.
 ## PM sidecar
 
 With `PM_SIDECAR_ENABLED=true`, the sidecar reads
-`<snapshot-root>/<exchange>/<account>/latest.json` and runs at a 5m cutoff. It
+`<snapshot-root>/<exchange>/<account>/latest.json` and runs at a 1m cutoff. It
 emits `HOLD`, `REDUCE`, or `EXIT` with a short reason. Any missing LLM key,
 timeout, exception, or invalid response becomes `HOLD`. PM advice cannot weaken
 hard SL/TP or alter deterministic event fields.

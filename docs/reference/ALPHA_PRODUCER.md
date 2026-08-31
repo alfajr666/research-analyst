@@ -225,7 +225,7 @@ orchestrator -> raw data + active watchlists -> evaluators -> alpha outbox
 | --- | --- | --- | --- |
 | `ws_gateway` | continuous | static/optional rotated universe | Bybit WS 1m/5m/mark; local resampling |
 | `orchestrator` | configured cutoff loop | strategy-specific assets / static universe | Finalized cutoffs, active plugins, admission, delivery |
-| `pm_sidecar` | 5m cutoff | open executor positions | LLM HOLD/REDUCE/EXIT, fail-safe HOLD |
+| `pm_sidecar` | 1m cutoff | open executor positions | LLM HOLD/REDUCE/EXIT, explicitly labeled fail-safe HOLD |
 | raw Discord batch | 30m UTC windows | captured candidates | Non-blocking observation delivery |
 
 The outbox is append-only and deduplicated by strategy, asset, direction, and

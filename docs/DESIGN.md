@@ -365,7 +365,7 @@ through pruning.
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | "" | Telegram mirror. |
 | `LLM_RESEARCH_ENABLED` | `false` | Advisory research note (today). |
 | `PM_SIDECAR_ENABLED` **[TARGET]** | `false` | LLM position-management sidecar. |
-| `PM_CADENCE_MINUTES` **[TARGET]** | `5` | Sidecar tick. |
+| `PM_CADENCE_MINUTES` **[TARGET]** | `1` | Sidecar tick. |
 | `FUTURES_RETENTION_DAYS` | `365` | Base prune window (extend to tiered). |
 | `INGEST_INTERVAL_MINS` | `15` | Orchestrator loop interval. |
 

@@ -127,7 +127,7 @@ delay, or suppress an executor intent.
 ## PM sidecar
 
 The PM sidecar is an independent process from the orchestrator and runs both
-LLM and mechanical management on the configured five-minute cadence by default.
+LLM and mechanical management on the configured one-minute cadence by default.
 It reads executor 1m
 snapshots from `EXECUTOR_SNAPSHOT_DIR`, joins the originating intent and market
 context, and emits `HOLD`, `REDUCE`, or `EXIT` to `pm_advice` and

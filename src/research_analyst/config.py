@@ -387,7 +387,7 @@ STRATEGY_ACTIVE_IDS = tuple(
 
 # Phase 7: LLM position-management sidecar (emit-only). Enabled for this deployment.
 PM_SIDECAR_ENABLED = os.getenv("PM_SIDECAR_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-PM_CADENCE_MINUTES = int(os.getenv("PM_CADENCE_MINUTES", "5"))
+PM_CADENCE_MINUTES = int(os.getenv("PM_CADENCE_MINUTES", "1"))
 PM_LLM_TIMEOUT_S = int(os.getenv("PM_LLM_TIMEOUT_S", "20"))
 PM_LLM_RETRIES = int(os.getenv("PM_LLM_RETRIES", "1"))
 PM_REASON_MAX_CHARS = int(os.getenv("PM_REASON_MAX_CHARS", "120"))

@@ -307,9 +307,11 @@ def _build_prompt(pos: Dict[str, Any], intent, htf_bias, ta, swings, rr) -> str:
     }
     return (
         "You manage an already-open position and must follow the strategy's plan. "
+        "Use only the supplied position, strategy, market-structure, TA, and RR evidence. "
+        "Do not invent missing data or use a generic preference for hold. "
         "Decide one action: hold, exit, or reduce. exit = close the whole position; "
-        "reduce = cut part of it. Prefer hold unless structure invalidates the plan "
-        "or RR has badly degraded. "
+        "reduce = cut part of it. Hold only when the evidence supports keeping the plan; "
+        "exit or reduce when the plan is invalidated or RR has materially degraded. "
         "Respond with strict JSON only: "
         '{"action": "hold|exit|reduce", "reason": "<=120 chars"}\n\n'
         f"CONTEXT:\n{json.dumps(ctx, default=str)}"
@@ -491,7 +493,7 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
             decision = call_pm_llm(prompt, request_id=request_id,
                                    cycle_id=cycle_id, symbol=pos.get("symbol") or asset)
             if decision is None:
-                action, reason = "hold", "llm unavailable/error; defaulting to hold"
+                action, reason = "hold", "LLM unavailable/error; safety fallback HOLD, not a market judgment"
             else:
                 action, reason = decision["action"], decision["reason"]
             if mechanical and action == "hold":

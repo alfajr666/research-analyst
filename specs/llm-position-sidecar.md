@@ -12,7 +12,7 @@ never sizes, never selects venue, never places orders.
 | Setting | Default | Notes |
 | --- | --- | --- |
 | `PM_SIDECAR_ENABLED` | `false` | Off by default; when off, evaluators run untouched. |
-| `PM_CADENCE_MINUTES` | `5` | One evaluation pass per 5m bar. |
+| `PM_CADENCE_MINUTES` | `1` | One evaluation pass per completed 1m cutoff. |
 | `PM_LLM_TIMEOUT_S` | `20` | Hard bound per call. |
 | `PM_LLM_RETRIES` | `1` | Bounded retry; on failure emit `hold` (safe default). |
 | `PM_REASON_MAX_CHARS` | `120` | One-liner only. |
@@ -26,7 +26,7 @@ never sizes, never selects venue, never places orders.
 3. **HTF bias** — `structure_bias_4h` / `zone_bias_4h` from existing helpers.
 4. **Swings** — HTF swing highs/lows (swing detector output on 1h/4h).
 5. **RR** — current risk/reward vs entry and invalidation (computed locally).
-6. **5m TA** — 5m microstructure (EMA/RSI/structure) at the 5m cadence.
+6. **5m TA** — 5m microstructure (EMA/RSI/structure) as market context for each 1m pass.
 
 ## Processing (per 5m tick, per open position)
 
@@ -68,6 +68,7 @@ is advisory only and cannot alter the deterministic trade-intent event.
 
 ## Cadence note
 
-5m cadence is deliberate: it is slow enough to avoid LLM cost/thrash, fast enough
+1m cadence is deliberate: venue SL/TP contain execution risk while the sidecar
+gets frequent opportunities to make accurate management decisions.
 to react within the strategy horizon, and aligns with the resampled 5m feed that
 the ingestion layer already produces.
