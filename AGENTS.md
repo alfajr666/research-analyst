@@ -25,10 +25,13 @@
   is the authoritative executor handoff. Publish only after admission and
   routing; never claim receipts or execution state in this repository.
 - `INTENT_BUS_DB` must be an explicit absolute path and
-  `INTENT_BUS_BYBIT_ENABLED` must be enabled for Bybit delivery. Legacy JSON
+  `INTENT_BUS_BYBIT_ENABLED` must be enabled for Bybit delivery. Live Propr
+  fan-out additionally requires `INTENT_BUS_PROPR_ENABLED=true`. Legacy JSON
   inbox writing is compatibility-only and defaults off.
-- Compact strategies route to `bybit/hyro`; dual-zone strategies route to
-  `bybit/fundamo`.
+- The four live strategies route Bybit deliveries exclusively to
+  `bybit/fundamo`; admitted events are independently fanned out to the Propr
+  bus target when enabled. Propr owns its account routing, sizing, risk gates,
+  and receipts.
 
 ## Production audit state (2026-08-30)
 
@@ -44,6 +47,8 @@ and decision for those positions without calling the LLM or creating an exit.
 Normal positions retain their originating strategy metadata. First-write bus
 delivery and execution handoff remain consumer-owned and must be verified from
 the publisher/execution-delivery tables before enabling additional routes.
+- LLM research review is disabled in the live analyst path; `research_context`
+  is not required for strategy evaluation or intent delivery.
 
 ## Verification
 

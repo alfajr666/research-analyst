@@ -150,17 +150,12 @@ def _maybe_deliver_intent(payload: dict) -> None:
 def _maybe_publish_to_bus(intent: dict) -> None:
     """Best-effort fan-out of a built schema-v1 envelope to the shared bus."""
     try:
-        from intent_bus_publisher import (
-            bybit_enabled,
-            publisher_enabled,
-            publish_research_intent,
-        )
-        if not publisher_enabled() or not bybit_enabled():
-            return
-        ok, delivery_id, err = publish_research_intent(intent, target="bybit")
-        if not ok:
-            print(f"intent bus publish failed: {err} for {intent.get('delivery_id')}")
-        else:
-            print(f"intent bus published: {delivery_id}")
+        from intent_bus_publisher import publish_research_intent
+        for target in ("bybit", "propr"):
+            ok, delivery_id, err = publish_research_intent(intent, target=target)
+            if not ok and err is not None:
+                print(f"intent bus {target} publish failed: {err} for {intent.get('delivery_id')}")
+            elif ok:
+                print(f"intent bus published target={target} delivery={delivery_id}")
     except Exception as exc:  # bus fan-out must never break the pipeline
         print(f"intent bus publish error: {exc}")

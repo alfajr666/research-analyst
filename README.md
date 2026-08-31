@@ -6,7 +6,7 @@
 completed Bybit perpetual bars and evaluates configured live strategies across the
 92-symbol Bybit-compatible static universe,
 keeps an auditable analyst ledger, publishes advisory alpha, and can hand a
-selected intent to the existing `bybit / hyro` executor. It does not hold
+selected intent to Bybit executors through the shared SQLite bus. It does not hold
 exchange credentials, size positions, place orders, or claim that an intent was
 filled.
 
@@ -21,7 +21,9 @@ Bybit public WS: 1m + 5m kline, mark price
         -> raw_signals (before admission)
         -> hard admission (including freshness) -> soft context scoring -> live clash resolution
             -> analyst.sqlite3 alpha ledger / Discord alpha outbox
-              -> producer TP selection -> immediate routed TradeIntent, when selected
+               -> producer TP selection -> immediate target-specific TradeIntent fan-out, when selected
+                  -> target=bybit -> Fundamo Bybit executor
+                  -> target=propr -> Propr executor (when enabled)
   bybit-executor 1m position snapshots
   -> LLM PM sidecar -> HOLD/REDUCE/EXIT/NEAR_TP PMDecision files
   raw_signals -> non-blocking 30m Discord observation batch
@@ -43,30 +45,29 @@ small REST warm backfill at startup, but the live stream is Bybit WS.
 ## Live strategies
 
 The live static universe is defined in `symbols/static_universe.json` and currently
-contains 92 Bybit-compatible bases. The active execution-admission set is:
+contains 92 Bybit-compatible bases. The active execution-admission set is the
+four Fundamo strategy families:
 
 | Strategy | Primary evaluation |
 | --- | --- |
-| `failed-break-v3` | 5m, with 15m and 4h context |
-| `bb-rsi-meanrev-v1` | 5m |
-| `williams-fractal-scalp-v1` | 1m |
-| `ema9-continuation-stochrsi-v1` | 1m trigger with 5m setup |
+| `dual-zone-follower-v2` | 5m, with confirmed 1h ADX/DI |
+| `dual-zone-short-follower-v2` | 5m, with confirmed 1h ADX/DI |
+| `ema20-pullback-h4-trend-v1` | universal 5m, with 1h signal and 4h trend context |
+| `ema-stack-15m-adx-stochrsi-5m-v1` | 5m, with confirmed 15m/1h context |
 
 `STRATEGY_ENABLED_IDS`, `STRATEGY_ACTIVE_IDS`, and `plugin_states` control
-registration and runtime activation. Other registered v2 plugins are research
-capabilities, not part of the four-strategy live compact admission path.
+registration and runtime activation.
 
-The four legacy compact strategies are forced to Bybit account `hyro`. The dual-zone
-strategies explicitly route to Bybit account `fundamo`:
+The four active strategies route their Bybit deliveries exclusively to account
+`fundamo`. When Propr fan-out is enabled, the same admitted thesis is delivered
+independently as `target=propr`; Propr owns its account and execution controls:
 
 | Strategy | Account |
 | --- | --- |
-| `failed-break-v3` | `hyro` |
-| `bb-rsi-meanrev-v1` | `hyro` |
-| `williams-fractal-scalp-v1` | `hyro` |
-| `ema9-continuation-stochrsi-v1` | `hyro` |
-| `dual-zone-follower-v1` | `fundamo` |
-| `dual-zone-short-follower-v1` | `fundamo` |
+| `dual-zone-follower-v2` | `fundamo` |
+| `dual-zone-short-follower-v2` | `fundamo` |
+| `ema20-pullback-h4-trend-v1` | `fundamo` |
+| `ema-stack-15m-adx-stochrsi-5m-v1` | `fundamo` |
 
 ## Decision pipeline
 
@@ -256,9 +257,12 @@ snapshots, and PM decisions. Never commit `.env`, keys, webhooks, databases, or
 
 ## Shared SQLite Bus
 
-Research Analyst publishes validated schema-v1 intents to `target=bybit` at the
-shared bus path configured by `INTENT_BUS_DB`. Enable delivery with
-`INTENT_BUS_BYBIT_ENABLED=true`; compact strategies route to `bybit/hyro` and
-dual-zone strategies to `bybit/fundamo`. The legacy filesystem inbox is
-compatibility-only and disabled by default. Research Analyst never claims bus
-deliveries or reads execution receipts.
+Research Analyst publishes validated schema-v1 intents to `target=bybit` and,
+when enabled, adapted schema-v2 intents to `target=propr` at the shared bus path
+configured by `INTENT_BUS_DB`. Enable the targets with
+`INTENT_BUS_BYBIT_ENABLED=true` and `INTENT_BUS_PROPR_ENABLED=true`. All four
+active strategies route their Bybit deliveries to `bybit/fundamo`. The Propr
+executor independently consumes `target=propr` deliveries and writes its own
+receipts. The legacy filesystem inbox is compatibility-only and disabled by
+default. Research Analyst never claims bus deliveries or reads execution
+receipts. LLM research review is disabled in the live path.

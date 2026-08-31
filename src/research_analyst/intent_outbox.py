@@ -24,6 +24,13 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import config
+
+FUNDAMO_STRATEGY_IDS = frozenset((
+    "dual-zone-follower-v2",
+    "dual-zone-short-follower-v2",
+    "ema20-pullback-h4-trend-v1",
+    "ema-stack-15m-adx-stochrsi-5m-v1",
+))
 from trade_admission import derive_2r_target
 
 
@@ -62,10 +69,12 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
     source = source or route.get("source") or getattr(config, "INTENT_SOURCE", "research-analyst")
     exchange_id = exchange_id or route.get("exchange_id") or getattr(config, "INTENT_EXCHANGE_ID", "bybit")
     account_id = account_id or route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro")
-    # Compact strategies are the live four-strategy deployment and must never
-    # be diverted by stale routing config or caller-supplied overrides.
+    # Compact strategies and the Fundamo portfolio must never be diverted by
+    # stale routing config or caller-supplied overrides.
     if event.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ()):
         exchange_id, account_id = "bybit", "hyro"
+    if event.get("strategy_id") in FUNDAMO_STRATEGY_IDS:
+        exchange_id, account_id = "bybit", "fundamo"
     take_profit_mode = take_profit_mode or route.get("take_profit_mode") or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
     validity_minutes = (
         validity_minutes if validity_minutes is not None

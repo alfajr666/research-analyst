@@ -692,7 +692,13 @@ def main():
                 raise
             except Exception as error:
                 print(f"Critical error processing {trigger.name}: {error}", file=sys.stderr)
-                retry(trigger, str(error), config.EVALUATION_TRIGGER_DIR)
+                error_text = str(error)
+                if "unknown strategy id" in error_text:
+                    # A retired strategy in an already-claimed cutoff cannot be
+                    # repaired by retrying the same snapshot indefinitely.
+                    trigger.rename(trigger.with_suffix(".failed"))
+                else:
+                    retry(trigger, error_text, config.EVALUATION_TRIGGER_DIR)
                 time.sleep(config.EVALUATION_RECOVERY_SCAN_SECONDS)
 
 if __name__ == "__main__":

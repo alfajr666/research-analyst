@@ -23,7 +23,8 @@ PRICE_STRUCTURE_STRATEGY_IDS = getattr(config, "PRICE_STRUCTURE_STRATEGY_IDS", s
 MIXED_STRATEGY_IDS = getattr(config, "MIXED_STRATEGY_IDS", set())
 ADMISSION_STRATEGY_IDS = {"failed-break-v3", "bb-rsi-meanrev-v1",
                            "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
-                           "dual-zone-follower-v1", "dual-zone-short-follower-v1"}
+                            "dual-zone-follower-v2", "dual-zone-short-follower-v2",
+                            "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1"}
 
 
 def _get_bar_purity(conn, asset: str, observed_at: Any, interval: str = "15m") -> Dict[str, Any]:
@@ -69,8 +70,8 @@ KNOWN_STRATEGIES = {
     "failed-break-v3",
     "williams-fractal-scalp-v1",
     "ema9-continuation-stochrsi-v1",
-    "dual-zone-follower-v1",
-    "dual-zone-short-follower-v1",
+    "dual-zone-follower-v2", "dual-zone-short-follower-v2",
+    "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
 }
 
 @dataclass
@@ -80,6 +81,7 @@ class StrategyPlugin:
     required_datasets: tuple[str, ...]
     optional_datasets: tuple[str, ...]
     run: Callable[[str, dict], List[dict]]  # (cutoff_id, snapshot) -> events
+    cadence: str | None = None
 
 
 _REGISTRY: Dict[str, StrategyPlugin] = {}
@@ -99,8 +101,10 @@ def _load_builtin_plugins():
     from strategies.compact.failed_break_v3 import run_plugin as failed_break_run
     from strategies.compact.williams_fractal_scalp_v1 import run_plugin as williams_run
     from strategies.compact.ema9_continuation_stochrsi_v1 import run_plugin as ema9_run
-    from strategies.v2.dual_zone_follower_v1 import run_plugin as dual_zone_run
-    from strategies.v2.dual_zone_short_follower_v1 import run_plugin as dual_zone_short_run
+    from strategies.v2.dual_zone_follower_v2 import run_plugin as dual_zone_run
+    from strategies.v2.dual_zone_follower_v2 import run_short_plugin as dual_zone_short_run
+    from strategies.v2.ema20_pullback_h4_trend_v1 import run_plugin as ema20_run
+    from strategies.v2.ema_stack_adx_stochrsi_5m_v1 import run_plugin as stack_run
 
     register(StrategyPlugin("accumulation-base-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), acc_v2_run))
     register(StrategyPlugin("impulse-ignition-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), ign_v2_run))
@@ -112,8 +116,10 @@ def _load_builtin_plugins():
     register(StrategyPlugin("failed-break-v3", "v3", ("bars_5m",), (), failed_break_run))
     register(StrategyPlugin("williams-fractal-scalp-v1", "v1", ("bars_1m",), (), williams_run))
     register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v1", ("bars_1m",), (), ema9_run))
-    register(StrategyPlugin("dual-zone-follower-v1", "v1", ("bars_5m",), (), dual_zone_run))
-    register(StrategyPlugin("dual-zone-short-follower-v1", "v1", ("bars_5m",), (), dual_zone_short_run))
+    register(StrategyPlugin("dual-zone-follower-v2", "v2", ("bars_5m",), (), dual_zone_run, "5m"))
+    register(StrategyPlugin("dual-zone-short-follower-v2", "v2", ("bars_5m",), (), dual_zone_short_run, "5m"))
+    register(StrategyPlugin("ema20-pullback-h4-trend-v1", "v1", ("bars_5m",), (), ema20_run, "5m"))
+    register(StrategyPlugin("ema-stack-15m-adx-stochrsi-5m-v1", "v1", ("bars_5m",), (), stack_run, "5m"))
 
 
 _load_builtin_plugins()
@@ -452,6 +458,9 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
 
     for p in plugins:
         try:
+            if p.cadence is not None and p.cadence != eval_interval:
+                results[p.id] = {"skipped": f"cadence {p.cadence}"}
+                continue
             # Test isolation hook: make a specific plugin raise so we verify other
             # plugins still complete (keyed by id so it works for any plugin).
             if os.environ.get("TEST_EXPLODE_PLUGIN") == p.id:

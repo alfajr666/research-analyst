@@ -158,7 +158,7 @@ COMPACT_STRATEGY_IDS = frozenset((
     "failed-break-v3", "bb-rsi-meanrev-v1",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
 ))
-DUAL_ZONE_STRATEGY_ID = "dual-zone-follower-v1"
+DUAL_ZONE_STRATEGY_ID = "dual-zone-follower-v2"
 DUAL_ZONE_EXIT_EMA_LENGTH = int(os.getenv("DUAL_ZONE_EXIT_EMA_LENGTH", "7"))
 DUAL_ZONE_ANCHOR_EMA_LENGTH = int(os.getenv("DUAL_ZONE_ANCHOR_EMA_LENGTH", "26"))
 DUAL_ZONE_TREND_EMA_LENGTH = int(os.getenv("DUAL_ZONE_TREND_EMA_LENGTH", "99"))
@@ -168,13 +168,18 @@ DUAL_ZONE_A_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_A_STOP_DISTANCE_PCT",
 DUAL_ZONE_B_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_B_ENTRY_DISTANCE_PCT", "1.5"))
 DUAL_ZONE_B_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_B_TARGET_DISTANCE_PCT", "5.0"))
 DUAL_ZONE_B_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_B_STOP_DISTANCE_PCT", "1.0"))
-DUAL_ZONE_SHORT_STRATEGY_ID = "dual-zone-short-follower-v1"
+DUAL_ZONE_SHORT_STRATEGY_ID = "dual-zone-short-follower-v2"
 DUAL_ZONE_SHORT_A_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_A_ENTRY_DISTANCE_PCT", "1.0"))
 DUAL_ZONE_SHORT_A_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_A_TARGET_DISTANCE_PCT", "3.0"))
 DUAL_ZONE_SHORT_A_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_A_STOP_DISTANCE_PCT", "1.0"))
 DUAL_ZONE_SHORT_B_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_B_ENTRY_DISTANCE_PCT", "1.5"))
 DUAL_ZONE_SHORT_B_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_B_TARGET_DISTANCE_PCT", "5.0"))
 DUAL_ZONE_SHORT_B_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_B_STOP_DISTANCE_PCT", "1.0"))
+DUAL_ZONE_ADX_TIMEFRAME = os.getenv("DUAL_ZONE_ADX_TIMEFRAME", "1h")
+DUAL_ZONE_ADX_DI_LENGTH = int(os.getenv("DUAL_ZONE_ADX_DI_LENGTH", "14"))
+DUAL_ZONE_ADX_SMOOTHING = int(os.getenv("DUAL_ZONE_ADX_SMOOTHING", "14"))
+DUAL_ZONE_MIN_ADX = float(os.getenv("DUAL_ZONE_MIN_ADX", "22.0"))
+DUAL_ZONE_USE_DI_DIRECTION = os.getenv("DUAL_ZONE_USE_DI_DIRECTION", "true").lower() == "true"
 WS_STREAM_TIMEFRAMES = os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").strip().lower().split(",")
 WS_MARKPRICE_ENABLED = os.getenv("WS_MARKPRICE_ENABLED", "true").lower() == "true"
 # Shard size for Bybit (per-connection topic cap). Binance uses one combined conn.
@@ -368,7 +373,8 @@ STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
         "STRATEGY_ENABLED_IDS",
         "failed-break-v3,bb-rsi-meanrev-v1,williams-fractal-scalp-v1,"
-        "ema9-continuation-stochrsi-v1"
+        "ema9-continuation-stochrsi-v1,dual-zone-follower-v2,dual-zone-short-follower-v2,"
+        "ema20-pullback-h4-trend-v1,ema-stack-15m-adx-stochrsi-5m-v1"
     ).split(",") if s.strip()
 )
 
@@ -449,14 +455,16 @@ try:
         INTENT_ROUTING = {}
 except (ValueError, TypeError):
     INTENT_ROUTING = {}
-INTENT_ROUTING.setdefault("dual-zone-follower-v1", {"exchange_id": "bybit", "account_id": "fundamo"})
-INTENT_ROUTING.setdefault("dual-zone-short-follower-v1", {"exchange_id": "bybit", "account_id": "fundamo"})
+for _fundamo_strategy in ("dual-zone-follower-v2", "dual-zone-short-follower-v2",
+                          "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1"):
+    INTENT_ROUTING.setdefault(_fundamo_strategy, {"exchange_id": "bybit", "account_id": "fundamo"})
 
 # --- Shared SQLite Intent Bus (spec SHARED_SQLITE_INTENT_BUS_SPEC.md §14) ---
 # Per spec the research-analyst publisher is gated by INTENT_BUS_DB (path) and
 # INTENT_BUS_BYBIT_ENABLED. INTENT_DELIVERY_ENABLED (elsewhere) is the overall
 # delivery gate. All default OFF; no implicit path.
 INTENT_BUS_BYBIT_ENABLED = os.getenv("INTENT_BUS_BYBIT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+INTENT_BUS_PROPR_ENABLED = os.getenv("INTENT_BUS_PROPR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 INTENT_BUS_DB = os.getenv("INTENT_BUS_DB") or None
 # JSON inbox delivery is compatibility-only; SQLite is authoritative.
 INTENT_BUS_LEGACY_INBOX_ENABLED = os.getenv("INTENT_BUS_LEGACY_INBOX_ENABLED", "false").lower() in ("1", "true", "yes", "on")
@@ -561,6 +569,8 @@ PRICE_STRUCTURE_STRATEGY_IDS = {
     "accumulation-base-v2", "rsi-reclaim-v1",
     "liquidity-sweep-reversal-v1", "bb-rsi-meanrev-v1", "failed-break-v3",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
+    "dual-zone-follower-v2", "dual-zone-short-follower-v2",
+    "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
 }
 MIXED_STRATEGY_IDS = {
     "impulse-ignition-v2", "continuation-breakout-v2",

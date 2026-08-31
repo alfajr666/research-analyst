@@ -15,6 +15,7 @@ def temp_bus_db(monkeypatch):
     os.remove(path)
     monkeypatch.setattr("config.INTENT_BUS_DB", path)
     monkeypatch.setattr("config.INTENT_BUS_BYBIT_ENABLED", True)
+    monkeypatch.setattr("config.INTENT_BUS_PROPR_ENABLED", True)
     monkeypatch.setattr("config.INTENT_BUS_LEGACY_INBOX_ENABLED", False)
     yield path
     for ext in ("", "-wal", "-shm"):
@@ -81,3 +82,63 @@ def test_publish_disabled_when_flags_off(temp_bus_db, monkeypatch):
     ok, delivery_id, err = publish_research_intent(_schema_v1_envelope(), target="bybit")
     # Disabled -> no publish attempted, safe no-op.
     assert ok is False or delivery_id is None
+
+
+def test_publish_propr_adapts_schema_v2_without_sizing(temp_bus_db):
+    from intent_bus_publisher import publish_research_intent
+    from intent_bus import IntentBus
+
+    ok, delivery_id, err = publish_research_intent(_schema_v1_envelope(), target="propr")
+    assert (ok, err) == (True, None)
+    assert delivery_id == "ra:ra-env-1:propr"
+    bus = IntentBus(db_path=temp_bus_db)
+    try:
+        delivery = bus.get_delivery(delivery_id)
+        assert delivery.payload_schema_version == 2
+        assert delivery.payload["target"] == "propr"
+        assert delivery.payload["strategy_id"] == "impulse-ignition-v1"
+        assert delivery.payload["thesis_id"] == "ra-env-1"
+        assert delivery.payload["symbol"] == "ETH/USDT:USDT"
+        assert not any(k in delivery.payload for k in ("quantity", "risk_amount", "leverage"))
+    finally:
+        bus.close()
+
+
+def test_target_delivery_ids_are_independent_and_idempotent(temp_bus_db):
+    from intent_bus_publisher import publish_research_intent
+    from intent_bus import IntentBus
+
+    first = [publish_research_intent(_schema_v1_envelope(), target=t)[1] for t in ("bybit", "propr")]
+    second = [publish_research_intent(_schema_v1_envelope(), target=t)[1] for t in ("bybit", "propr")]
+    assert first == second == ["ra:ra-env-1:bybit", "ra:ra-env-1:propr"]
+    bus = IntentBus(db_path=temp_bus_db)
+    try:
+        assert len(bus.list_deliveries()) == 2
+    finally:
+        bus.close()
+
+
+def test_independent_consumers_receive_only_their_target(temp_bus_db):
+    from intent_bus_publisher import publish_research_intent
+    from intent_bus import IntentBus, models
+
+    envelope = _schema_v1_envelope()
+    assert publish_research_intent(envelope, target="bybit")[0]
+    assert publish_research_intent(envelope, target="propr")[0]
+    bus = IntentBus(db_path=temp_bus_db)
+    try:
+        bybit = bus.claim(target=models.TARGET_BYBIT, consumer="fake-bybit")
+        propr = bus.claim(target=models.TARGET_PROPR, consumer="fake-propr")
+        assert bybit.target == models.TARGET_BYBIT
+        assert propr.target == models.TARGET_PROPR
+        assert bybit.delivery_id != propr.delivery_id
+        bus.complete(delivery_id=bybit.delivery_id, consumer="fake-bybit",
+                     attempt=bybit.attempts, status=models.STATUS_REJECTED,
+                     reason=models.REASON_POSITION_CAP)
+        bus.complete(delivery_id=propr.delivery_id, consumer="fake-propr",
+                     attempt=propr.attempts, status=models.STATUS_ACCEPTED,
+                     reason=models.REASON_ACCEPTED)
+        assert bus.get_delivery(bybit.delivery_id).status == models.STATUS_REJECTED
+        assert bus.get_delivery(propr.delivery_id).status == models.STATUS_ACCEPTED
+    finally:
+        bus.close()

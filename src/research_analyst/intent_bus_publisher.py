@@ -35,6 +35,10 @@ def bybit_enabled() -> bool:
     return bool(getattr(config, "INTENT_BUS_BYBIT_ENABLED", False))
 
 
+def propr_enabled() -> bool:
+    return bool(getattr(config, "INTENT_BUS_PROPR_ENABLED", False))
+
+
 def _bus() -> IntentBus:
     return IntentBus(db_path=getattr(config, "INTENT_BUS_DB", None) or None)
 
@@ -50,11 +54,15 @@ def publish_research_intent(
     Returns (ok, delivery_id, error). Never raises into the callers (spec 7:
     a publish failure is retryable and must not crash the pipeline).
     """
-    if not publisher_enabled() or not bybit_enabled():
+    if not getattr(config, "INTENT_BUS_DB", None):
+        return False, None, None
+    if target == "bybit" and not bybit_enabled():
+        return False, None, None
+    if target == "propr" and not propr_enabled():
         return False, None, None
     try:
         delivery = producer_adapters.build_research_analyst_delivery(
-            envelope=intent, target=target
+            envelope=intent, target=target, source_event_id=intent.get("delivery_id")
         )
     except Exception as exc:  # noqa: BLE001 - validation failure, do not crash
         return False, None, exc
@@ -63,7 +71,7 @@ def publish_research_intent(
         ok, result, err = producer_adapters.publish_event_safe(
             bus,
             producer="research-analyst",
-            producer_event_id=delivery.delivery_id,
+            producer_event_id=str(intent.get("delivery_id") or delivery.delivery_id),
             source=intent,
             schema_version=delivery.payload_schema_version,
             deliveries=[delivery],
