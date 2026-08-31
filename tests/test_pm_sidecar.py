@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,6 +62,18 @@ class PMSidecarTests(unittest.TestCase):
             return conn.execute("SELECT count(*) FROM pm_advice").fetchone()[0]
         finally:
             conn.close()
+
+    def test_sqlite_datetime_adapter_is_explicit(self):
+        value = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            conn = config.get_db_connection(read_only=False, db_path=self.db)
+            try:
+                stored = conn.execute("SELECT ?", (value,)).fetchone()[0]
+            finally:
+                conn.close()
+        self.assertEqual(stored, value.isoformat())
+        self.assertFalse([warning for warning in caught if issubclass(warning.category, DeprecationWarning)])
 
     def test_disabled_is_noop(self):
         res = pm_sidecar.run_once(self.db, now=datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc))

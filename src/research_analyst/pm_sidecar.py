@@ -365,6 +365,8 @@ def call_pm_llm(prompt: str, *, request_id: Optional[str] = None,
 
 def _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, observed_at) -> bool:
     advice_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{pos['position_id']}|{cutoff.isoformat()}"))
+    cutoff_text = cutoff.isoformat()
+    observed_text = observed_at.isoformat()
     try:
         if conn.execute("SELECT 1 FROM pm_advice WHERE advice_id = ?", (advice_id,)).fetchone():
             return False  # already advised this position at this cutoff
@@ -376,7 +378,7 @@ def _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, observed_at) -
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (advice_id, pos["position_id"], pos["strategy_id"], pos["asset"], "hold" if action == "veto_mechanical_exit" else action,
-             reason, htf_bias, rr, cutoff, observed_at, observed_at),
+              reason, htf_bias, rr, cutoff_text, observed_text, observed_text),
         )
         conn.commit()
         return True

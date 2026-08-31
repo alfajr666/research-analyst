@@ -61,9 +61,15 @@ For each finalized interval cutoff:
 5. Resolve same-direction ranking and opposite-direction clashes immediately.
 6. Write only selected intents using the per-strategy route; retain all other outcomes.
 
-Defaults are `RR >= 2.0`, stop distance `0.1%..5%`, and clash margin `2.0`.
+Defaults are `RR >= 2.0`, stop distance from the greater of `0.1%` and
+configurable `0.25 * ATR14_4h` through `5%`, and clash margin `2.0`.
 Missing soft context is `unavailable`, never automatic rejection. Hard failures
 and conflicts are advisory-only and must remain auditable.
+
+The post-pipeline research review path uses `research_context.py` to build
+bounded packets from persisted alpha events and point-in-time feature snapshots.
+Research review and Discord publishing are non-blocking and cannot delay or
+change executor intent delivery.
 
 ## Intent contract
 

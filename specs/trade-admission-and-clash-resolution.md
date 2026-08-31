@@ -102,7 +102,9 @@ The deployment default is `INTENT_MIN_RR=2.0`.
 ### Stop distance
 
 The absolute stop distance relative to entry must remain inside configured
-limits. The deployment defaults are `0.1%` minimum and `5%` maximum.
+limits. The deployment defaults are a minimum of the greater of `0.1%` and
+`0.25 * ATR14_4H` (configurable) and a `5%` maximum. See
+`specs/atr-based-stop-admission.md` for the detailed contract.
 
 ### Time and data validity
 

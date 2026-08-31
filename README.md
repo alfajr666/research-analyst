@@ -79,7 +79,7 @@ hard safety rules:
 - market data freshness within `DATA_FRESHNESS_MAX_SECONDS` (default `600`);
 - long: `stop < entry < target`; short: `target < entry < stop`;
 - reward/risk at least `INTENT_MIN_RR` (default `2.0`);
-- stop distance from `0.1%` through `5%` of entry;
+- stop distance from the greater of `0.1%` and `0.25 * ATR14_4h` through `5%` of entry;
 - deterministic candidate identity and required strategy-local data.
 
 HTF bias, confirmed swings, FVGs, order blocks, alignment, strategy evidence,
@@ -110,12 +110,17 @@ After a successful pipeline cycle, the daemon invokes the same signal publisher
 used by the one-shot path; publisher failures are isolated from ingestion and
 remain visible in logs and delivery state.
 
+Event-review packets are built by `research_context.py` from persisted alpha
+events and point-in-time feature snapshots. Research review and Discord
+publishing remain separate from executor delivery.
+
 Each intent is `schema_version: 1` JSON containing `delivery_id`, `source`,
 `exchange_id`, `account_id`, `asset`, unified perpetual `symbol`, normalized
 `direction`, `entry_price`, `stop_loss`, `take_profit`, `take_profit_mode`,
 `observed_at`, `entry_valid_until`, and non-sizing metadata. The default entry TTL
 is five minutes. Geometry requires `LONG: stop < entry < target` or
-`SHORT: target < entry < stop`, with RR at least `2.0` and stop distance `0.1%..5%`.
+`SHORT: target < entry < stop`, with RR at least `2.0` and stop distance bounded
+by the greater of `0.1%` and configurable `0.25 * ATR14_4h`, up to `5%`.
 Bus deliveries are idempotent by `delivery_id`; expired deliveries are not
 valid execution opportunities.
 

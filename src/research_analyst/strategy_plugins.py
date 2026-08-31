@@ -16,7 +16,7 @@ import config
 from alpha_outbox import write_event, dedupe_key
 from raw_signal_batch import capture, record_status
 from trade_admission import resolve
-from strategy_v2_context import completed_cycle_for
+from strategy_v2_context import atr_last, completed_cycle_for, load_bars_for_interval
 
 # Per spec: re-export from config for modules that imported here before
 PRICE_STRUCTURE_STRATEGY_IDS = getattr(config, "PRICE_STRUCTURE_STRATEGY_IDS", set())
@@ -440,6 +440,13 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     eval_interval = snapshot.get("eval_interval", "15m")
     cutoff = _cutoff_from_id(cutoff_id, now)
     freshness = _data_freshness_seconds(snapshot["market_db_path"], eval_interval, cutoff)
+    atr_by_asset = {}
+    atr_conn = config.get_db_connection(read_only=True, db_path=snapshot["market_db_path"])
+    try:
+        for asset in (snapshot.get("feature_snapshots") or {}):
+            atr_by_asset[asset] = atr_last(load_bars_for_interval(atr_conn, asset, "4h", cutoff), 14)
+    finally:
+        atr_conn.close()
 
     for p in plugins:
         try:
@@ -480,6 +487,16 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                     ev.setdefault("price_source", "unknown")
                 ev.setdefault("candidate_id", dedupe_key(ev))
                 ev["data_freshness_seconds"] = freshness
+                if ev.get("asset") not in atr_by_asset:
+                    atr_conn = config.get_db_connection(read_only=True, db_path=snapshot["market_db_path"])
+                    try:
+                        atr_by_asset[ev.get("asset")] = atr_last(
+                            load_bars_for_interval(atr_conn, ev.get("asset"), "4h", cutoff), 14
+                        )
+                    finally:
+                        atr_conn.close()
+                ev["atr14_4h"] = atr_by_asset.get(ev.get("asset")) or ev.get("atr14_4h")
+                ev.setdefault("feature_snapshot", {})["atr14_4h"] = ev["atr14_4h"]
             results[p.id] = {"emitted": len(events), "events": events}
         except Exception as exc:
             results[p.id] = {"failed": str(exc)[:200]}

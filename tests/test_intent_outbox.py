@@ -23,6 +23,7 @@ def _alpha_event(**over):
         "entry_condition": {"type": "limit", "price": 100},
         "invalidation_price": 95,
         "targets": [110],
+        "atr14_4h": 10,
         "alpha_id": "deliv-1",
     }
     ev.update(over)

@@ -1,10 +1,17 @@
 import json
 import os
 import stat
+from datetime import date, datetime
 from pathlib import Path
 from typing import List
 import sqlite3
 from dotenv import load_dotenv
+
+
+# Python 3.12 deprecated sqlite3's implicit date/datetime adapters. Store
+# timezone-aware values as explicit ISO-8601 text at every connection boundary.
+sqlite3.register_adapter(date, lambda value: value.isoformat())
+sqlite3.register_adapter(datetime, lambda value: value.isoformat())
 
 
 # Project Paths. Runtime data and secrets live at repository root, not beside code.
@@ -424,6 +431,7 @@ INTENT_TAKE_PROFIT_MODE = os.getenv("INTENT_TAKE_PROFIT_MODE", "fixed_full_close
 INTENT_VALIDITY_MINUTES = int(os.getenv("INTENT_VALIDITY_MINUTES", "5"))
 INTENT_MIN_RR = float(os.getenv("INTENT_MIN_RR", "2.0"))
 INTENT_MIN_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MIN_STOP_DISTANCE_PCT", "0.001"))
+INTENT_MIN_STOP_ATR_MULTIPLIER = float(os.getenv("INTENT_MIN_STOP_ATR_MULTIPLIER", "0.25"))
 INTENT_MAX_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MAX_STOP_DISTANCE_PCT", "0.05"))
 DATA_FRESHNESS_MAX_SECONDS = float(os.getenv("DATA_FRESHNESS_MAX_SECONDS", "600"))
 CLASH_MIN_SCORE_MARGIN = float(os.getenv("CLASH_MIN_SCORE_MARGIN", "2.0"))

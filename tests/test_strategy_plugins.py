@@ -92,7 +92,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             return {"strategy_id": strategy_id, "asset": "BTCUSDT", "direction": "long",
                     "observed_at": "2099-08-17T12:15:00+00:00",
                     "valid_until": "2099-08-17T12:20:00+00:00", "entry_price": 100,
-                    "invalidation_price": 95, "targets": [110],
+                    "invalidation_price": 95, "targets": [110], "atr14_4h": 10,
                     "context": {"strategy_score": score}}
 
         ids = ("failed-break-v3", "bb-rsi-meanrev-v1")

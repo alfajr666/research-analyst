@@ -103,6 +103,10 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
             if k not in ("quantity", "amount", "risk_amount")}
     if event.get("strategy_id"):
         meta.setdefault("strategy_id", event["strategy_id"])
+    admission = event.get("_admission_result") or {}
+    atr14_4h = admission.get("atr14_4h", event.get("atr14_4h"))
+    if atr14_4h is not None:
+        meta.setdefault("atr14_4h", atr14_4h)
 
     delivery_id = (
         event.get("alpha_id") or event.get("dedupe_key")
@@ -156,6 +160,10 @@ def validate_geometry(intent: dict) -> tuple[bool, str]:
         return False, f"reward/risk {rr:.2f} below minimum {min_rr:.2f}"
     stop_pct = risk / ep
     min_stop = float(getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", 0.001))
+    atr14_4h = (intent.get("metadata") or {}).get("atr14_4h")
+    if not isinstance(atr14_4h, (int, float)) or atr14_4h <= 0:
+        return False, "4h ATR14 is unavailable or invalid"
+    min_stop = max(min_stop, float(atr14_4h) / ep * float(getattr(config, "INTENT_MIN_STOP_ATR_MULTIPLIER", 0.25)))
     max_stop = float(getattr(config, "INTENT_MAX_STOP_DISTANCE_PCT", 0.05))
     if stop_pct < min_stop:
         return False, f"stop distance {stop_pct:.4%} below minimum {min_stop:.4%}"

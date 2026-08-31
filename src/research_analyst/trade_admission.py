@@ -43,13 +43,27 @@ def admit(candidate: dict, now: datetime | None = None) -> dict:
         distance = risk / entry
         if rr < float(getattr(config, "INTENT_MIN_RR", 2.0)):
             reasons.append("reward/risk below minimum")
-        if distance < float(getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", .001)):
-            reasons.append("stop distance below minimum")
+        atr14_4h = candidate.get("atr14_4h")
+        if atr14_4h is None:
+            atr14_4h = (candidate.get("feature_snapshot") or {}).get("atr14_4h")
+        multiplier = float(getattr(config, "INTENT_MIN_STOP_ATR_MULTIPLIER", 0.25))
+        configured_floor = float(getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", .001))
+        if not _number(atr14_4h) or atr14_4h <= 0:
+            reasons.append("4h ATR14 is unavailable or invalid")
+            atr_floor = 0.0
+        else:
+            atr_floor = float(atr14_4h) / entry * multiplier
+        effective_floor = max(configured_floor, atr_floor)
+        if distance < effective_floor:
+            reasons.append("stop distance below ATR-based minimum")
         if distance > float(getattr(config, "INTENT_MAX_STOP_DISTANCE_PCT", .05)):
             reasons.append("stop distance above maximum")
     else:
         rr = None
         distance = None
+        atr14_4h = None
+        effective_floor = None
+        multiplier = float(getattr(config, "INTENT_MIN_STOP_ATR_MULTIPLIER", 0.25))
     try:
         expiry = _time(candidate["valid_until"])
         if expiry <= (now or datetime.now(timezone.utc)).astimezone(timezone.utc):
@@ -62,8 +76,15 @@ def admit(candidate: dict, now: datetime | None = None) -> dict:
     identity = candidate.get("candidate_id") or candidate.get("dedupe_key")
     if not isinstance(identity, str) or not identity.strip():
         reasons.append("event identity is invalid")
+    atr_pct = (float(atr14_4h) / entry) if _number(atr14_4h) and _number(entry) and entry > 0 else None
+    stop_atr_multiple = (distance / atr_pct) if distance is not None and atr_pct and atr_pct > 0 else None
     return {"hard_gate": "pass" if not reasons else "fail", "hard_gate_reasons": reasons,
-            "rr": rr, "stop_distance_pct": distance, "selected_take_profit": target}
+            "rr": rr, "stop_distance_pct": distance, "selected_take_profit": target,
+            "atr14_4h": atr14_4h, "atr14_4h_pct": atr_pct,
+            "stop_atr_multiple": stop_atr_multiple,
+            "min_stop_atr_multiplier": multiplier,
+            "configured_min_stop_distance_pct": getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", .001),
+            "effective_min_stop_distance_pct": effective_floor}
 
 
 def score(candidate: dict) -> dict:
