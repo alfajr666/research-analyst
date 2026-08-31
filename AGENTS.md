@@ -1,6 +1,6 @@
 # Agent Notes
 
-**Last reviewed:** 2026-08-30
+**Last reviewed:** 2026-08-31
 
 ## Runtime Contract
 
@@ -9,8 +9,9 @@
 - The orchestrator consumes one trigger per completed 5m cutoff and writes
   selected intents to the shared executor inbox.
 - The PM sidecar is a separate managed process from the orchestrator. It reads
-  executor 1m snapshots and evaluates LLM/mechanical management every five minutes,
-  writing PM decisions to the executor's shared decision inbox.
+  executor 1m snapshots and is the single LLM PM authority on a five-minute
+  decision cadence, writing `HOLD`, `REDUCE`, `EXIT`, or `NEAR_TP` decisions to
+  the executor's shared decision inbox.
 - Shared handoff paths are anchored to `BYBIT_EXECUTOR_DIR`: `data/intents`,
   `data/position-snapshots`, and `data/position-decisions` are the same paths
   used by the executor. Do not create analyst-local copies.

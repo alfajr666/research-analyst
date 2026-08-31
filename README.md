@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-08-30
+**Last reviewed:** 2026-08-31
 
 `research-analyst` is a read-and-decide market research service. It consumes
 completed Bybit perpetual bars and evaluates configured live strategies across the
@@ -21,9 +21,9 @@ Bybit public WS: 1m + 5m kline, mark price
         -> raw_signals (before admission)
         -> hard admission (including freshness) -> soft context scoring -> live clash resolution
             -> analyst.sqlite3 alpha ledger / Discord alpha outbox
-             -> immediate routed TradeIntent, when selected
+              -> producer TP selection -> immediate routed TradeIntent, when selected
   bybit-executor 1m position snapshots
-  -> LLM PM sidecar -> HOLD/REDUCE/EXIT PMDecision files
+  -> LLM PM sidecar -> HOLD/REDUCE/EXIT/NEAR_TP PMDecision files
   raw_signals -> non-blocking 30m Discord observation batch
 ```
 
@@ -101,9 +101,11 @@ When `INTENT_DELIVERY_ENABLED=true`, a selected candidate is atomically
 published to the shared executor bus. Compact intents are forcibly routed to
 `exchange_id=bybit`, `account_id=hyro`; dual-zone intents use their explicit
 `fundamo` route. The analyst sends thesis fields only and never emits an `order_type`
-instruction. The executor profile selects the entry order policy. The executor
-owns credentials, quantity, risk sizing, leverage, venue precision, portfolio
-gates, orders, fills, lifecycle, hard protective SL, and fixed full-close TP.
+instruction. The executor profile selects the entry order policy. The producer
+preserves an explicit strategy target or derives a 2R target from a valid entry
+and stop; otherwise delivery is rejected. The executor owns credentials,
+quantity, risk sizing, leverage, venue precision, portfolio gates, orders, fills,
+lifecycle, hard protective SL, and the supplied full-close TP.
 
 Pipeline failures remain retryable and do not acknowledge their gateway trigger.
 After a successful pipeline cycle, the daemon invokes the same signal publisher
@@ -126,14 +128,16 @@ delay, or suppress an executor intent.
 
 ## PM sidecar
 
-The PM sidecar is an independent process from the orchestrator and runs both
-LLM and mechanical management on the configured one-minute cadence by default.
-It reads executor 1m
+The PM sidecar is an independent process from the orchestrator and is the single
+LLM position-management authority. It runs on the configured five-minute
+decision cadence and reads executor 1m
 snapshots from `EXECUTOR_SNAPSHOT_DIR`, joins the originating intent and market
-context, and emits `HOLD`, `REDUCE`, or `EXIT` to `pm_advice` and
-`EXECUTOR_DECISION_DIR`. Missing credentials, timeout, parse failure, or invalid
-output fails safe to `HOLD`. It is emit-only and cannot change entry, stop,
-target, direction, sizing, or executor hard protections.
+context, and emits `HOLD`, `REDUCE`, `EXIT`, or `NEAR_TP` to `pm_advice` and
+`EXECUTOR_DECISION_DIR`. `HOLD` is a no-op and does not require confidence;
+action-bearing decisions require the configured confidence threshold. Missing
+credentials, timeout, parse failure, or invalid output fails safe to `HOLD`.
+Every decision is valid for five minutes. It is emit-only and cannot change
+entry, stop, target, direction, sizing, or executor hard protections.
 
 Positions promoted from an executor snapshot without an originating intent use
 the explicit `unmanaged` strategy identity. The sidecar emits a neutral,
@@ -186,8 +190,8 @@ are observation-only and never go to Telegram or the executor.
 - **OI multi-hour:** OI window/generated metadata, repeat hits, latest hour, and
   a by-hour top-1 timeline with the same footer.
 - **Trade entry/exit:** executor notifications use the locked legacy entry and
-  exit message bodies. PM decisions are executor JSON values `HOLD`, `REDUCE`, or
-  `EXIT`; they do not create a new Discord message format.
+  exit message bodies. PM decisions are executor JSON values `HOLD`, `REDUCE`,
+  `EXIT`, or `NEAR_TP`; they do not create a new Discord message format.
 
 The locked entry body is:
 

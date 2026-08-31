@@ -1,12 +1,12 @@
-"""LLM position-management sidecar (phase 7, specs/llm-position-sidecar.md).
+"""LLM position-management sidecar (specs/llm-position-sidecar.md).
 
 Emit-only: reads open positions (bybit-executor 1m snapshots via
 EXECUTOR_SNAPSHOT_DIR, or the local positions_feed table as legacy fallback) + the
 originating trade-intent + HTF bias + swings + RR + 5m TA, and emits
-`hold|exit|reduce` with a one-liner to `pm_advice`. When EXECUTOR_DECISION_DIR is
-set, each advice is also exported as a PMDecision JSON file the executor consumes
-(HOLD/REDUCE/EXIT). It never holds credentials, sizes, selects a venue, or places
-orders.
+`hold|exit|reduce|near_tp` with a one-liner to `pm_advice`. When
+EXECUTOR_DECISION_DIR is set, each advice is also exported as a PMDecision JSON
+file the executor consumes (HOLD/REDUCE/EXIT/NEAR_TP). It never holds credentials,
+sizes, selects a venue, or places orders.
 
 Enabled by default (`PM_SIDECAR_ENABLED=true`). On any LLM failure/timeout/parse
 error it emits `hold` (do no harm).
@@ -15,6 +15,7 @@ error it emits `hold` (do no harm).
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import uuid
@@ -61,7 +62,7 @@ def _classify_llm_error(exc: Exception) -> Tuple[str, Optional[int]]:
     return "unknown", status
 
 
-def _parse_pm_response(content: Any) -> Dict[str, str]:
+def _parse_pm_response(content: Any) -> Dict[str, Any]:
     if not isinstance(content, str):
         raise InvalidPMResponseError("response content is not text")
     text = content.strip()
@@ -82,11 +83,36 @@ def _parse_pm_response(content: Any) -> Dict[str, str]:
             raise InvalidPMResponseError("response is not valid JSON") from exc
     if not isinstance(data, dict):
         raise InvalidPMResponseError("response is not a JSON object")
-    action = str(data.get("action", "hold")).lower()
-    if action not in ("hold", "exit", "reduce"):
+    proposed_action = str(data.get("action", "hold")).strip().lower()
+    action = proposed_action
+    proposed_confidence = data.get("confidence")
+    confidence = None
+    normalization_reason = None
+    try:
+        if proposed_confidence is not None:
+            confidence = float(proposed_confidence)
+    except (TypeError, ValueError):
+        normalization_reason = "confidence is not numeric"
+    if action not in ("hold", "exit", "reduce", "near_tp"):
+        normalization_reason = "unknown action"
+        action = "hold"
+    elif action != "hold" and (
+        confidence is None
+        or not math.isfinite(confidence)
+        or not 0 <= confidence <= 1
+        or confidence < float(getattr(config, "PM_ACTION_CONFIDENCE", 0.70))
+    ):
+        normalization_reason = normalization_reason or "action confidence below threshold"
         action = "hold"
     reason = str(data.get("reason", ""))[: getattr(config, "PM_REASON_MAX_CHARS", 120)]
-    return {"action": action, "reason": reason}
+    return {
+        "action": action,
+        "reason": reason,
+        "confidence": confidence,
+        "proposed_action": proposed_action,
+        "proposed_confidence": confidence,
+        "normalization_reason": normalization_reason,
+    }
 
 
 def _utcnow() -> datetime:
@@ -113,12 +139,13 @@ def _load_open_positions(conn) -> List[Dict[str, Any]]:
     return out
 
 
-def _load_open_positions_from_snapshots(snapshot_dir) -> List[Dict[str, Any]]:
+def _load_open_positions_from_snapshots(snapshot_dir, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """Read open positions from bybit-executor 1m snapshots.
 
     Expects ``<snapshot_dir>/<exchange_id>/<account_id>/latest.json`` whose
     ``positions`` array carries the executor's position rows (keys: symbol, side,
-    status, position_id, quantity, entry_price, original_json). The originating
+    status, position_id, quantity, entry_price, original_json). Only fresh OPEN
+    rows are eligible. The originating
     trade-intent lives in ``original_json`` (which holds strategy_id + asset).
     """
     base = Path(snapshot_dir or "")
@@ -132,8 +159,20 @@ def _load_open_positions_from_snapshots(snapshot_dir) -> List[Dict[str, Any]]:
             data = json.loads(latest.read_text(encoding="utf-8"))
         except Exception:
             continue
+        if now is not None:
+            try:
+                snapshot_at = datetime.fromisoformat(
+                    str(data["timestamp"]).replace("Z", "+00:00")
+                )
+                if snapshot_at.tzinfo is None:
+                    snapshot_at = snapshot_at.replace(tzinfo=timezone.utc)
+                age = (now.astimezone(timezone.utc) - snapshot_at.astimezone(timezone.utc)).total_seconds()
+                if age < 0 or age > float(getattr(config, "DATA_FRESHNESS_MAX_SECONDS", 600)):
+                    continue
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
         for p in data.get("positions", []):
-            if str(p.get("status")) not in ("OPEN", "PENDING", "open", "pending"):
+            if str(p.get("status")) not in ("OPEN", "open"):
                 continue
             original: Dict[str, Any] = {}
             try:
@@ -243,20 +282,6 @@ def _ta_5m(conn, asset: str, cutoff: datetime) -> Dict[str, Any]:
     return summary
 
 
-def _mechanical_exit(pos: Dict[str, Any], ta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Evaluate the strategy-declared TA exit without involving the LLM."""
-    strategy_id = str(pos.get("strategy_id") or "")
-    rsi, stoch_k = ta.get("rsi5"), ta.get("stoch_k")
-    if strategy_id != "ema99-wall-stochrsi-v1" or rsi is None or stoch_k is None:
-        return None
-    long_hit = str(pos.get("side", "")).lower() == "long" and rsi > 70 and stoch_k >= 80
-    short_hit = str(pos.get("side", "")).lower() == "short" and rsi < 30 and stoch_k <= 20
-    if not (long_hit or short_hit):
-        return None
-    return {"rule": "rsi_stochrsi_extreme", "rsi5": rsi, "stoch_k": stoch_k,
-            "veto_allowed": True}
-
-
 def _swings(conn, asset: str, cutoff: datetime) -> Dict[str, Any]:
     """HTF swing highs/lows from confirmed pivots on 4h bars."""
     try:
@@ -309,18 +334,21 @@ def _build_prompt(pos: Dict[str, Any], intent, htf_bias, ta, swings, rr) -> str:
         "You manage an already-open position and must follow the strategy's plan. "
         "Use only the supplied position, strategy, market-structure, TA, and RR evidence. "
         "Do not invent missing data or use a generic preference for hold. "
-        "Decide one action: hold, exit, or reduce. exit = close the whole position; "
-        "reduce = cut part of it. Hold only when the evidence supports keeping the plan; "
-        "exit or reduce when the plan is invalidated or RR has materially degraded. "
+        "Decide one action: hold, exit, reduce, or near_tp. exit = close the whole "
+        "position; reduce = cut part of it; near_tp = preserve the runner and let "
+        "the executor reduce once near the original target. Hold only when the evidence "
+        "supports keeping the plan; exit or reduce when the plan is invalidated or RR "
+        "has materially degraded. Include confidence from 0 to 1. "
         "Respond with strict JSON only: "
-        '{"action": "hold|exit|reduce", "reason": "<=120 chars"}\n\n'
+        '{"action": "hold|exit|reduce|near_tp", "confidence": 0.0, '
+        '"reason": "<=120 chars"}\n\n'
         f"CONTEXT:\n{json.dumps(ctx, default=str)}"
     )
 
 
 def call_pm_llm(prompt: str, *, request_id: Optional[str] = None,
-                cycle_id: Optional[str] = None, symbol: Optional[str] = None) -> Optional[Dict[str, str]]:
-    """Call the configured LLM. Returns {action, reason} or None on any failure."""
+                cycle_id: Optional[str] = None, symbol: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Call the configured LLM. Returns a normalized decision or None on failure."""
     request_id = request_id or str(uuid.uuid4())
     api_key = getattr(config, "LLM_API_KEY", "") or os.getenv("LLM_API_KEY", "")
     if not api_key:
@@ -365,7 +393,8 @@ def call_pm_llm(prompt: str, *, request_id: Optional[str] = None,
     return None
 
 
-def _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, observed_at) -> bool:
+def _emit_advice(conn, pos, decision, htf_bias, rr, cutoff, observed_at) -> bool:
+    action = decision["action"]
     advice_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{pos['position_id']}|{cutoff.isoformat()}"))
     cutoff_text = cutoff.isoformat()
     observed_text = observed_at.isoformat()
@@ -376,11 +405,14 @@ def _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, observed_at) -
             """
             INSERT INTO pm_advice
                 (advice_id, position_id, strategy_id, asset, action, reason,
-                 htf_bias, rr, cutoff_at, observed_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 htf_bias, rr, confidence, proposed_action, proposed_confidence,
+                 normalization_reason, cutoff_at, observed_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (advice_id, pos["position_id"], pos["strategy_id"], pos["asset"], "hold" if action == "veto_mechanical_exit" else action,
-              reason, htf_bias, rr, cutoff_text, observed_text, observed_text),
+            (advice_id, pos["position_id"], pos["strategy_id"], pos["asset"], action,
+             decision.get("reason", ""), htf_bias, rr, decision.get("confidence"),
+             decision.get("proposed_action"), decision.get("proposed_confidence"),
+             decision.get("normalization_reason"), cutoff_text, observed_text, observed_text),
         )
         conn.commit()
         return True
@@ -388,12 +420,12 @@ def _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, observed_at) -
         return False
 
 
-def _write_decision_file(pos: Dict[str, Any], action: str, reason: str,
+def _write_decision_file(pos: Dict[str, Any], decision: Dict[str, Any],
                          cutoff: datetime, observed_at: datetime) -> bool:
     """Export an advice as a PMDecision file for bybit-executor to consume.
 
     Writes ``<EXECUTOR_DECISION_DIR>/<decision_id>.json`` matching the executor's
-    PMDecision contract (HOLD/REDUCE/EXIT). No-op when EXECUTOR_DECISION_DIR is
+    PMDecision contract (HOLD/REDUCE/EXIT/NEAR_TP). No-op when EXECUTOR_DECISION_DIR is
     unset, so legacy (DB-only) operation is unaffected.
     """
     decision_dir = getattr(config, "EXECUTOR_DECISION_DIR", "") or ""
@@ -401,13 +433,15 @@ def _write_decision_file(pos: Dict[str, Any], action: str, reason: str,
         return False
     decision_dir = Path(decision_dir)
     decision_dir.mkdir(parents=True, exist_ok=True)
-    action_up = str(action).upper()
-    if action_up not in ("HOLD", "EXIT", "REDUCE", "VETO_MECHANICAL_EXIT"):
+    action_up = str(decision.get("action", "hold")).upper()
+    if action_up not in ("HOLD", "EXIT", "REDUCE", "NEAR_TP"):
         action_up = "HOLD"
     fraction = None
     if action_up == "REDUCE":
         fraction = float(getattr(config, "PM_REDUCE_FRACTION", 0.5))
-    validity = int(getattr(config, "PM_DECISION_VALIDITY_MINUTES", 30))
+    elif action_up == "NEAR_TP":
+        fraction = float(getattr(config, "PM_NEAR_TP_REDUCE_FRACTION", 0.75))
+    validity = int(getattr(config, "PM_DECISION_VALIDITY_MINUTES", 5))
     valid_until = observed_at + timedelta(minutes=validity)
     decision_id = str(uuid.uuid5(
         uuid.NAMESPACE_URL, f"{pos.get('position_id')}|{cutoff.isoformat()}"))
@@ -419,16 +453,26 @@ def _write_decision_file(pos: Dict[str, Any], action: str, reason: str,
         "position_id": pos.get("position_id") or "",
         "symbol": pos.get("symbol"),
         "action": action_up,
+        "decision_scope": "NEAR_TP" if action_up == "NEAR_TP" else "PM",
+        "confidence": decision.get("confidence"),
+        "confidence_threshold": float(getattr(config, "PM_ACTION_CONFIDENCE", 0.70)),
         "reduce_fraction": fraction,
         "issued_at": observed_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "reason": reason,
+        "reason": decision.get("reason", ""),
+        "controller": "llm_sidecar",
     }
     dest = decision_dir / f"{decision_id}.json"
     try:
-        dest.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        temporary = dest.with_name(f".{dest.name}.tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, dest)
         return True
     except Exception:
+        try:
+            temporary.unlink()
+        except (UnboundLocalError, FileNotFoundError):
+            pass
         return False
 
 
@@ -453,8 +497,8 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
         positions: List[Dict[str, Any]] = []
         snapshot_dir = getattr(config, "EXECUTOR_SNAPSHOT_DIR", "") or ""
         if snapshot_dir:
-            positions = _load_open_positions_from_snapshots(snapshot_dir)
-        if not positions:
+            positions = _load_open_positions_from_snapshots(snapshot_dir, now=now)
+        else:
             positions = _load_open_positions(conn)
         cycle_id = cutoff.strftime("%Y%m%dT%H%MZ")
         _log_event("pm_cycle_positions", cycle_id=cycle_id,
@@ -466,51 +510,55 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
             asset = pos["asset"]
             if pos.get("strategy_id") == UNMANAGED_STRATEGY_ID:
                 reason = "unmanaged position; no originating intent for PM analysis"
+                decision = {
+                    "action": "hold",
+                    "reason": reason,
+                    "confidence": None,
+                    "proposed_action": "hold",
+                    "proposed_confidence": None,
+                    "normalization_reason": None,
+                }
                 _log_event("pm_unmanaged_position_hold",
                            strategy_id=UNMANAGED_STRATEGY_ID, asset=asset,
                            position_id=pos.get("position_id"), reason=reason,
                            cutoff=cutoff.isoformat())
-                if _emit_advice(conn, pos, "hold", reason, None, None, cutoff, now):
+                if _emit_advice(conn, pos, decision, None, None, cutoff, now):
                     advices += 1
-                    if _write_decision_file(pos, "hold", reason, cutoff, now):
+                    if _write_decision_file(pos, decision, cutoff, now):
                         written += 1
                 continue
             intent = _get_active_intent(conn, pos["strategy_id"], asset)
             htf_bias, _ = _htf_bias(market_conn, asset, cutoff)
             ta = _ta_5m(market_conn, asset, cutoff)
-            mechanical = _mechanical_exit(pos, ta)
-            if mechanical:
-                print(json.dumps({"event": "mechanical_exit_triggered", "strategy_id": pos.get("strategy_id"), "asset": asset, "position_id": pos.get("position_id"), "rule": mechanical["rule"], "rsi5": mechanical["rsi5"], "stoch_k": mechanical["stoch_k"], "cutoff": cutoff.isoformat()}, sort_keys=True))
             swings = _swings(market_conn, asset, cutoff)
             rr = _compute_rr(
                 pos["side"], pos["entry"], ta.get("last_close"),
                 (intent or {}).get("invalidation_price"),
             )
             prompt = _build_prompt(pos, intent, htf_bias, ta, swings, rr)
-            if mechanical:
-                prompt += "\nMECHANICAL EXIT TRIGGERED. Return veto_mechanical_exit only to hold a reduced position; otherwise return exit."
             request_id = str(uuid.uuid4())
             decision = call_pm_llm(prompt, request_id=request_id,
                                    cycle_id=cycle_id, symbol=pos.get("symbol") or asset)
             if decision is None:
-                action, reason = "hold", "LLM unavailable/error; safety fallback HOLD, not a market judgment"
+                decision = {
+                    "action": "hold",
+                    "reason": "LLM unavailable/error; safety fallback HOLD, not a market judgment",
+                    "confidence": None,
+                    "proposed_action": None,
+                    "proposed_confidence": None,
+                    "normalization_reason": "llm unavailable or invalid response",
+                }
             else:
-                action, reason = decision["action"], decision["reason"]
-            if mechanical and action == "hold":
-                action = "veto_mechanical_exit"
-                reason = reason or "LLM vetoed mechanical exit"
-            if mechanical and action == "veto_mechanical_exit":
-                reason = reason or "LLM vetoed mechanical exit"
-            if mechanical and action not in ("veto_mechanical_exit", "reduce"):
-                action = "exit"
+                decision = dict(decision)
             _log_event("llm_management_decision", request_id=request_id,
                        strategy_id=pos.get("strategy_id"), asset=asset,
                        position_id=pos.get("position_id"),
-                       mechanical_trigger=bool(mechanical), action=action,
-                       reason=reason, cutoff=cutoff.isoformat())
-            if _emit_advice(conn, pos, action, reason, htf_bias, rr, cutoff, now):
+                       action=decision["action"], confidence=decision.get("confidence"),
+                       proposed_action=decision.get("proposed_action"),
+                       reason=decision["reason"], cutoff=cutoff.isoformat())
+            if _emit_advice(conn, pos, decision, htf_bias, rr, cutoff, now):
                 advices += 1
-                if _write_decision_file(pos, action, reason, cutoff, now):
+                if _write_decision_file(pos, decision, cutoff, now):
                     written += 1
         return {"enabled": True, "positions": len(positions),
                 "advices": advices, "decisions_written": written}
@@ -525,7 +573,7 @@ if __name__ == "__main__":
         db = next((arg for arg in sys.argv[1:] if arg != "--once"), None)
         print(json.dumps(run_once(db), default=str))
     else:
-        interval_seconds = max(60, int(getattr(config, "PM_CADENCE_MINUTES", 1)) * 60)
+        interval_seconds = max(60, int(getattr(config, "PM_CADENCE_MINUTES", 5)) * 60)
         print(f"Starting independent PM sidecar at {interval_seconds}s cadence...", flush=True)
         while True:
             try:

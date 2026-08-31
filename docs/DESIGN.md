@@ -55,8 +55,8 @@ The engine **never holds exchange credentials and never places orders**.
                  └─────────────────────────────────────────────────────────┘
 
    [TARGET] pm_sidecar (every 5m, if enabled)
-        reads positions_feed (executor) + strategy direction + HTF/swings/RR/5m TA
-        → emits pm_advice {hold|exit|reduce} + one-liner → executor
+         reads positions_feed (executor) + strategy direction + HTF/swings/RR/5m TA
+         → emits pm_advice {hold|reduce|exit|near_tp} + one-liner → executor
 ```
 
 ---
@@ -109,7 +109,7 @@ Split by ownership to preserve single-writer discipline.
 
 **[TARGET] new tables for the sidecar:**
 - `positions_feed` — executor-written, read-only to PM: `position_id, symbol, side, entry, size, opened_at, strategy_id, current_pnl`.
-- `pm_advice` — `advice_id, position_id, strategy_id, action(hold|exit|reduce), reason, observed_at, htf_bias, rr`.
+- `pm_advice` — `advice_id, position_id, strategy_id, action(hold|reduce|exit|near_tp), confidence, reason, observed_at, htf_bias, rr`.
 
 ---
 
@@ -180,10 +180,12 @@ Enable: `INTENT_DELIVERY_ENABLED=true` and point `INTENT_INBOX` at the
 executor's `INTENT_INBOX` (e.g. `/home/ubuntu/bybit-executor/data/intents`).
 
 The PM sidecar reads executor 1m snapshots and exports the executor's *PM Decision
-Contract* (`POSITION_DECISION_DIR` files: `HOLD`/`REDUCE`/`EXIT`). A PM `HOLD` may
-veto a discretionary strategy exit, but cannot override the protective SL or the
-fixed TP. The initial TP remains at least 2R; runner/trailing behavior belongs to
-the executor.
+Contract* (`POSITION_DECISION_DIR` files: `HOLD`/`REDUCE`/`EXIT`/`NEAR_TP`). A PM
+`HOLD` is an ordinary no-op and cannot veto another decision. `REDUCE`, `EXIT`,
+and `NEAR_TP` require the configured confidence threshold; none can override the
+protective SL or fixed TP. The initial TP is supplied by the producer: an explicit
+strategy target wins, otherwise the producer supplies a 2R target. The executor
+remains strategy-dumb but safety-authoritative.
 
 ---
 
@@ -310,8 +312,12 @@ the same advisory model.
 - **Cadence:** every 5m.
 - **Inputs (read-only):** `positions_feed` (executor-written) + active trade-intent
   + HTF bias + swings + RR + 5m TA.
-- **Output:** `pm_advice` with exactly one of `{hold, exit, reduce}` + a one-line
-  reason. On LLM timeout/error → emit `hold` (do-no-harm).
+- **Output:** `pm_advice` with exactly one of `{hold, reduce, exit, near_tp}` + a
+  one-line reason. On LLM timeout/error → emit `hold` (do-no-harm).
+- **Confidence:** `hold` needs no confidence; `reduce`, `exit`, and `near_tp`
+  require the configured minimum confidence.
+- **NEAR_TP:** executor-owned one-time reduction when the venue mark is within
+  five ticks of immutable original TP, using current quantity and protection state.
 - **Boundary preserved:** reads positions, writes only advice; no credentials, no
   order placement — same discipline as the existing execution adapter.
 
@@ -365,7 +371,9 @@ through pruning.
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | "" | Telegram mirror. |
 | `LLM_RESEARCH_ENABLED` | `false` | Advisory research note (today). |
 | `PM_SIDECAR_ENABLED` **[TARGET]** | `false` | LLM position-management sidecar. |
-| `PM_CADENCE_MINUTES` **[TARGET]** | `1` | Sidecar tick. |
+| `PM_CADENCE_MINUTES` **[TARGET]** | `5` | Sidecar decision tick. |
+| `PM_DECISION_VALIDITY_MINUTES` | `5` | Decision expiry. |
+| `PM_ACTION_CONFIDENCE` | `0.70` | Minimum confidence for action-bearing PM decisions. |
 | `FUTURES_RETENTION_DAYS` | `365` | Base prune window (extend to tiered). |
 | `INGEST_INTERVAL_MINS` | `15` | Orchestrator loop interval. |
 

@@ -2,6 +2,10 @@
 
 ## Status
 
+Superseded by the locked LLM-only PM contract in
+`specs/llm-position-sidecar.md`. Retained as historical design context; its
+mechanical-veto behavior is not part of the current target architecture.
+
 Implementation specification for a universal position-management sidecar shared
 by all research strategies and routed positions. The sidecar runs in
 `research-analyst`; the executor remains authoritative for account state,

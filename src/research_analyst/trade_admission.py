@@ -11,6 +11,18 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def derive_2r_target(direction, entry, stop):
+    """Return the producer fallback target when all price inputs are valid."""
+    if not (_number(entry) and entry > 0 and _number(stop) and stop > 0):
+        return None
+    direction = str(direction or "").lower()
+    if direction == "long" and stop < entry:
+        return entry + 2 * abs(entry - stop)
+    if direction == "short" and stop > entry:
+        return entry - 2 * abs(entry - stop)
+    return None
+
+
 def _time(value):
     if isinstance(value, datetime):
         result = value
@@ -28,6 +40,8 @@ def admit(candidate: dict, now: datetime | None = None) -> dict:
     targets = candidate.get("targets") or []
     target = targets[0] if targets else candidate.get("take_profit")
     stop = candidate.get("invalidation_price", candidate.get("stop_loss"))
+    if target is None:
+        target = derive_2r_target(candidate.get("direction"), entry, stop)
     if not all(_number(v) and v > 0 for v in (entry, stop, target)):
         reasons.append("prices must be finite and positive")
     direction = str(candidate.get("direction", "")).lower()

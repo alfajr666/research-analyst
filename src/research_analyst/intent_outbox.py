@@ -24,6 +24,7 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import config
+from trade_admission import derive_2r_target
 
 
 def to_ccxt_perp_symbol(asset: str, quote: str = "USDT") -> str:
@@ -92,9 +93,14 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
     entry_condition = event.get("entry_condition") or {}
     entry_price = event.get("entry_price") or entry_condition.get("price")
 
-    stop_loss = event.get("invalidation_price")
+    stop_loss = event.get("invalidation_price", event.get("stop_loss"))
     targets = event.get("targets") or []
     take_profit = targets[0] if targets else event.get("take_profit")
+    target_source = "strategy_target" if take_profit is not None else None
+    if take_profit is None:
+        take_profit = derive_2r_target(direction, entry_price, stop_loss)
+        if take_profit is not None:
+            target_source = "producer_derived_2r"
 
     # Sizing is executor-owned: the analyst never dictates quantity/risk_amount.
     # Pass through any non-sizing metadata the strategy attached; the executor
@@ -103,6 +109,8 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
             if k not in ("quantity", "amount", "risk_amount")}
     if event.get("strategy_id"):
         meta.setdefault("strategy_id", event["strategy_id"])
+    if target_source:
+        meta.setdefault("target_source", target_source)
 
     delivery_id = (
         event.get("alpha_id") or event.get("dedupe_key")

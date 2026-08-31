@@ -1,5 +1,7 @@
 # Research Analyst Agent Guide
 
+**Last reviewed:** 2026-08-31
+
 ## Mission and boundaries
 
 Evaluate completed Bybit market data with the configured active strategies, preserve the
@@ -70,18 +72,26 @@ and conflicts are advisory-only and must remain auditable.
 
 Gate delivery with `INTENT_DELIVERY_ENABLED`. Writes are atomic and idempotent.
 The analyst supplies direction, entry condition/reference price, invalidation,
-target, expiry, and strategy identity only. It never emits an order-type
-instruction. The executor profile selects the entry order type and the executor
-decides how to size, place, protect, reconcile, and close the position. A
-written intent is not an acceptance, order, or fill.
+target, expiry, and strategy identity only. If the strategy target is missing,
+the producer derives `2R` from a valid entry reference and stop and records
+`metadata.target_source=producer_derived_2r`; missing or invalid price inputs
+fail closed. It never emits an order-type instruction. The executor profile
+selects the entry order type and the executor decides how to size, place,
+protect, reconcile, and close the position. A written intent is not an
+acceptance, order, or fill.
 
 ## PM sidecar
 
-With `PM_SIDECAR_ENABLED=true`, the sidecar reads
-`<snapshot-root>/<exchange>/<account>/latest.json` and runs at a 1m cutoff. It
-emits `HOLD`, `REDUCE`, or `EXIT` with a short reason. Any missing LLM key,
-timeout, exception, or invalid response becomes `HOLD`. PM advice cannot weaken
-hard SL/TP or alter deterministic event fields.
+With `PM_SIDECAR_ENABLED=true`, the sidecar reads fresh `OPEN` positions from
+`<snapshot-root>/<exchange>/<account>/latest.json` and runs on a five-minute
+decision cadence. It emits `HOLD`, `REDUCE`, `EXIT`, or `NEAR_TP` with a short
+reason. `HOLD` is a no-op and needs no confidence; action-bearing decisions
+require the configured `PM_ACTION_CONFIDENCE` threshold. Any missing LLM key,
+timeout, exception, unknown action, invalid confidence, or invalid response
+becomes an auditable `HOLD`. Decisions are valid for exactly five minutes.
+`NEAR_TP` is distinct from `HOLD`: the executor checks the venue mark against
+the immutable original TP and performs at most one reduce-only action. PM advice
+cannot weaken hard SL/TP or alter deterministic event fields.
 
 ## Raw Discord batches
 
@@ -125,8 +135,9 @@ decisions. Report advisory, selected, accepted, and filled as distinct states.
   `+ N more signal evaluations` and `skipped N symbols (observed)`.
 - **OI bar and multi-hour:** `OI ROTATION · Binance USDM` with ranked candidates,
   completion/window metadata, expiry where applicable, and the feed-only footer.
-- **Exit/reduce:** `HOLD`, `REDUCE`, and `EXIT` are executor PMDecision values,
-  not Discord messages; they cannot alter entry geometry or hard protections.
+- **Exit/reduce:** `HOLD`, `REDUCE`, `EXIT`, and `NEAR_TP` are executor PMDecision
+  values, not Discord messages; they cannot alter entry geometry or hard
+  protections.
 
 ### Trade intent
 
@@ -136,7 +147,9 @@ The executor envelope is `schema_version: 1` JSON with `delivery_id`, `source`,
 `observed_at`, `entry_valid_until`, and non-sizing metadata. The default entry TTL
 is five minutes. Geometry requires `LONG: stop < entry < target` or
 `SHORT: target < entry < stop`, with RR at least `2.0` and stop distance `0.1%..5%`.
-Files are atomic and idempotent by `delivery_id`. The analyst never emits
+Files are atomic and idempotent by `delivery_id`. PM decision files include
+`confidence` for action-bearing decisions, `reduce_fraction` for `REDUCE` and
+`NEAR_TP`, and `decision_scope=NEAR_TP` for `NEAR_TP`. The analyst never emits
 `quantity`, `risk_amount`, leverage, or `order_type`; the executor owns those.
 
 Compact strategies are forced to Bybit `hyro`; dual-zone strategies explicitly

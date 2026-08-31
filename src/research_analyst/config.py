@@ -387,7 +387,7 @@ STRATEGY_ACTIVE_IDS = tuple(
 
 # Phase 7: LLM position-management sidecar (emit-only). Enabled for this deployment.
 PM_SIDECAR_ENABLED = os.getenv("PM_SIDECAR_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-PM_CADENCE_MINUTES = int(os.getenv("PM_CADENCE_MINUTES", "1"))
+PM_CADENCE_MINUTES = max(5, int(os.getenv("PM_CADENCE_MINUTES", "5")))
 PM_LLM_TIMEOUT_S = int(os.getenv("PM_LLM_TIMEOUT_S", "20"))
 PM_LLM_RETRIES = int(os.getenv("PM_LLM_RETRIES", "1"))
 PM_REASON_MAX_CHARS = int(os.getenv("PM_REASON_MAX_CHARS", "120"))
@@ -477,7 +477,9 @@ else:
 EXECUTOR_SNAPSHOT_DIR = os.getenv("EXECUTOR_SNAPSHOT_DIR", str(_default_exec_snapshots)) if _default_exec_snapshots else os.getenv("EXECUTOR_SNAPSHOT_DIR", "")
 EXECUTOR_DECISION_DIR = os.getenv("EXECUTOR_DECISION_DIR", str(_default_exec_decisions)) if _default_exec_decisions else os.getenv("EXECUTOR_DECISION_DIR", "")
 PM_REDUCE_FRACTION = float(os.getenv("PM_REDUCE_FRACTION", "0.5"))
-PM_DECISION_VALIDITY_MINUTES = int(os.getenv("PM_DECISION_VALIDITY_MINUTES", "30"))
+PM_DECISION_VALIDITY_MINUTES = int(os.getenv("PM_DECISION_VALIDITY_MINUTES", "5"))
+PM_ACTION_CONFIDENCE = float(os.getenv("PM_ACTION_CONFIDENCE", "0.70"))
+PM_NEAR_TP_REDUCE_FRACTION = float(os.getenv("PM_NEAR_TP_REDUCE_FRACTION", "0.75"))
 
 # accumulation-base-v2 knobs (specs/strategy-accumulation-base-v2.md)
 # Defaults grilled 2026-08-18 — independent prefixes; tighter coil / emit floor.
@@ -772,15 +774,60 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                 position_id VARCHAR NOT NULL,
                 strategy_id VARCHAR NOT NULL,
                 asset VARCHAR NOT NULL,
-                action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce')),
+                action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp')),
                 reason VARCHAR,
                 htf_bias VARCHAR,
                 rr DOUBLE,
+                confidence DOUBLE,
+                proposed_action VARCHAR,
+                proposed_confidence DOUBLE,
+                normalization_reason VARCHAR,
                 cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL
             );
         """)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(pm_advice)")}
+        if "confidence" not in columns:
+            # SQLite cannot alter a CHECK constraint. Rebuild the legacy table so
+            # near_tp decisions can be persisted without losing existing advice.
+            conn.execute("ALTER TABLE pm_advice RENAME TO pm_advice_legacy_v1")
+            conn.execute("""
+                CREATE TABLE pm_advice (
+                    advice_id VARCHAR PRIMARY KEY,
+                    position_id VARCHAR NOT NULL,
+                    strategy_id VARCHAR NOT NULL,
+                    asset VARCHAR NOT NULL,
+                    action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp')),
+                    reason VARCHAR,
+                    htf_bias VARCHAR,
+                    rr DOUBLE,
+                    confidence DOUBLE,
+                    proposed_action VARCHAR,
+                    proposed_confidence DOUBLE,
+                    normalization_reason VARCHAR,
+                    cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL
+                );
+            """)
+            conn.execute("""
+                INSERT INTO pm_advice
+                    (advice_id, position_id, strategy_id, asset, action, reason,
+                     htf_bias, rr, cutoff_at, observed_at, created_at)
+                SELECT advice_id, position_id, strategy_id, asset, action, reason,
+                       htf_bias, rr, cutoff_at, observed_at, created_at
+                FROM pm_advice_legacy_v1
+            """)
+            conn.execute("DROP TABLE pm_advice_legacy_v1")
+        else:
+            for name, definition in (
+                ("proposed_action", "VARCHAR"),
+                ("proposed_confidence", "DOUBLE"),
+                ("normalization_reason", "VARCHAR"),
+            ):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE pm_advice ADD COLUMN {name} {definition}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pm_advice_pos ON pm_advice (position_id, cutoff_at);")
         if not is_alpha:
             # Create option_chains table (15-min snapshots)

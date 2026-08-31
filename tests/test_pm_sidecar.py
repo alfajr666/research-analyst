@@ -122,13 +122,23 @@ class PMSidecarTests(unittest.TestCase):
 
     def test_parse_pm_response_accepts_fenced_or_wrapped_json(self):
         self.assertEqual(
-            pm_sidecar._parse_pm_response('```json\n{"action":"reduce","reason":"trim"}\n```'),
-            {"action": "reduce", "reason": "trim"},
+            pm_sidecar._parse_pm_response('```json\n{"action":"reduce","confidence":0.8,"reason":"trim"}\n```'),
+            {"action": "reduce", "reason": "trim", "confidence": 0.8,
+             "proposed_action": "reduce", "proposed_confidence": 0.8,
+             "normalization_reason": None},
         )
-        self.assertEqual(
-            pm_sidecar._parse_pm_response('Decision: {"action":"exit","reason":"invalidated"}'),
-            {"action": "exit", "reason": "invalidated"},
-        )
+        parsed = pm_sidecar._parse_pm_response(
+            'Decision: {"action":"exit","confidence":0.9,"reason":"invalidated"}')
+        self.assertEqual(parsed["action"], "exit")
+        self.assertEqual(parsed["confidence"], 0.9)
+
+    def test_low_confidence_action_normalizes_to_hold(self):
+        parsed = pm_sidecar._parse_pm_response(
+            '{"action":"exit","confidence":0.69,"reason":"weak evidence"}')
+        self.assertEqual(parsed["action"], "hold")
+        self.assertEqual(parsed["proposed_action"], "exit")
+        self.assertEqual(parsed["proposed_confidence"], 0.69)
+        self.assertIn("threshold", parsed["normalization_reason"])
 
     def test_parse_pm_response_rejects_non_json(self):
         with self.assertRaises(pm_sidecar.InvalidPMResponseError):
@@ -139,6 +149,7 @@ class PMSidecarTests(unittest.TestCase):
         acc = snap / "bybit" / "hyro"
         acc.mkdir(parents=True)
         payload = {
+            "timestamp": "2026-01-01T12:04:00+00:00",
             "positions": [{
                 "position_id": "X", "symbol": "SOLUSDT", "side": "short",
                 "status": "OPEN", "quantity": 2, "entry_price": 100.0,
@@ -165,7 +176,7 @@ class PMSidecarTests(unittest.TestCase):
     def test_snapshot_without_strategy_uses_explicit_unmanaged_identity(self):
         snap = Path(self.directory.name) / "unmanaged-snaps" / "bybit" / "hyro"
         snap.mkdir(parents=True)
-        (snap / "latest.json").write_text(json.dumps({"positions": [{
+        (snap / "latest.json").write_text(json.dumps({"timestamp": "2026-01-01T12:04:00+00:00", "positions": [{
             "position_id": "external-1", "symbol": "SOLUSDT", "side": "long",
             "status": "OPEN", "quantity": 1, "entry_price": 100,
             "original_json": "{}",
@@ -179,7 +190,7 @@ class PMSidecarTests(unittest.TestCase):
         config.PM_SIDECAR_ENABLED = True
         snap = Path(self.directory.name) / "unmanaged-pm" / "bybit" / "hyro"
         snap.mkdir(parents=True)
-        (snap / "latest.json").write_text(json.dumps({"positions": [{
+        (snap / "latest.json").write_text(json.dumps({"timestamp": "2026-01-01T12:04:00+00:00", "positions": [{
             "position_id": "external-2", "symbol": "SOLUSDT", "side": "long",
             "status": "OPEN", "quantity": 1, "entry_price": 100,
             "original_json": "{}",
@@ -209,13 +220,15 @@ class PMSidecarTests(unittest.TestCase):
                    "exchange_id": "bybit", "account_id": "hyro"}
             cutoff = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
             observed = datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc)
-            self.assertTrue(
-                pm_sidecar._write_decision_file(pos, "reduce", "trim", cutoff, observed))
+            self.assertTrue(pm_sidecar._write_decision_file(
+                pos, {"action": "reduce", "confidence": 0.8, "reason": "trim"},
+                cutoff, observed))
             files = list(decision_dir.glob("*.json"))
             self.assertEqual(len(files), 1)
             data = json.loads(files[0].read_text())
             self.assertEqual(data["action"], "REDUCE")
             self.assertEqual(data["reduce_fraction"], 0.5)
+            self.assertEqual(data["confidence"], 0.8)
             self.assertEqual(data["exchange_id"], "bybit")
         finally:
             config.EXECUTOR_DECISION_DIR = prev
@@ -230,6 +243,7 @@ class PMSidecarTests(unittest.TestCase):
         acc_dir.mkdir(parents=True)
         payload = {
             "schema_version": 1, "exchange_id": "bybit", "account_id": "hyro",
+            "timestamp": "2026-01-01T12:04:00+00:00",
             "positions": [{
                 "position_id": "POS1", "symbol": "BTCUSDT", "side": "long",
                 "status": "OPEN", "quantity": 1.0, "entry_price": 60000.0,

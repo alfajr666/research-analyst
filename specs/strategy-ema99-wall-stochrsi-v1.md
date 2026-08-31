@@ -171,7 +171,13 @@ Fundamo execution profile. The locked stop remains active for the position.
 Universal entry/stop geometry and stop-distance gates still apply. A fabricated
 1:2 target must not be added merely to satisfy a fixed-target contract.
 
-## Mechanical Exit Policy
+## Historical Mechanical Exit Policy
+
+This policy is retained as strategy research context. It is not an independent
+sidecar or a competing decision authority in the locked PM design. The LLM PM
+sidecar receives the strategy parameters and current indicator context and may
+return `hold`, `reduce`, `exit`, or `near_tp` under the locked confidence and
+executor-protection rules.
 
 The policy evaluates every completed 5m cutoff while the position is open.
 
@@ -187,12 +193,11 @@ Short mechanical exit:
 rsi5 < 30 and k <= 20
 ```
 
-The trigger is vetoable by the LLM under the universal sidecar specification.
-The trigger is persisted even when vetoed. A vetoed position is marked
-`llm_managed` and must use reduced remaining size enforced by the executor.
-
-The LLM may later approve `EXIT`, issue another bounded veto, or reduce/exit
-early. It may not veto the locked stop or other hard safety protection.
+The conditions above are historical strategy context only in the locked design.
+They are not emitted by an independent mechanical sidecar or used as a competing
+decision stream. The LLM may use the indicator context when deciding `hold`,
+`reduce`, `exit`, or `near_tp`, but the executor's SL/TP and protection behavior
+remain independent of the LLM.
 
 ## Event Metadata
 

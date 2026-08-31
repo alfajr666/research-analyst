@@ -54,6 +54,17 @@ class IntentBuildTests(unittest.TestCase):
         self.assertNotIn("quantity", intent["metadata"])
         self.assertNotIn("risk_amount", intent["metadata"])
         self.assertEqual(intent["metadata"]["strategy_id"], "impulse-ignition-v1")
+        self.assertEqual(intent["metadata"]["target_source"], "strategy_target")
+
+    def test_derives_two_r_target_when_strategy_target_is_missing(self):
+        intent = build_executor_intent(_alpha_event(targets=[]))
+        self.assertEqual(intent["take_profit"], 110)
+        self.assertEqual(intent["metadata"]["target_source"], "producer_derived_2r")
+
+    def test_derives_two_r_target_for_short(self):
+        intent = build_executor_intent(_alpha_event(
+            direction="short", invalidation_price=105, targets=[]))
+        self.assertEqual(intent["take_profit"], 90)
 
     def test_order_type_is_executor_owned(self):
         intent = build_executor_intent(_alpha_event(direction="SHORT", order_type="market"))
@@ -106,9 +117,9 @@ class IntentGeometryTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("LONG", reason)
 
-    def test_rejects_missing_target(self):
+    def test_accepts_producer_derived_target(self):
         ok, _ = validate_geometry(build_executor_intent(_alpha_event(targets=[])))
-        self.assertFalse(ok)
+        self.assertTrue(ok)
 
     def test_rejects_below_minimum_rr(self):
         ok, reason = validate_geometry(
