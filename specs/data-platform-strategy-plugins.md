@@ -260,15 +260,13 @@ Split schema initialization:
 
 - `init_market_db()` for orchestrator-owned raw, discovery, feature, request-log,
   and cutoff-run tables
-- `init_alpha_db()` for publisher-owned event, delivery, candidate, outcome, and
+- `init_alpha_db()` for publisher-owned event, delivery, candidate, and
   research-ledger tables
 - never create market tables inside `ANALYST_DB_PATH`
 
-Outcomes:
-
-- publisher stops evaluating outcomes against empty local `futures_data`
-- a dedicated market-aware outcome evaluator reads market bars read-only and
-  writes outcomes into the alpha ledger through an explicit single-owner handoff
+Retrospective strategy-quality measurement is outside the live analyst process and
+is owned by an external research job. The live ledger retains the immutable
+candidate, evaluation, discovery, and delivery evidence needed by that job.
 
 ### Storage migration
 
@@ -396,7 +394,6 @@ Build or reshape these seams:
   OpenMarket profile/flow
 - strategy plugin registry and invocation loop
 - three migrated strategy plugins wrapping existing scorers
-- outcome evaluator with market read + alpha-ledger write handoff
 - publisher claim-before-send fix and optional Context rendering from
   persisted evidence only
 
@@ -485,7 +482,8 @@ Required contract tests:
 - approximate VP is distinctly named and not interchangeable with native VP
 - Telegram claim-before-send prevents concurrent double send
 - publisher/adapter downstream path remains behavior-compatible
-- outcome evaluation no longer depends on empty publisher-local market tables
+- pipeline runs retain evaluation observability alongside freshness and delivery
+  metrics
 
 Prior art: existing discovery, evaluator, outbox, publisher, topology, and
 schema-migration tests. Prefer local SQLite fixtures and deterministic

@@ -26,7 +26,7 @@ class AlphaResearchPersistenceTests(unittest.TestCase):
         config.ANALYST_DB_PATH = self.old_analyst_path
         self.temp_dir.cleanup()
 
-    def test_records_tiered_snapshot_candidate_and_outcome(self):
+    def test_records_tiered_snapshot_and_candidate(self):
         observed_at = datetime(2026, 8, 16, 10, 0, tzinfo=timezone.utc)
         alpha_research.record_universe_snapshot(self.market_conn, observed_at, [
             {"binance_symbol": "BTCUSDT", "vol_24h_usd": 200_000_000, "last_price": 100_000},
@@ -53,20 +53,13 @@ class AlphaResearchPersistenceTests(unittest.TestCase):
             "valid_until": observed_at + timedelta(minutes=90),
             "feature_snapshot": {"volume_zscore": 2.1},
         })
-        alpha_research.record_outcome(self.conn, candidate_id, {
-            "evaluated_at": observed_at + timedelta(hours=4),
-            "outcome": "target",
-            "return_4h": 0.04,
-            "net_return": 0.035,
-        })
         self.conn.commit()
 
         record = self.conn.execute("""
-            SELECT c.asset, c.liquidity_tier, o.outcome, o.net_return
-            FROM alpha_candidates c
-            JOIN alpha_outcomes o USING (candidate_id)
-        """).fetchone()
-        self.assertEqual(record, ("SMALL", "emerging", "target", 0.035))
+            SELECT asset, liquidity_tier, status
+            FROM alpha_candidates WHERE candidate_id = ?
+        """, (candidate_id,)).fetchone()
+        self.assertEqual(record, ("SMALL", "emerging", "armed"))
 
     def test_rejects_non_emitted_candidate_without_stable_identity(self):
         with self.assertRaisesRegex(ValueError, "explicit stable candidate_id"):

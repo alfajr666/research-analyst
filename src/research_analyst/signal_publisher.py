@@ -303,15 +303,6 @@ class SignalPublisher:
         from research_repository import event_review_status
         return event_review_status(connection, event["alpha_id"]) in {"completed", "failed", "skipped"}
 
-    def _record_expired_outcomes(self, connection, now: datetime) -> None:
-        """Delegate to dedicated evaluator (market read-only from source_observations -> alpha). Post futures_data drop."""
-        from outcome_evaluator import evaluate_expired_outcomes
-        market = getattr(self, "market_db_path", config.MARKET_DB_PATH)
-        alpha = getattr(self, "db_path", config.ANALYST_DB_PATH)
-        evaluate_expired_outcomes(market, alpha, now,
-                                  market_conn=connection if market == alpha else None,
-                                  alpha_conn=connection)
-
     def run_once(self) -> dict[str, int]:
         results = {"persisted": 0, "sent": 0, "failed": 0, "invalid": 0}
         connection = self._connect()
@@ -330,12 +321,8 @@ class SignalPublisher:
                 connection.execute("""
                     INSERT INTO alpha_event_status_history VALUES (?, ?, 'expired', ?, 'valid_until_elapsed')
                 """, (f"{alpha_id}:expired:{now.isoformat()}", alpha_id, now))
-            # Outcomes are advisory; never block outbox persistence or channel delivery.
-            try:
-                self._record_expired_outcomes(connection, self.now())
-            except Exception as error:
-                print(f"Outcome evaluator error: {error}", file=sys.stderr)
             valid_events = []
+            expired_outbox_paths = []
             for path in sorted(self.outbox_dir.glob("*.json")):
                 try:
                     event = json.loads(path.read_text(encoding="utf-8"))
@@ -354,7 +341,13 @@ class SignalPublisher:
                     # Events persisted before LLM mode was enabled still need a review.
                     from research_repository import queue_event_review
                     queue_event_review(connection, event["alpha_id"], parse_timestamp(event["observed_at"]), True)
-                valid_events.append(event)
+                try:
+                    if parse_timestamp(event["valid_until"]) <= self.now():
+                        expired_outbox_paths.append(path)
+                    else:
+                        valid_events.append(event)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    valid_events.append(event)
             # Research runs before LLM-enabled delivery, but cannot alter the event.
             if config.LLM_RESEARCH_ENABLED:
                 try:
@@ -379,6 +372,11 @@ class SignalPublisher:
             connection.commit()
         finally:
             connection.close()
+        for path in expired_outbox_paths:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
         return results
 
 

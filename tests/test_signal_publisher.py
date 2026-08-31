@@ -223,56 +223,6 @@ class SignalPublisherTests(unittest.TestCase):
 
         self.assertEqual(self.rows("SELECT status FROM alpha_events"), [("expired",)])
 
-    def test_expired_outcome_records_target_after_a_triggered_bar(self):
-        payload = event(self.current_time - timedelta(minutes=30), self.current_time + timedelta(minutes=30))
-        payload["feature_snapshot"] = {"source_symbol": "SOLUSDT_PERP.A"}
-        payload["entry_condition"]["price"] = 100
-        payload["invalidation_price"] = 90
-        payload["dedupe_key"] = dedupe_key(payload)
-        self.write(payload)
-        publisher = self.publisher(FakeTransport())
-        publisher.run_once()
-        connection = config.get_db_connection(db_path=self.market_db)
-        try:
-            # seed source_observations (sole source post-drop)
-            for ts, h, l, c in [
-                (self.current_time - timedelta(minutes=30), 101, 99, 100),
-                (self.current_time - timedelta(minutes=15), 149, 101, 148),
-            ]:
-                payload = json.dumps({"open": 100, "high": h, "low": l, "close": c, "volume": 100})
-                connection.execute(
-                    "INSERT OR IGNORE INTO source_observations (observation_id, source, venue, native_symbol, asset, market_kind, interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json) VALUES (?, 'coinalyze', 'agg', 'SOLUSDT_PERP.A', 'SOL', 'perpetual', '15m', ?, ?, ?, 'live', ?)",
-                    (f"sig-{ts.isoformat()}", ts, ts, ts, payload)
-                )
-            connection.commit()
-        finally:
-            connection.close()
-        self.current_time += timedelta(minutes=45)  # make it expired for record
-        publisher.now = lambda: self.current_time
-        publisher.run_once()
-        self.assertEqual(self.rows("SELECT outcome FROM alpha_outcomes"), [("target",)])
-
-    def test_same_bar_barrier_crossing_is_not_reported_as_trade_quality(self):
-        payload = event(self.current_time - timedelta(minutes=30), self.current_time + timedelta(minutes=30))
-        payload["feature_snapshot"] = {"source_symbol": "SOLUSDT_PERP.A"}
-        self.write(payload)
-        publisher = self.publisher(FakeTransport())
-        publisher.run_once()
-        connection = config.get_db_connection(db_path=self.market_db)
-        try:
-            payload = json.dumps({"open": 100, "high": 149, "low": 99, "close": 145, "volume": 100})
-            connection.execute(
-                "INSERT OR IGNORE INTO source_observations (observation_id, source, venue, native_symbol, asset, market_kind, interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json) VALUES (?, 'coinalyze', 'agg', 'SOLUSDT_PERP.A', 'SOL', 'perpetual', '15m', ?, ?, ?, 'live', ?)",
-                (f"sig2-{self.current_time.isoformat()}", self.current_time - timedelta(minutes=30), self.current_time - timedelta(minutes=30), self.current_time - timedelta(minutes=30), payload)
-            )
-            connection.commit()
-        finally:
-            connection.close()
-        self.current_time += timedelta(minutes=45)
-        publisher.now = lambda: self.current_time
-        publisher.run_once()
-        self.assertEqual(self.rows("SELECT outcome FROM alpha_outcomes"), [("ambiguous_same_bar",)])
-
     def test_format_contains_portable_signal_fields(self):
         payload = event(self.current_time, self.current_time + timedelta(hours=1))
         message = format_signal(payload)

@@ -78,34 +78,3 @@ def record_candidate(conn, candidate: dict) -> str:
         json.dumps(candidate.get("feature_snapshot", {}), sort_keys=True),
     ))
     return candidate_id
-
-
-def record_outcome(conn, candidate_id: str, outcome: dict):
-    """Record one evaluation outcome without modifying its source candidate."""
-    required = {"evaluated_at", "outcome"}
-    missing = required - outcome.keys()
-    if missing:
-        raise ValueError(f"Outcome missing required fields: {', '.join(sorted(missing))}")
-
-    conn.execute("""
-        INSERT INTO alpha_outcomes (
-            candidate_id, evaluated_at, entry_at, entry_price, outcome, expiry_at,
-            return_15m, return_1h, return_4h, max_favorable_excursion,
-            max_adverse_excursion, estimated_cost, net_return, details
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        candidate_id,
-        outcome["evaluated_at"],
-        outcome.get("entry_at"),
-        outcome.get("entry_price"),
-        outcome["outcome"],
-        outcome.get("expiry_at"),
-        outcome.get("return_15m"),
-        outcome.get("return_1h"),
-        outcome.get("return_4h"),
-        outcome.get("max_favorable_excursion"),
-        outcome.get("max_adverse_excursion"),
-        outcome.get("estimated_cost"),
-        outcome.get("net_return"),
-        json.dumps(outcome.get("details", {}), sort_keys=True),
-    ))

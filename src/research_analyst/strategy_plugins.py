@@ -360,6 +360,14 @@ def _data_freshness_seconds(market_db_path: str | Path, interval: str, cutoff: d
         conn.close()
 
 
+def _atr14_4h(market_db_path: str | Path, asset: str, cutoff: datetime) -> float | None:
+    conn = config.get_db_connection(read_only=True, db_path=market_db_path)
+    try:
+        return atr_last(load_bars_for_interval(conn, asset, "4h", cutoff), 14)
+    finally:
+        conn.close()
+
+
 def _cutoff_from_id(cutoff_id: str, fallback: datetime | None) -> datetime:
     text = cutoff_id.split(":", 1)[1] if ":" in cutoff_id else cutoff_id[cutoff_id.find("20"):]
     try:
@@ -440,13 +448,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     eval_interval = snapshot.get("eval_interval", "15m")
     cutoff = _cutoff_from_id(cutoff_id, now)
     freshness = _data_freshness_seconds(snapshot["market_db_path"], eval_interval, cutoff)
-    atr_by_asset = {}
-    atr_conn = config.get_db_connection(read_only=True, db_path=snapshot["market_db_path"])
-    try:
-        for asset in (snapshot.get("feature_snapshots") or {}):
-            atr_by_asset[asset] = atr_last(load_bars_for_interval(atr_conn, asset, "4h", cutoff), 14)
-    finally:
-        atr_conn.close()
+    atr_cache = {}
 
     for p in plugins:
         try:
@@ -487,16 +489,10 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                     ev.setdefault("price_source", "unknown")
                 ev.setdefault("candidate_id", dedupe_key(ev))
                 ev["data_freshness_seconds"] = freshness
-                if ev.get("asset") not in atr_by_asset:
-                    atr_conn = config.get_db_connection(read_only=True, db_path=snapshot["market_db_path"])
-                    try:
-                        atr_by_asset[ev.get("asset")] = atr_last(
-                            load_bars_for_interval(atr_conn, ev.get("asset"), "4h", cutoff), 14
-                        )
-                    finally:
-                        atr_conn.close()
-                ev["atr14_4h"] = atr_by_asset.get(ev.get("asset")) or ev.get("atr14_4h")
-                ev.setdefault("feature_snapshot", {})["atr14_4h"] = ev["atr14_4h"]
+                asset = ev["asset"]
+                if asset not in atr_cache:
+                    atr_cache[asset] = _atr14_4h(snapshot["market_db_path"], asset, cutoff)
+                ev["atr14_4h"] = ev.get("atr14_4h") or atr_cache[asset]
             results[p.id] = {"emitted": len(events), "events": events}
         except Exception as exc:
             results[p.id] = {"failed": str(exc)[:200]}

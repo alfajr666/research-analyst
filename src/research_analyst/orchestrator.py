@@ -509,14 +509,6 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         # Phase 9: rotation feed (disabled by default; also needs WS_SYMBOL_SOURCE=rotated|both).
         print("Legacy rotation feed disabled in live orchestrator.")
 
-        # Dedicated outcome evaluator (market read-only)
-        try:
-            from outcome_evaluator import evaluate_expired_outcomes
-            n = evaluate_expired_outcomes(config.MARKET_DB_PATH, config.ANALYST_DB_PATH, datetime.now(timezone.utc))
-            if n: print(f"Outcomes evaluated: {n}")
-        except Exception as oe:
-            print(f"Outcome eval err: {oe}")
-
         # Drop phase: after verification, drop legacy futures_data (opt-in via env for safety)
         if os.getenv("DROP_LEGACY_FUTURES", "0").lower() in ("1", "true", "yes"):
             try:
@@ -601,7 +593,10 @@ def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = Non
         market_connection = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
         try:
             latest_data_at = _parse_timestamp(
-                market_connection.execute("SELECT MAX(source_end) FROM source_observations").fetchone()[0]
+                market_connection.execute(
+                    "SELECT MAX(source_end) FROM source_observations WHERE source_end <= ?",
+                    (completed_at,),
+                ).fetchone()[0]
             )
             freshness = (completed_at - latest_data_at).total_seconds() if latest_data_at else None
             connection.execute("""
@@ -612,7 +607,10 @@ def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = Non
             """, (
                 completed_at, status, freshness, len(list(OUTBOX_DIR.glob("*.json"))),
                 str(error)[:500] if error else None,
-                json.dumps({"data_latest_at": latest_data_at.isoformat() if latest_data_at else None}),
+                json.dumps({
+                    "data_latest_at": latest_data_at.isoformat() if latest_data_at else None,
+                    "evaluation": LAST_EVALUATION_OBSERVABILITY,
+                }, default=str),
                 run_id,
             ))
             connection.commit()

@@ -137,7 +137,7 @@ hard emit/suppress gate.
 - Plugins stay auditable and replayable from cutoff snapshots.
 - Operators get richer ranking (geometry score + optional LLM stance) without
   fake probabilities.
-- Calibration remains a batch research problem on `alpha_outcomes`.
+- Calibration remains a batch research problem outside the live analyst process.
 - Phase-one advisory confluence labels remain valid; this ADR adds an explicit
   relative score path and a bounded LLM booster seam.
 

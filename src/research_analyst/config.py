@@ -102,7 +102,7 @@ MARKET_SCHEMA_TABLES = frozenset({
     "source_observations", "source_request_log",
 })
 ANALYST_SCHEMA_TABLES = frozenset({
-    "plugin_states", "positions_feed", "pm_advice", "alpha_candidates", "alpha_outcomes",
+    "plugin_states", "positions_feed", "pm_advice", "alpha_candidates",
     "alpha_events", "signal_deliveries", "alpha_event_status_history",
     "alpha_confidence_observations", "research_requests", "research_reports",
     "research_run_metrics", "research_artifacts", "research_evidence", "pipeline_runs",
@@ -910,27 +910,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
         # created before an event is emitted retain their own stable ID and link
         # to the promoted event without changing their identity.
 
-        # Outcomes are separate from candidates so point-in-time inputs stay immutable.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS alpha_outcomes (
-                candidate_id             VARCHAR PRIMARY KEY,
-                evaluated_at             TIMESTAMP WITH TIME ZONE,
-                entry_at                 TIMESTAMP WITH TIME ZONE,
-                entry_price              DOUBLE,
-                outcome                  VARCHAR,
-                expiry_at                TIMESTAMP WITH TIME ZONE,
-                return_15m               DOUBLE,
-                return_1h                DOUBLE,
-                return_4h                DOUBLE,
-                max_favorable_excursion  DOUBLE,
-                max_adverse_excursion    DOUBLE,
-                estimated_cost           DOUBLE,
-                net_return               DOUBLE,
-                details                  VARCHAR,
-                FOREIGN KEY (candidate_id) REFERENCES alpha_candidates(candidate_id)
-            );
-        """)
-        
         # Create indexes for fast analysis (market only; futures_data removed post-drop)
         if not is_alpha:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_options_ts ON option_chains (timestamp, underlying);")

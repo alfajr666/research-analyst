@@ -66,11 +66,6 @@ configurable `0.25 * ATR14_4h` through `5%`, and clash margin `2.0`.
 Missing soft context is `unavailable`, never automatic rejection. Hard failures
 and conflicts are advisory-only and must remain auditable.
 
-The post-pipeline research review path uses `research_context.py` to build
-bounded packets from persisted alpha events and point-in-time feature snapshots.
-Research review and Discord publishing are non-blocking and cannot delay or
-change executor intent delivery.
-
 ## Intent contract
 
 Gate delivery with `INTENT_DELIVERY_ENABLED`. Writes are atomic and idempotent.

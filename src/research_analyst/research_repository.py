@@ -136,12 +136,7 @@ class ResearchCoordinator:
                 results["skipped"] += 1
                 continue
             event = connection.execute("SELECT valid_until FROM alpha_events WHERE alpha_id = ?", (alpha_id,)).fetchone()
-            valid_until = event[0] if event is not None else None
-            if isinstance(valid_until, str):
-                valid_until = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
-            if valid_until is not None and valid_until.tzinfo is None:
-                valid_until = valid_until.replace(tzinfo=timezone.utc)
-            if event is None or (request_kind == "event_review" and valid_until <= now):
+            if event is None or (request_kind == "event_review" and event[0] <= now):
                 self._finish(connection, request_id, "skipped", now, "stale_subject", "event is unavailable or expired")
                 results["skipped"] += 1
                 continue

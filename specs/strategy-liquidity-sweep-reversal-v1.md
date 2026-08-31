@@ -251,7 +251,7 @@ Platform zone hierarchy (unchanged):
 | Optional approx/native VP | feature snapshots | Soft `vp_proximity` only |
 | OI / funding on bars | CA payload | Soft pressure terms only |
 | Optional LLM booster | research path | Post-emit stance only |
-| Outcome evaluator | `outcome_evaluator` | Post-expiry descriptive outcomes |
+| Strategy-quality measurement | External research job | Post-expiry descriptive outcomes |
 
 ### Must build (shared modules — not optional)
 
@@ -1369,7 +1369,7 @@ Emit armed limit; valid 2h; score boosted by fvg_entry_magnet + zone stack
 | Soft weight key mismatch vs `weighted_confluence` | Component keys aligned; `contradiction_penalty` |
 | `select_top_n` / `build_1_5r_target` not shipped | Documented backlog; plugin inlines |
 | Family label falls through to "Impulse ignition" | Discord + signal_publisher touch required |
-| Outcome evaluator already handles non-breakout limits | No outcome code change |
+| Strategy-quality measurement is external | No live outcome-evaluation path |
 | Exec adapter only `limit_at_ema_context` | Deferred; not v1 acceptance |
 | OB 20-bar swing ≠ BOS 2/2 | Explicit non-reuse |
 | Defaults differ (2R / 2h / r_max 3.0) | Called out vs other families |
