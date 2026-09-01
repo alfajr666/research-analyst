@@ -7,6 +7,70 @@ from datetime import datetime, timezone
 import config
 
 
+POLICY_VERSION = "symbol-account-policy-v1"
+COMPACT_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
+FUNDAMO_STRATEGIES = frozenset((
+    "dual-zone-follower-v2", "dual-zone-short-follower-v2",
+    "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
+))
+COMPACT_STRATEGIES = frozenset(getattr(config, "COMPACT_STRATEGY_IDS", ()))
+
+
+def canonical_asset(value: object) -> str:
+    """Normalize exchange symbols before applying the account policy."""
+    text = str(value or "").upper().strip()
+    if "/" in text:
+        text = text.split("/", 1)[0]
+    for suffix in ("_PERP.A", "_PERP", "-USDT-PERP", "USDT", "USD"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+    return text
+
+
+def resolved_account(strategy_id: object) -> str:
+    """Resolve routing from strategy configuration, never candidate metadata."""
+    strategy_id = str(strategy_id or "")
+    if strategy_id in COMPACT_STRATEGIES:
+        return "hyro"
+    if strategy_id in FUNDAMO_STRATEGIES:
+        return "fundamo"
+    route = (getattr(config, "INTENT_ROUTING", {}) or {}).get(strategy_id, {}) or {}
+    return str(route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro"))
+
+
+def admit_symbol_account(candidate: dict) -> dict:
+    """Apply the deterministic symbol/account safety boundary before scoring."""
+    strategy_id = str(candidate.get("strategy_id") or "")
+    asset = canonical_asset(candidate.get("asset"))
+    account = resolved_account(strategy_id)
+    rejection_reason = None
+    if strategy_id in COMPACT_STRATEGIES and (account != "hyro" or asset not in COMPACT_ASSETS):
+        rejection_reason = f"compact Hyro policy permits only {', '.join(sorted(COMPACT_ASSETS))}"
+    elif strategy_id in FUNDAMO_STRATEGIES:
+        approved = {canonical_asset(asset) for asset in config.load_static_symbols()}
+        if account != "fundamo":
+            rejection_reason = "Fundamo strategy resolved to a non-Fundamo account"
+        elif asset not in approved:
+            rejection_reason = "asset is not in the approved universe"
+    return {
+        "symbol_account_gate": "pass" if rejection_reason is None else "fail",
+        "strategy_id": strategy_id,
+        "canonical_asset": asset,
+        "resolved_account": account,
+        "policy_version": POLICY_VERSION,
+        "rejection_reason": rejection_reason,
+    }
+
+
+def format_symbol_account_rejection(result: dict) -> str:
+    """Serialize policy identity into the durable status-history reason."""
+    return (
+        f"{result.get('rejection_reason')}; canonical_asset={result.get('canonical_asset')}; "
+        f"resolved_account={result.get('resolved_account')}; policy_version={result.get('policy_version')}"
+    )
+
+
 def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
@@ -33,7 +97,10 @@ def _time(value):
 
 def admit(candidate: dict, now: datetime | None = None) -> dict:
     """Return an auditable hard-gate result; context is intentionally ignored."""
+    symbol_policy = admit_symbol_account(candidate)
     reasons = []
+    if symbol_policy["symbol_account_gate"] != "pass":
+        reasons.append(f"symbol-account policy: {format_symbol_account_rejection(symbol_policy)}")
     entry = candidate.get("entry_price")
     if entry is None:
         entry = (candidate.get("entry_condition") or {}).get("price")
@@ -90,6 +157,7 @@ def admit(candidate: dict, now: datetime | None = None) -> dict:
         reasons.append("event identity is invalid")
     atr_pct = float(atr14_4h) / entry if _number(atr14_4h) and _number(entry) and entry > 0 else None
     return {"hard_gate": "pass" if not reasons else "fail", "hard_gate_reasons": reasons,
+            **symbol_policy,
             "rr": rr, "stop_distance_pct": distance, "selected_take_profit": target,
             "atr14_4h": atr14_4h, "stop_atr_multiple": distance / atr_pct if distance is not None and atr_pct else None,
             "effective_min_stop_distance_pct": max(absolute_floor, atr_floor)}
@@ -114,6 +182,16 @@ def resolve(candidates: list[dict]) -> dict:
     eligible = []
     results = []
     for candidate in candidates:
+        symbol_policy = admit_symbol_account(candidate)
+        if symbol_policy["symbol_account_gate"] != "pass":
+            results.append({
+                "candidate_id": candidate.get("candidate_id"),
+                **symbol_policy,
+                "hard_gate": "fail",
+                "hard_gate_reasons": [f"symbol-account policy: {format_symbol_account_rejection(symbol_policy)}"],
+                "score_status": "not_evaluated",
+            })
+            continue
         admission = admit(candidate)
         scored = score(candidate)
         result = {"candidate_id": candidate.get("candidate_id"), **admission, **scored}

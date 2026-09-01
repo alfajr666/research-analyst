@@ -31,7 +31,7 @@ FUNDAMO_STRATEGY_IDS = frozenset((
     "ema20-pullback-h4-trend-v1",
     "ema-stack-15m-adx-stochrsi-5m-v1",
 ))
-from trade_admission import derive_2r_target
+from trade_admission import derive_2r_target, resolved_account
 
 
 def to_ccxt_perp_symbol(asset: str, quote: str = "USDT") -> str:
@@ -71,10 +71,8 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
     account_id = account_id or route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro")
     # Compact strategies and the Fundamo portfolio must never be diverted by
     # stale routing config or caller-supplied overrides.
-    if event.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ()):
-        exchange_id, account_id = "bybit", "hyro"
-    if event.get("strategy_id") in FUNDAMO_STRATEGY_IDS:
-        exchange_id, account_id = "bybit", "fundamo"
+    if event.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ()) or event.get("strategy_id") in FUNDAMO_STRATEGY_IDS:
+        exchange_id, account_id = "bybit", resolved_account(event.get("strategy_id"))
     take_profit_mode = take_profit_mode or route.get("take_profit_mode") or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
     validity_minutes = (
         validity_minutes if validity_minutes is not None

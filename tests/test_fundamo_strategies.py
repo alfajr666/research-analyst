@@ -34,6 +34,9 @@ class FundamoStrategyTests(unittest.TestCase):
         self.assertIsNotNone(event)
         self.assertEqual(event["strategy_id"], "dual-zone-follower-v2")
         self.assertEqual(event["phase"], "channel_a")
+        self.assertEqual(event["entry_condition"]["price"], event["entry_price"])
+        self.assertEqual(event["horizon_minutes"], 5)
+        self.assertEqual(event["confidence"], 0.5)
         self.assertLess(event["invalidation_price"], event["entry_price"])
 
     def test_ema20_pullback_requires_engulfing_and_builds_two_r_target(self):
@@ -45,6 +48,8 @@ class FundamoStrategyTests(unittest.TestCase):
         event = evaluate_ema20(local, h4, asset="BTC", symbol="BTCUSDT",
                                cutoff=None, direction="long")
         self.assertIsNotNone(event)
+        self.assertEqual(event["entry_condition"]["price"], event["entry_price"])
+        self.assertEqual(event["horizon_minutes"], 5)
         risk = event["entry_price"] - event["invalidation_price"]
         self.assertAlmostEqual(event["targets"][0], event["entry_price"] + 2 * risk)
 

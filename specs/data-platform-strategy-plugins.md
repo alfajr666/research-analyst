@@ -8,6 +8,11 @@ between the Bybit WS market writer and analyst writer, and the four compact
 strategies own the live admission path. Earlier CoinAnalyze and multi-target
 deployment language below is superseded where it conflicts with those documents.
 
+The historical OpenMarket enrichment universe in this document is not the
+strategy subscription universe. Current upstream performance rotation,
+permanent symbols, and symbol-account-strategy admission are defined by
+`specs/strategy-symbol-performance-rotation-v1.md`.
+
 ## Problem Statement
 
 The Alpha Producer already collects market data, ranks discovery pools, emits

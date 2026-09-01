@@ -98,7 +98,10 @@ def test_publish_propr_adapts_schema_v2_without_sizing(temp_bus_db):
         assert delivery.payload["target"] == "propr"
         assert delivery.payload["strategy_id"] == "impulse-ignition-v1"
         assert delivery.payload["thesis_id"] == "ra-env-1"
-        assert delivery.payload["symbol"] == "ETH/USDT:USDT"
+        assert delivery.payload["symbol"] == "ETH"
+        assert delivery.payload["hints"]["entry"] == 3000.0
+        assert delivery.payload["hints"]["sl"] == 3100.0
+        assert delivery.payload["hints"]["primary_tp"] == 2800.0
         assert not any(k in delivery.payload for k in ("quantity", "risk_amount", "leverage"))
     finally:
         bus.close()

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import config
-from strategy_v2_context import completed_cycle_for, has_active_event, last_completed_bar_fresh, list_candidate_symbols, load_bars_for_interval
+from strategy_v2_context import completed_cycle_for, evaluation_symbols, has_active_event, last_completed_bar_fresh, load_bars_for_interval
 
 
 STRATEGY_ID = "williams-fractal-scalp-v1"
@@ -14,7 +14,6 @@ SETUP_CLASS = "trend_pullback"
 PHASE = "confirmed_fractal_pullback"
 PLUGIN_VERSION = "v1"
 EXECUTION_INTERVAL = "1m"
-ALLOWED_ASSETS = frozenset({"BTC", "ETH", "PAXG", "QQQ"})
 
 
 @dataclass(frozen=True)
@@ -36,7 +35,7 @@ def _ema(values: list[float], span: int) -> list[float]:
 def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime, cfg: WilliamsFractalScalpConfig | None = None) -> dict | None:
     """Evaluate the last completed 1m bar without mutating research state."""
     cfg = cfg or WilliamsFractalScalpConfig()
-    if asset not in ALLOWED_ASSETS or bars is None or bars.height < max(cfg.min_bars, 2 * cfg.fractal_n + 2):
+    if bars is None or bars.height < max(cfg.min_bars, 2 * cfg.fractal_n + 2):
         return None
     if not last_completed_bar_fresh(bars, cutoff):
         return None
@@ -90,9 +89,7 @@ def evaluate(conn, cutoff: datetime | None = None, *, cfg: WilliamsFractalScalpC
     snapshot = snapshot or {}
     cutoff = cutoff or completed_cycle_for(snapshot.get("now"), EXECUTION_INTERVAL)
     events = []
-    for symbol, asset in list_candidate_symbols(conn, cutoff):
-        if asset not in ALLOWED_ASSETS:
-            continue
+    for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
         bars = load_bars_for_interval(conn, symbol, EXECUTION_INTERVAL, cutoff)
         event = evaluate_symbol(bars, asset=asset, symbol=symbol, cutoff=cutoff, cfg=cfg)
         if event and not has_active_event(STRATEGY_ID, asset, event["direction"], alpha_db_path=alpha_db_path, outbox_dir=outbox_dir, now=cutoff):

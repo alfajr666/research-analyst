@@ -70,6 +70,21 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     if raw_id and complete_candidate:
         record_status(raw_id, hard_gate_status=admission["hard_gate"],
                       reason="; ".join(admission["hard_gate_reasons"]))
+    if admission.get("symbol_account_gate") == "fail":
+        if raw_id:
+            record_status(
+                raw_id,
+                hard_gate_status="fail",
+                score_status="not_evaluated",
+                clash_status="not_evaluated",
+                executor_intent_status="rejected",
+                reason=(
+                    f"{admission.get('rejection_reason')}; canonical_asset={admission.get('canonical_asset')}; "
+                    f"resolved_account={admission.get('resolved_account')}; policy_version={admission.get('policy_version')}"
+                ),
+            )
+        print(f"write_event blocked by symbol-account policy: {admission.get('rejection_reason')}")
+        return False, outbox_dir / "blocked.json"
     sid = event.get("strategy_id", "")
     dp = event.get("data_purity", "pure_ca")
     MIXED = getattr(config, "MIXED_STRATEGY_IDS", set())

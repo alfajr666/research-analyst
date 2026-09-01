@@ -17,6 +17,7 @@ from alpha_outbox import write_event, dedupe_key
 from raw_signal_batch import capture, record_status
 from trade_admission import resolve
 from strategy_v2_context import atr_last, completed_cycle_for, load_bars_for_interval
+from symbol_rotation import subscription_assets
 
 # Per spec: re-export from config for modules that imported here before
 PRICE_STRUCTURE_STRATEGY_IDS = getattr(config, "PRICE_STRUCTURE_STRATEGY_IDS", set())
@@ -454,6 +455,12 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     eval_interval = snapshot.get("eval_interval", "15m")
     cutoff = _cutoff_from_id(cutoff_id, now)
     freshness = _data_freshness_seconds(snapshot["market_db_path"], eval_interval, cutoff)
+    attempted_symbols, feed_metadata = subscription_assets(cutoff)
+    snapshot["attempted_symbols"] = len(attempted_symbols)
+    snapshot["subscription_feed_id"] = feed_metadata.get("feed_id")
+    snapshot["subscription_symbols"] = list(zip(
+        config.expand_perp_symbols(attempted_symbols, "bybit"), attempted_symbols
+    ))
     atr_cache = {}
 
     for p in plugins:
@@ -514,9 +521,15 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     for result in decision["results"]:
         raw_id = raw_ids.get(result["candidate_id"])
         if raw_id:
-            record_status(raw_id, hard_gate_status=result["hard_gate"], score_status=result["status"],
-                          clash_status=result["status"], executor_intent_status="selected" if result["candidate_id"] in selected else "advisory_only",
-                          reason="; ".join(result["hard_gate_reasons"]))
+            policy_failed = result.get("symbol_account_gate") == "fail"
+            record_status(
+                raw_id,
+                hard_gate_status=result["hard_gate"],
+                score_status="not_evaluated" if policy_failed else result["status"],
+                clash_status="not_evaluated" if policy_failed else result["status"],
+                executor_intent_status="rejected" if policy_failed else "selected" if result["candidate_id"] in selected else "advisory_only",
+                reason="; ".join(result["hard_gate_reasons"]),
+            )
     for cid in selected:
         event = by_id[cid]
         event["_admission_result"] = next(r for r in decision["results"] if r["candidate_id"] == cid)

@@ -1,7 +1,7 @@
 """Point-in-time enhanced dual-zone follower, emitting both directions."""
 from datetime import timedelta, timezone
 import config
-from strategy_v2_context import completed_cycle_for, ema_last, load_bars_for_interval
+from strategy_v2_context import completed_cycle_for, ema_last, evaluation_symbols, load_bars_for_interval
 
 def _dmi_adx(bars, length, smoothing):
     if bars.height < length + smoothing + 1: return None
@@ -39,18 +39,18 @@ def evaluate_symbol(bars, *, asset, symbol, cutoff, direction="long"):
     stop_pct = (config.DUAL_ZONE_A_STOP_DISTANCE_PCT if ch == "A" else config.DUAL_ZONE_B_STOP_DISTANCE_PCT)/100
     stop = anchor*(1-stop_pct if long else 1+stop_pct); target = e7*(1+target_pct/100 if long else 1-target_pct/100)
     observed = row["timestamp"].replace(tzinfo=timezone.utc) if row["timestamp"].tzinfo is None else row["timestamp"]
-    return {"schema_version": 1, "strategy_id": f"dual-zone{'-short' if not long else ''}-follower-v2", "asset": asset.upper(), "direction": direction, "setup_class": "dual_zone_follower" if long else "dual_zone_short_follower", "phase": f"channel_{ch.lower()}", "observed_at": observed.isoformat(), "valid_until": (observed+timedelta(minutes=5)).isoformat(), "entry_price": close, "invalidation_price": stop, "targets": [target], "confidence_status": "uncalibrated", "feature_snapshot": {"source_symbol": symbol, "execution_timeframe":"5m", "ema7":e7,"ema26":e26,"ema99":e99,"channel":ch,"entry_distance_pct":d26 if ch=="A" else d99}}
+    return {"schema_version": 1, "strategy_id": f"dual-zone{'-short' if not long else ''}-follower-v2", "asset": asset.upper(), "direction": direction, "setup_class": "dual_zone_follower" if long else "dual_zone_short_follower", "phase": f"channel_{ch.lower()}", "observed_at": observed.isoformat(), "valid_until": (observed+timedelta(minutes=5)).isoformat(), "horizon_minutes": 5, "confidence": 0.5, "confidence_status": "uncalibrated", "entry_condition": {"type": "limit_at_ema_context", "price": close}, "entry_price": close, "invalidation_price": stop, "targets": [target], "feature_snapshot": {"source_symbol": symbol, "execution_timeframe":"5m", "ema7":e7,"ema26":e26,"ema99":e99,"channel":ch,"entry_distance_pct":d26 if ch=="A" else d99}}
 
 def _run(cutoff_id, snapshot, direction):
     cutoff = completed_cycle_for(snapshot.get("now"), "5m"); conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
     try:
         out=[]
-        for asset in config.load_static_symbols():
-            bars=load_bars_for_interval(conn, asset, "5m", cutoff)
-            adx_bars=load_bars_for_interval(conn, asset, config.DUAL_ZONE_ADX_TIMEFRAME, cutoff)
+        for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
+            bars=load_bars_for_interval(conn, symbol, "5m", cutoff)
+            adx_bars=load_bars_for_interval(conn, symbol, config.DUAL_ZONE_ADX_TIMEFRAME, cutoff)
             dmi=_dmi_adx(adx_bars, config.DUAL_ZONE_ADX_DI_LENGTH, config.DUAL_ZONE_ADX_SMOOTHING)
             if dmi and dmi[0] >= config.DUAL_ZONE_MIN_ADX and (not config.DUAL_ZONE_USE_DI_DIRECTION or (direction == "long" and dmi[1] > dmi[2]) or (direction == "short" and dmi[2] > dmi[1])):
-                e=evaluate_symbol(bars, asset=asset, symbol=asset, cutoff=cutoff, direction=direction)
+                e=evaluate_symbol(bars, asset=asset, symbol=symbol, cutoff=cutoff, direction=direction)
             else: e=None
             if e: e["input_snapshot_id"] = cutoff_id; out.append(e)
         return out

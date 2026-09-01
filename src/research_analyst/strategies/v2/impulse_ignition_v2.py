@@ -19,7 +19,7 @@ from strategy_v2_context import (
     ema_last,
     has_active_event,
     last_completed_bar_fresh,
-    list_candidate_symbols,
+    evaluation_symbols,
     load_15m_bars,
     load_bars_for_interval,
     load_btc_15m,
@@ -360,7 +360,7 @@ def evaluate(
     now = snapshot.get("now")
     cutoff = cutoff or completed_cycle_for(now, eval_interval)
     btc = load_bars_for_interval(conn, "BTC", eval_interval, cutoff).select(["timestamp", "close"])
-    symbols = list_candidate_symbols(conn, cutoff)
+    symbols = evaluation_symbols(conn, cutoff, snapshot)
     gated: list[dict] = []
     for symbol, asset in symbols:
         bars = load_bars_for_interval(conn, symbol, eval_interval, cutoff)

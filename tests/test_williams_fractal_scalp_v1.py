@@ -3,14 +3,13 @@ from datetime import datetime, timedelta, timezone
 
 import polars as pl
 
-from strategies.compact.williams_fractal_scalp_v1 import ALLOWED_ASSETS, STRATEGY_ID, evaluate_symbol
+from strategies.compact.williams_fractal_scalp_v1 import STRATEGY_ID, evaluate_symbol
 
 
 class WilliamsFractalScalpTests(unittest.TestCase):
-    def test_asset_allowlist(self):
+    def test_short_input_is_rejected_by_data_requirements(self):
         bars = pl.DataFrame({"timestamp": [datetime.now(timezone.utc)], "close": [1.0], "high": [1.0], "low": [1.0]})
         self.assertIsNone(evaluate_symbol(bars, asset="SOL", symbol="SOL", cutoff=datetime.now(timezone.utc)))
-        self.assertEqual(ALLOWED_ASSETS, {"BTC", "ETH", "PAXG", "QQQ"})
 
     def test_strategy_contract_and_two_r_target(self):
         rows = []

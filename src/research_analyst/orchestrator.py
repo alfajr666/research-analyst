@@ -341,6 +341,25 @@ def check_and_alert_confluences(conn):
         except Exception as e:
             print(f"  Error checking alert for {underlying}: {e}")
 
+def _summarize_interval_results(results, symbols, feed_metadata):
+    strategy_summary = {
+        strategy_id: {
+            "status": "completed" if isinstance(result, dict) and "emitted" in result else "skipped" if isinstance(result, dict) and "skipped" in result else "failed" if isinstance(result, dict) and "failed" in result else "unknown",
+            "emitted": result.get("emitted", 0) if isinstance(result, dict) else 0,
+            "attempted_symbols": len(symbols) if isinstance(result, dict) and "emitted" in result else 0,
+            "feed_id": feed_metadata.get("feed_id") if isinstance(result, dict) else None,
+            "detail": result.get("skipped") or result.get("failed") if isinstance(result, dict) else None,
+        }
+        for strategy_id, result in results.items()
+    }
+    return {
+        "strategies": strategy_summary,
+        "strategy_evaluations": sum(
+            item.get("attempted_symbols", 0) for item in strategy_summary.values()
+        ),
+    }
+
+
 def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] | None = None):
     """Runs the full sequential ingestion, scanning, and alerts pipeline."""
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -478,27 +497,21 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
             eval_intervals=eval_intervals,
             cutoff_at=cutoff_at,
         )
+        from symbol_rotation import subscription_assets
+        symbols, feed_metadata = subscription_assets(cutoff_at)
         strategies = list(config.STRATEGY_ENABLED_IDS)
-        symbols = sorted(config.load_static_symbols())
         per_interval = {}
         for interval, results in pres.items():
-            per_interval[interval] = {
-                "strategies": {
-                    strategy_id: {
-                        "status": "completed" if isinstance(result, dict) and "emitted" in result else "skipped" if isinstance(result, dict) and "skipped" in result else "failed" if isinstance(result, dict) and "failed" in result else "unknown",
-                        "emitted": result.get("emitted", 0) if isinstance(result, dict) else 0,
-                        "detail": result.get("skipped") or result.get("failed") if isinstance(result, dict) else None,
-                    }
-                    for strategy_id, result in results.items()
-                },
-                "strategy_evaluations": len(strategies) * len(symbols),
-            }
+            per_interval[interval] = _summarize_interval_results(results, symbols, feed_metadata)
+        actual_evaluations = sum(item["strategy_evaluations"] for item in per_interval.values())
         LAST_EVALUATION_OBSERVABILITY.clear()
         LAST_EVALUATION_OBSERVABILITY.update({
             "strategies_enabled": len(strategies),
             "symbols": symbols,
             "symbols_evaluated": len(symbols),
-            "strategy_evaluations": len(strategies) * len(symbols) * len(per_interval),
+            "strategy_evaluations": actual_evaluations,
+            "feed_id": feed_metadata.get("feed_id"),
+            "fallback_reason": feed_metadata.get("fallback_reason"),
             "signals_emitted": sum(v.get("emitted", 0) for interval in per_interval.values() for v in interval["strategies"].values()),
             "by_interval": per_interval,
         })

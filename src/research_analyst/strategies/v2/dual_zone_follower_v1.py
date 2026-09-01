@@ -2,7 +2,7 @@
 from __future__ import annotations
 from datetime import timedelta, timezone
 import config
-from strategy_v2_context import completed_cycle_for, ema_last, load_bars_for_interval
+from strategy_v2_context import completed_cycle_for, ema_last, evaluation_symbols, load_bars_for_interval
 
 STRATEGY_ID = "dual-zone-follower-v1"
 PLUGIN_VERSION = "v1"
@@ -28,8 +28,8 @@ def run_plugin(cutoff_id, snapshot):
     conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
     try:
         emitted = []
-        for asset in config.load_static_symbols():
-            event = evaluate_symbol(load_bars_for_interval(conn, asset, "5m", cutoff), asset=asset, symbol=asset, cutoff=cutoff)
+        for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
+            event = evaluate_symbol(load_bars_for_interval(conn, symbol, "5m", cutoff), asset=asset, symbol=symbol, cutoff=cutoff)
             if event: event["input_snapshot_id"] = cutoff_id; emitted.append(event)
         return emitted
     finally: conn.close()

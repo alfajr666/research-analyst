@@ -22,11 +22,37 @@ def test_plan_bybit_streams_shards():
     assert shards[0][1] == "kline.5.BASE0USDT"
 
 
-def test_gateway_universe_is_independent_from_compact_evaluation_universe(monkeypatch):
+def test_gateway_static_mode_is_independent_from_compact_evaluation_universe(monkeypatch):
     monkeypatch.setattr(config, "WS_SYMBOL_SOURCE", "static")
     monkeypatch.setattr(config, "load_static_symbols", lambda: ["BTC", "ETH", "PAXG", "QQQ", "SOL"])
+    monkeypatch.setattr(config, "SYMBOL_ROTATION_ENABLED", False)
+    monkeypatch.setattr(config, "EXECUTOR_SNAPSHOT_DIR", "")
     assert wsg.select_universe() == ["BTC", "ETH", "PAXG", "QQQ", "SOL"]
     assert config.COMPACT_STRATEGY_ASSETS == frozenset({"BTC", "ETH", "PAXG", "QQQ"})
+
+
+def test_gateway_keeps_fresh_open_position_after_rotation_drop(monkeypatch, tmp_path):
+    import json
+    from datetime import datetime, timezone
+
+    snapshot = tmp_path / "snapshots" / "bybit" / "fundamo"
+    snapshot.mkdir(parents=True)
+    now = datetime.now(timezone.utc)
+    (snapshot / "latest.json").write_text(json.dumps({
+        "timestamp": now.isoformat(),
+        "positions": [{
+            "status": "OPEN",
+            "symbol": "SOL/USDT:USDT",
+            "original_json": "{}",
+        }],
+    }))
+    monkeypatch.setattr(config, "EXECUTOR_SNAPSHOT_DIR", str(tmp_path / "snapshots"))
+    monkeypatch.setattr(
+        "symbol_rotation.subscription_assets",
+        lambda at=None: (["BTC", "ETH"], {"feed_id": "rotated", "status": "ready"}),
+    )
+
+    assert wsg.select_universe() == ["BTC", "ETH", "SOL"]
 
 
 def test_plan_binance_streams_single_conn():

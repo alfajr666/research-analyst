@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-08-31
+**Last reviewed:** 2026-09-01
 
 ## Mission and boundaries
 
@@ -39,10 +39,17 @@ analyst code and never start duplicate writers.
 | `williams-fractal-scalp-v1` | 1m |
 | `ema9-continuation-stochrsi-v1` | 1m trigger, 5m setup |
 
-The live static universe is `symbols/static_universe.json` and currently contains
-92 Bybit-compatible bases. Legacy compact strategies retain their strategy-specific
-asset restrictions; Dual-Zone strategies iterate the full static universe. Registration is
-controlled by `STRATEGY_ENABLED_IDS`; activation is also constrained by
+The approved policy universe remains `symbols/static_universe.json` and currently
+contains 92 Bybit-compatible bases. It is used for admission and when rotation is
+disabled; it is not the live performance-ranking pool. The four permanent
+subscription symbols are BTC, ETH, PAXG, and QQQUSDT. When enabled, the upstream
+rotation feed fetches all valid Bybit linear USDT tickers, selects the configured
+equal split of top 24h gainers and losers, and refreshes at fixed four-hour UTC
+boundaries. A missing or invalid snapshot falls back to the permanent symbols
+only. Fresh OPEN executor-position assets are added to the gateway subscription
+set so PM context is not lost during rotation.
+Registration is controlled by
+`STRATEGY_ENABLED_IDS`; activation is also constrained by
 `STRATEGY_ACTIVE_IDS` and `plugin_states`. Registered v2 strategies are not
 implicitly live execution strategies.
 
@@ -120,6 +127,14 @@ When diagnosing missing output, inspect static universe and active IDs, fresh
 completed observations, trigger spool/claims, cutoff/features, plugin results,
 raw-signal statuses, alpha outbox/ledger, executor inbox, snapshots, and PM
 decisions. Report advisory, selected, accepted, and filled as distinct states.
+
+For rotation-specific checks, inspect `data/symbol_rotation_feed.json` for the
+feed ID, UTC validity window, source timestamp, selected gainers/losers, and
+fallback reason. Inspect `data/ws_health.json` for the feed ID, subscribed
+count, fallback state, active connections, and last error. The expected live
+shape is 34 feed symbols plus any fresh open-position assets; a feed refresh is
+expected only at a four-hour UTC boundary, with a fresh startup bootstrap
+allowed inside the current window.
 
 ## Message contracts
 

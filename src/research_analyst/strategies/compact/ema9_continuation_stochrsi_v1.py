@@ -6,13 +6,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
-from strategy_v2_context import completed_cycle_for, has_active_event, last_completed_bar_fresh, load_bars_for_interval, list_candidate_symbols
+from strategy_v2_context import completed_cycle_for, evaluation_symbols, has_active_event, last_completed_bar_fresh, load_bars_for_interval
 
 STRATEGY_ID = "ema9-continuation-stochrsi-v1"
 SETUP_CLASS = "ema9_continuation"
 PHASE = "stochrsi_trigger"
 PLUGIN_VERSION = "v1"
-ALLOWED_ASSETS = frozenset({"BTC", "ETH", "PAXG", "QQQ"})
 
 
 def _rsi(values: list[float], length: int = 14) -> list[float | None]:
@@ -69,7 +68,7 @@ def _atr(rows, length: int = 14) -> float:
 
 
 def evaluate_symbol(bars_5m, bars_1m, *, asset: str, symbol: str, cutoff: datetime) -> dict | None:
-    if asset.upper() not in ALLOWED_ASSETS or bars_5m.is_empty() or bars_1m.is_empty():
+    if bars_5m.is_empty() or bars_1m.is_empty():
         return None
     if not last_completed_bar_fresh(bars_5m, cutoff) or bars_5m.height < 30 or bars_1m.height < 40:
         return None
@@ -125,8 +124,7 @@ def evaluate_symbol(bars_5m, bars_1m, *, asset: str, symbol: str, cutoff: dateti
 def evaluate(conn, cutoff: datetime | None = None, *, snapshot: dict | None = None, alpha_db_path=None, outbox_dir=None, eval_interval="5m") -> list[dict]:
     snapshot = snapshot or {}; cutoff = cutoff or completed_cycle_for(snapshot.get("now"), "5m")
     events = []
-    for symbol, asset in list_candidate_symbols(conn, cutoff):
-        if asset.upper() not in ALLOWED_ASSETS: continue
+    for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
         event = evaluate_symbol(load_bars_for_interval(conn, symbol, "5m", cutoff), load_bars_for_interval(conn, symbol, "1m", cutoff), asset=asset, symbol=symbol, cutoff=cutoff)
         if event and not has_active_event(STRATEGY_ID, asset.upper(), event["direction"], alpha_db_path=alpha_db_path, outbox_dir=outbox_dir, now=cutoff): events.append(event)
     return events

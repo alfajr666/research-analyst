@@ -3,11 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import config
-from strategy_v2_context import completed_cycle_for, last_completed_bar_fresh, load_bars_for_interval, list_candidate_symbols
+from strategy_v2_context import completed_cycle_for, evaluation_symbols, last_completed_bar_fresh, load_bars_for_interval
 
 STRATEGY_ID = "bb-rsi-meanrev-v1"
 PLUGIN_VERSION = "v1"
-SUPPORTED_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 
 @dataclass(frozen=True)
 class BBRsiMeanRevConfig:
@@ -50,7 +49,7 @@ def _divergence(bars, rsi, pivot):
 
 def evaluate_symbol(bars, *, asset, symbol, cutoff, cfg=None):
     cfg = cfg or BBRsiMeanRevConfig()
-    if asset.upper() not in SUPPORTED_ASSETS or bars.is_empty() or bars.height < cfg.bb_length + cfg.divergence_pivot * 2 or not last_completed_bar_fresh(bars, cutoff): return None
+    if bars.is_empty() or bars.height < cfg.bb_length + cfg.divergence_pivot * 2 or not last_completed_bar_fresh(bars, cutoff): return None
     closes = [float(x) for x in bars["close"].to_list()]; w = closes[-cfg.bb_length:]; mid = sum(w) / cfg.bb_length; sd = (sum((x-mid)**2 for x in w) / cfg.bb_length) ** .5; lower, upper = mid - 2*sd, mid + 2*sd
     widths = []
     for i in range(cfg.bb_length-1, len(closes)):
@@ -69,8 +68,7 @@ def run_plugin(cutoff_id, snapshot):
     conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path")); emitted = []
     try:
         cutoff = completed_cycle_for(snapshot.get("now"), "5m")
-        for symbol, asset in list_candidate_symbols(conn, cutoff):
-            if asset.upper() not in SUPPORTED_ASSETS: continue
+        for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
             event = evaluate_symbol(load_bars_for_interval(conn, symbol, "5m", cutoff), asset=asset, symbol=symbol, cutoff=cutoff)
             if event is not None:
                 event["input_snapshot_id"] = cutoff_id; emitted.append(event)

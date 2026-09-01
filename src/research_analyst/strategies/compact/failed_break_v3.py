@@ -10,7 +10,7 @@ from strategy_v2_context import (
     completed_cycle_for,
     has_active_event,
     last_completed_bar_fresh,
-    list_candidate_symbols,
+    evaluation_symbols,
     load_bars_for_interval,
     load_preferred_15m_bars,
     resample_ohlcv,
@@ -18,7 +18,6 @@ from strategy_v2_context import (
 
 STRATEGY_ID = "failed-break-v3"
 PLUGIN_VERSION = "failed_break_v3_pinescript_port"
-SUPPORTED_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 
 
 def _stoch_rsi(close: pl.Series) -> tuple[pl.Series, pl.Series]:
@@ -65,7 +64,7 @@ def _latest_setup(bars_15m: pl.DataFrame) -> dict | None:
 
 def evaluate_symbol(bars_5m: pl.DataFrame, bars_15m: pl.DataFrame, *, asset: str,
                     symbol: str, cutoff: datetime, cooldown_bars: int = 4) -> dict | None:
-    if asset.upper() not in SUPPORTED_ASSETS or bars_5m.height < 40 or bars_15m.is_empty(): return None
+    if bars_5m.height < 40 or bars_15m.is_empty(): return None
     if not last_completed_bar_fresh(bars_5m, cutoff) or not last_completed_bar_fresh(bars_15m, cutoff): return None
     setup = _latest_setup(bars_15m)
     if setup is None: return None
@@ -94,8 +93,7 @@ def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
     conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path")); emitted = []
     try:
         cutoff = completed_cycle_for(snapshot.get("now"), "5m")
-        for symbol, asset in list_candidate_symbols(conn, cutoff):
-            if asset.upper() not in SUPPORTED_ASSETS: continue
+        for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
             bars5 = load_bars_for_interval(conn, symbol, "5m", cutoff)
             bars15 = load_preferred_15m_bars(conn, asset=asset, cutoff=cutoff)
             ev = evaluate_symbol(bars5, bars15, asset=asset, symbol=symbol, cutoff=cutoff)

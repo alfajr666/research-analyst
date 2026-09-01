@@ -6,8 +6,10 @@ Implementation specification. No implementation is included in this document.
 
 ## Purpose
 
-Add three strategy families that evaluate the approved 92-symbol static universe
-and route their executor intents exclusively to the Fundamo Bybit profile.
+Add three strategy families that use the approved 92-symbol static universe as
+their candidate pool and route their executor intents exclusively to the
+Fundamo Bybit profile. Evaluation scope is governed by
+`specs/strategy-symbol-performance-rotation-v1.md`.
 
 The existing `dual-zone-follower-v1` and
 `dual-zone-short-follower-v1` implementations are retired. They must not remain
@@ -29,8 +31,13 @@ Use these IDs unless an implementation review explicitly changes them:
 - Source is `config.load_static_symbols()` backed by
   `symbols/static_universe.json`.
 - The list currently contains exactly 92 canonical base assets.
-- Evaluate every listed asset on every applicable completed cutoff.
-- Do not use discovery rotation, top-N selection, or the legacy 64-symbol
+- When performance rotation is disabled, evaluate every listed asset on every
+  applicable completed cutoff.
+- When performance rotation is enabled, evaluate the configurable top-gainer
+  and top-loser rotating slots from the listed assets every four hours, using
+  the equal per-side split defined in
+  `specs/strategy-symbol-performance-rotation-v1.md`.
+- Do not use discovery rotation, OI rotation, or the legacy 64-symbol
   dual-zone reference list.
 - Market data lookup uses the repository's canonical asset/native-symbol mapper.
 - Execution symbol expansion remains executor/outbox-owned.
@@ -51,6 +58,8 @@ Each plugin must:
 - Remain blind to global admission policy. In particular, strategies must not
   add an RR gate, stop-distance gate, clash rule, or score threshold to mimic
   admission.
+- Remain symbol-dumb: the plugin evaluates every symbol delivered by the
+  upstream subscription universe and contains no symbol or account allowlist.
 
 Common operational defaults:
 
@@ -64,16 +73,16 @@ Common operational defaults:
 ## Pipeline placement
 
 ```text
-WS gateway market DB
+WS gateway subscription universe
         |
         v
-completed cutoff finalization
+market observations and completed cutoff
         |
         v
-strategy plugin evaluation over 92 assets
+symbol-dumb strategy plugin evaluation
         |
         v
-raw candidate capture + global admission
+symbol-account-strategy hard gate + global admission
         |
         v
 alpha outbox
@@ -94,7 +103,8 @@ admission later rejects.
 3. Add all new IDs to the appropriate admission/purity classification used by
    the alpha outbox.
 4. Add explicit per-strategy routing entries for every new ID to Fundamo.
-5. Ensure no compact-strategy override can classify these strategies as Hyro.
+5. Add the symbol-account-strategy policy as a hard gate; compact Hyro
+   restrictions must not be implemented inside strategy code.
 6. Add configuration prefixes and documented defaults without changing global
    intent sizing ownership.
 7. Preserve plugin failure isolation: one strategy or symbol failure must not
@@ -103,7 +113,8 @@ admission later rejects.
 
 ## Acceptance criteria
 
-- A complete run attempts all 92 assets for each applicable strategy.
+- A complete run attempts all 92 subscribed assets when rotation is disabled
+  and the configured top-gainer/top-loser count when rotation is enabled.
 - No new strategy intent contains `account_id=hyro`.
 - Retired dual-zone v1 IDs cannot be enabled accidentally as live plugins.
 - An admission rejection is observable and does not cause the strategy to alter

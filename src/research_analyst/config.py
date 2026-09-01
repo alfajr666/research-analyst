@@ -146,9 +146,27 @@ BINANCE_OI_10M_FEED_MERGE_HOURLY = os.getenv("BINANCE_OI_10M_FEED_MERGE_HOURLY",
 # survives restarts/prunes. Canonical bases (e.g. BTC); expand to XUSDT perps at load time.
 STATIC_SYMBOLS_PATH = os.getenv("STATIC_SYMBOLS_PATH", str(BASE_DIR / "symbols" / "static_universe.json"))
 STATIC_SYMBOLS_OVERRIDE = os.getenv("STATIC_SYMBOLS", "").strip()
-# Universe mode for WS/eval: "static" (approved list only), "rotated" (rotation feed only),
-# "both" (static + rotated union).
+# Legacy Binance OI universe mode. Performance rotation has its own feed and
+# does not depend on this setting.
 WS_SYMBOL_SOURCE = os.getenv("WS_SYMBOL_SOURCE", "static").strip().lower()
+# Upstream performance rotation. This is deliberately separate from the
+# Binance OI rotation feed above.
+SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+SYMBOL_ROTATION_REFRESH_HOURS = int(os.getenv("SYMBOL_ROTATION_REFRESH_HOURS", os.getenv("SYMBOL_ROTATION_CADENCE_HOURS", "4")))
+SYMBOL_ROTATION_CADENCE_HOURS = SYMBOL_ROTATION_REFRESH_HOURS  # compatibility alias
+SYMBOL_ROTATION_LOOKBACK_HOURS = int(os.getenv("SYMBOL_ROTATION_LOOKBACK_HOURS", "24"))
+SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT = int(os.getenv("SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT", "30"))
+SYMBOL_ROTATION_BAR_INTERVAL = os.getenv("SYMBOL_ROTATION_BAR_INTERVAL", "5m").strip()
+SYMBOL_ROTATION_FEED_PATH = Path(os.getenv("SYMBOL_ROTATION_FEED_PATH", str(DEFAULT_DB_DIR / "symbol_rotation_feed.json")))
+SYMBOL_ROTATION_SOURCE_MAX_AGE_HOURS = float(os.getenv("SYMBOL_ROTATION_SOURCE_MAX_AGE_HOURS", "6"))
+if SYMBOL_ROTATION_REFRESH_HOURS <= 0:
+    raise ValueError("SYMBOL_ROTATION_REFRESH_HOURS must be positive")
+if SYMBOL_ROTATION_LOOKBACK_HOURS <= 0:
+    raise ValueError("SYMBOL_ROTATION_LOOKBACK_HOURS must be positive")
+if SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT <= 0 or SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT % 2:
+    raise ValueError("SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT must be a positive even number")
+if not SYMBOL_ROTATION_BAR_INTERVAL:
+    raise ValueError("SYMBOL_ROTATION_BAR_INTERVAL must not be empty")
 # WS provider toggles. Bybit is the default public source; Binance is opt-in/off.
 WS_BYBIT_ENABLED = os.getenv("WS_BYBIT_ENABLED", "true").lower() == "true"
 WS_BINANCE_ENABLED = os.getenv("WS_BINANCE_ENABLED", "false").lower() == "true"
@@ -212,9 +230,7 @@ def expand_perp_symbols(bases: List[str], venue: str = "bybit") -> List[str]:
 
     bybit: BTC -> BTCUSDT (linear USDT perp). binance: BTC -> BTCUSDT.
     """
-    if venue == "binance":
-        return [f"{b}USDT" for b in bases]
-    return [f"{b}USDT" for b in bases]
+    return [b if str(b).upper().endswith("USDT") else f"{b}USDT" for b in bases]
 
 
 def init_binance_oi_db(db_path: str | Path | None = None):

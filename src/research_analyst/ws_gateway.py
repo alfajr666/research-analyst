@@ -46,7 +46,11 @@ STREAMED_TFS = [t.strip() for t in os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").sp
 WS_MESSAGE_TIMEOUT_SECONDS = 90
 WS_STALE_SECONDS = int(os.getenv("WS_STALE_SECONDS", "180"))
 _STARTED_MONOTONIC = time.monotonic()
-_HEALTH = {"last_message_at": None, "last_bar_at": None, "active_connections": 0, "reconnect_count": 0, "last_error": None}
+_HEALTH = {
+    "last_message_at": None, "last_bar_at": None, "active_connections": 0,
+    "reconnect_count": 0, "last_error": None, "subscribed_count": 0,
+    "feed_id": None, "fallback_state": None,
+}
 
 
 def _write_health(status: str) -> None:
@@ -117,15 +121,117 @@ def load_rotated_bases() -> List[str]:
     return out
 
 
+def _open_position_assets(now: datetime | None = None) -> set[str]:
+    """Keep fresh open positions subscribed after rotation removes their assets."""
+    snapshot_dir = getattr(config, "EXECUTOR_SNAPSHOT_DIR", "") or ""
+    if not snapshot_dir:
+        return set()
+    base = Path(snapshot_dir)
+    if not base.exists():
+        return set()
+    now = now or datetime.now(timezone.utc)
+    assets: set[str] = set()
+    account_dirs = sorted(path for path in base.glob("*/*") if path.is_dir())
+    for account_dir in account_dirs:
+        latest = account_dir / "latest.json"
+        snapshot = None
+        for attempt in range(3):
+            try:
+                snapshot = json.loads(latest.read_text(encoding="utf-8"))
+                break
+            except (OSError, ValueError, json.JSONDecodeError):
+                if attempt < 2:
+                    time.sleep(0.02)
+        if snapshot is None:
+            continue
+        try:
+            snapshot_at = datetime.fromisoformat(str(snapshot["timestamp"]).replace("Z", "+00:00"))
+            if snapshot_at.tzinfo is None:
+                snapshot_at = snapshot_at.replace(tzinfo=timezone.utc)
+            age = (now - snapshot_at.astimezone(timezone.utc)).total_seconds()
+            if age < 0 or age > float(getattr(config, "DATA_FRESHNESS_MAX_SECONDS", 600)):
+                continue
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        for position in snapshot.get("positions", []):
+            if str(position.get("status", "")).upper() != "OPEN":
+                continue
+            original = {}
+            try:
+                original = json.loads(position.get("original_json") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            asset = original.get("asset")
+            if not asset and position.get("symbol"):
+                asset = str(position["symbol"]).split("/")[0]
+            if asset:
+                assets.add(str(asset).upper().removesuffix("USDT"))
+    return assets
+
+
 def select_universe() -> List[str]:
-    """Return the full market-feed universe; evaluation filtering is separate."""
-    src = (getattr(config, "WS_SYMBOL_SOURCE", "static") or "static").lower()
-    bases: List[str] = []
-    if src in ("static", "both"):
-        bases += config.load_static_symbols()
-    if src in ("rotated", "both"):
-        bases += load_rotated_bases()
+    """Return rotated symbols plus permanent and open-position assets."""
+    from symbol_rotation import subscription_assets
+
+    now = datetime.now(timezone.utc)
+    bases, metadata = subscription_assets(now)
+    carryover = _open_position_assets(now)
+    if carryover:
+        bases = sorted(set(bases) | carryover)
+        metadata = dict(metadata)
+        metadata["position_carryover_symbols"] = sorted(carryover)
+    _HEALTH["subscribed_count"] = len(bases)
+    _HEALTH["feed_id"] = metadata.get("feed_id")
+    _HEALTH["fallback_state"] = metadata.get("fallback_reason")
     return sorted(set(b.strip().upper() for b in bases if b and b.strip()))
+
+
+def subscription_state(at: datetime | None = None) -> tuple[List[str], dict]:
+    """Expose symbols plus feed identity for the reconciliation supervisor."""
+    return select_universe_at(at or datetime.now(timezone.utc))
+
+
+def select_universe_at(at: datetime) -> tuple[List[str], dict]:
+    """Return a deterministic subscription snapshot for a supplied timestamp."""
+    from symbol_rotation import subscription_assets
+
+    bases, metadata = subscription_assets(at)
+    carryover = _open_position_assets(at)
+    if carryover:
+        bases = sorted(set(bases) | carryover)
+        metadata = dict(metadata)
+        metadata["position_carryover_symbols"] = sorted(carryover)
+    return sorted(set(b.strip().upper() for b in bases if b and b.strip())), metadata
+
+
+class SubscriptionSupervisor:
+    """Reconcile feed versions without blocking provider reads.
+
+    The provider task is cancelled and replaced only after the desired feed
+    version changes. Reconciliation is therefore idempotent and a repeated
+    feed cannot duplicate streams.
+    """
+
+    def __init__(self, initial: List[str] | None = None, feed: dict | None = None):
+        self.bases = initial if initial is not None else select_universe()
+        self.feed = feed or {}
+
+    def reconcile(self, bases: List[str], feed: dict | None = None) -> dict:
+        desired = sorted(set(str(base).strip().upper() for base in bases if str(base).strip()))
+        if not desired:
+            desired = list(self.bases)
+        next_feed = feed or {}
+        changed = desired != self.bases or next_feed.get("feed_id") != self.feed.get("feed_id")
+        result = {
+            "changed": changed,
+            "added": sorted(set(desired) - set(self.bases)),
+            "removed": sorted(set(self.bases) - set(desired)),
+            "feed_id": next_feed.get("feed_id"),
+        }
+        if changed:
+            self.bases[:] = desired
+            self.feed = next_feed
+        return result
 
 
 # --------------------------------------------------------------------------- #
@@ -597,13 +703,47 @@ async def _run(provider: str, bases: List[str], queue: asyncio.Queue, source: st
         await _binance_conn(streams, queue, source)
 
 
+async def _supervise_provider(provider: str, supervisor: SubscriptionSupervisor,
+                              queue: asyncio.Queue, source: str) -> None:
+    """Keep live streams aligned with the current durable feed version."""
+    stream_task = asyncio.create_task(_run(provider, supervisor.bases, queue, source))
+    # Each provider owns its observed feed version even when the symbol list is
+    # shared, so Bybit reconciliation cannot hide a Binance update.
+    observed_feed_id = supervisor.feed.get("feed_id")
+    try:
+        while True:
+            await asyncio.sleep(5)
+            desired, feed = subscription_state()
+            if desired == supervisor.bases and feed.get("feed_id") == observed_feed_id:
+                continue
+            result = supervisor.reconcile(desired, feed)
+            observed_feed_id = feed.get("feed_id")
+            print(
+                f"[ws_gateway] reconcile feed={result['feed_id']} "
+                f"added={len(result['added'])} removed={len(result['removed'])} "
+                f"subscribed={len(supervisor.bases)}"
+            )
+            stream_task.cancel()
+            await asyncio.gather(stream_task, return_exceptions=True)
+            stream_task = asyncio.create_task(_run(provider, supervisor.bases, queue, source))
+            _HEALTH["subscribed_count"] = len(supervisor.bases)
+            _HEALTH["feed_id"] = supervisor.feed.get("feed_id")
+            _HEALTH["fallback_state"] = supervisor.feed.get("fallback_reason")
+    finally:
+        stream_task.cancel()
+        await asyncio.gather(stream_task, return_exceptions=True)
+
+
 async def run_async() -> None:
     config.init_market_db()
-    bases = select_universe()
+    bases, feed = subscription_state()
     if not bases:
         print("[ws_gateway] empty universe; check WS_SYMBOL_SOURCE / static_universe.json")
         return
     print(f"[ws_gateway] universe={len(bases)} symbols; bybit={config.WS_BYBIT_ENABLED} binance={config.WS_BINANCE_ENABLED}; streamed TFs={STREAMED_TFS}")
+    _HEALTH["subscribed_count"] = len(bases)
+    _HEALTH["feed_id"] = feed.get("feed_id")
+    _HEALTH["fallback_state"] = feed.get("fallback_reason")
 
     if config.WS_BYBIT_ENABLED:
         n = backfill_via_rest("bybit", bases, config.WS_BACKFILL_HOURS)
@@ -615,11 +755,12 @@ async def run_async() -> None:
     queue: asyncio.Queue = asyncio.Queue()
     ws_source = config.BYBIT_WS_SOURCE if config.WS_BYBIT_ENABLED else config.BINANCE_WS_SOURCE
     _write_health("starting")
-    tasks = [writer_task(queue, bases, ws_source), health_monitor()]
+    supervisor = SubscriptionSupervisor(bases, feed)
+    tasks = [writer_task(queue, supervisor.bases, ws_source), health_monitor()]
     if config.WS_BYBIT_ENABLED:
-        tasks.append(_run("bybit", bases, queue, config.BYBIT_WS_SOURCE))
+        tasks.append(_supervise_provider("bybit", supervisor, queue, config.BYBIT_WS_SOURCE))
     if config.WS_BINANCE_ENABLED:
-        tasks.append(_run("binance", bases, queue, config.BINANCE_WS_SOURCE))
+        tasks.append(_supervise_provider("binance", supervisor, queue, config.BINANCE_WS_SOURCE))
     await asyncio.gather(*tasks)
 
 

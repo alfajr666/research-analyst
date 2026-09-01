@@ -1,10 +1,10 @@
 # Research Analyst
 
-**Last reviewed:** 2026-08-31
+**Last reviewed:** 2026-09-01
 
 `research-analyst` is a read-and-decide market research service. It consumes
 completed Bybit perpetual bars and evaluates configured live strategies across the
-92-symbol Bybit-compatible static universe,
+currently published subscription feed,
 keeps an auditable analyst ledger, publishes advisory alpha, and can hand a
 selected intent to Bybit executors through the shared SQLite bus. It does not hold
 exchange credentials, size positions, place orders, or claim that an intent was
@@ -13,11 +13,14 @@ filled.
 ## Runtime topology
 
 ```text
+Bybit public REST ticker snapshot (all linear USDT contracts)
+  -> symbol_rotation -> four-hour UTC feed (15 gainers + 15 losers)
+  -> ws_gateway subscription supervisor
 Bybit public WS: 1m + 5m kline, mark price
   -> ws_gateway -> market.sqlite3/source_observations
        5m -> local 15m/1h/4h resampling
   -> orchestrator -> finalized cutoff snapshots
-        -> configured strategies across the static universe
+   -> configured strategies across the published subscription feed
         -> raw_signals (before admission)
         -> hard admission (including freshness) -> soft context scoring -> live clash resolution
             -> analyst.sqlite3 alpha ledger / Discord alpha outbox
@@ -44,8 +47,8 @@ small REST warm backfill at startup, but the live stream is Bybit WS.
 
 ## Live strategies
 
-The live static universe is defined in `symbols/static_universe.json` and currently
-contains 92 Bybit-compatible bases. The active execution-admission set is the
+The approved policy universe is defined in `symbols/static_universe.json` and
+currently contains 92 Bybit-compatible bases. The active execution-admission set is the
 four Fundamo strategy families:
 
 | Strategy | Primary evaluation |
@@ -57,6 +60,22 @@ four Fundamo strategy families:
 
 `STRATEGY_ENABLED_IDS`, `STRATEGY_ACTIVE_IDS`, and `plugin_states` control
 registration and runtime activation.
+
+## Performance Rotation
+
+The gateway subscription feed is refreshed at fixed four-hour UTC boundaries.
+At each boundary, the rotation worker fetches Bybit's linear 24-hour ticker
+snapshot, ranks every valid USDT contract by `lastPrice / prevPrice24h - 1`,
+and publishes 15 gainers plus 15 losers alongside permanent `BTC`, `ETH`,
+`PAXG`, and `QQQUSDT`. The resulting feed is valid only until the next UTC
+boundary. The approved 92-symbol file remains the policy universe and the
+rotation-disabled subscription mode; it does not constrain live ticker ranking.
+
+If the ticker snapshot is unavailable or invalid, the feed records the reason
+and subscribes to the four permanent symbols. Fresh `OPEN` position assets from
+`EXECUTOR_SNAPSHOT_DIR` are always unioned into the gateway subscriptions.
+The feed and gateway health files expose the feed ID, validity window, selected
+gainers/losers, fallback state, and subscribed count.
 
 The four active strategies route their Bybit deliveries exclusively to account
 `fundamo`. When Propr fan-out is enabled, the same admitted thesis is delivered
@@ -225,7 +244,7 @@ Strategy: LowFloatBreakoutStrategy
 ## Service operation
 
 Production services are managed by the host's `oxmgr` definitions: one
-`ws_gateway`, one orchestrator, and one independent PM sidecar role. The repository's
+`symbol_rotation` worker, one `ws_gateway`, one orchestrator, and one independent PM sidecar role. The repository's
 orchestrator consumes durable completed-5m triggers from the WebSocket gateway.
 Run only one owner for each database.
 
@@ -252,8 +271,19 @@ market freshness before starting the orchestrator. Then inspect, in order,
 `data/health.json`, completed observations, cutoff/plugin results, raw-signal
 statuses, `data/alpha_outbox/`, the analyst ledger, executor intents, position
 snapshots, and PM decisions. Never commit `.env`, keys, webhooks, databases, or
- executor credentials. Signals and LLM prose are evidence, not proof of alpha or
- a fill.
+executor credentials. Signals and LLM prose are evidence, not proof of alpha or
+a fill.
+
+For rotation observability:
+
+```bash
+jq '{feed_id,status,valid_from,valid_until,source_as_of,qualified_count,rotating_symbol_count,symbol_count,fallback_reason}' data/symbol_rotation_feed.json
+jq '{status,feed_id,subscribed_count,fallback_state,active_connections,last_error}' data/ws_health.json
+oxmgr logs research-analyst-symbol-rotation --lines 20
+```
+
+The rotation worker bootstraps the current UTC window when needed and publishes
+the next feed only at the next four-hour UTC boundary.
 
 ## Shared SQLite Bus
 

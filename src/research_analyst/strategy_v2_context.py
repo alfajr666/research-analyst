@@ -211,40 +211,36 @@ def load_btc_15m(conn, cutoff: datetime, lookback_days: int = LOOKBACK_DAYS) -> 
     return df.select(["timestamp", "close"])
 
 
-def list_candidate_symbols(conn, cutoff: datetime) -> list[tuple[str, str]]:
-    """Return (native_symbol, asset) with recent completed bars before cutoff."""
+def list_candidate_symbols(conn, cutoff: datetime, *, apply_rotation: bool = False,
+                           assets: Iterable[str] | None = None) -> list[tuple[str, str]]:
+    """Return every symbol in the upstream subscription universe.
+
+    Strategies are intentionally unaware of rotation policy. The optional
+    ``assets`` argument is retained for non-strategy callers and tests only.
+    """
     cutoff = _ensure_utc(cutoff)
-    watch = conn.execute(
-        """
-            SELECT symbol, asset
-            FROM (
-              SELECT symbol, asset, state,
-                ROW_NUMBER() OVER (
-            PARTITION BY pool, symbol ORDER BY observed_at DESC, event_id DESC
-                ) AS row_number
-              FROM discovery_watchlist_history
-            )
-            WHERE row_number = 1
-              AND state IN ('active', 'warmed')
-        """
-    ).fetchall()
-    seen: dict[str, str] = {}
-    for symbol, asset in watch:
-        if symbol and asset:
-            seen[str(symbol)] = str(asset)
-    if seen:
-        return sorted(seen.items())
-    rows = conn.execute(
-        """
-        SELECT DISTINCT native_symbol, asset
-        FROM source_observations
-        WHERE source_end < ? AND source_end >= datetime(?, '-28 hours')
-          AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0
-        ORDER BY native_symbol
-        """,
-            (cutoff, cutoff),
-    ).fetchall()
-    return [(str(s), str(a)) for s, a in rows if s and a]
+    if assets is not None:
+        bases = sorted({str(asset).strip().upper() for asset in assets if str(asset).strip()})
+        candidates = list(zip(config.expand_perp_symbols(bases, "bybit"), bases))
+        if apply_rotation:
+            from symbol_rotation import select_symbols
+            return select_symbols(conn, candidates, cutoff)
+        return candidates
+    from symbol_rotation import subscription_assets
+    bases, feed = subscription_assets(cutoff)
+    candidates = list(zip(config.expand_perp_symbols(bases, "bybit"), bases))
+    # The gateway and the evaluator consume the same durable rotation snapshot.
+    # A missing/expired feed is fail-closed to permanent assets; strategies must
+    # not re-rank that fallback from local bars.
+    return candidates
+
+
+def evaluation_symbols(conn, cutoff: datetime, snapshot: dict | None = None) -> list[tuple[str, str]]:
+    """Use the evaluator-supplied scope; retain the loader for direct callers."""
+    supplied = (snapshot or {}).get("subscription_symbols")
+    if supplied is not None:
+        return [(str(symbol), str(asset)) for symbol, asset in supplied]
+    return list_candidate_symbols(conn, cutoff)
 
 
 def resample_ohlcv(bars: pl.DataFrame, every: str) -> pl.DataFrame:

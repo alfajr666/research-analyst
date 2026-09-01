@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import polars as pl
 
-from strategies.compact.failed_break_v3 import SUPPORTED_ASSETS, evaluate_symbol
+from strategies.compact.failed_break_v3 import evaluate_symbol
 
 
 def _bars(n=40):
@@ -15,9 +15,6 @@ def _bars(n=40):
 
 
 class FailedBreakV3Tests(unittest.TestCase):
-    def test_exact_symbol_scope(self):
-        self.assertEqual(SUPPORTED_ASSETS, frozenset(("BTC", "ETH", "PAXG", "QQQ")))
-
     def test_emits_concrete_entry_stop_and_two_r_fallback(self):
         setup = {"direction": "long", "stop": 98.0, "swing": 99.0,
                  "armed_at": datetime(2026, 8, 29, tzinfo=timezone.utc)}
