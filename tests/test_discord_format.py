@@ -33,7 +33,7 @@ class DiscordFormatTests(unittest.TestCase):
             "feature_snapshot": {"volume_spike_multiple": 8.74, "ema_distance_pct": 0.45},
         }
         message = format_discord_signal(event)
-        self.assertIn("**ALPHA · LONG · ETH**", message)
+        self.assertIn("**ALPHA SIGNAL · LONG · ETH**", message)
         self.assertIn("Accumulation base", message)
         self.assertNotIn("Confidence", message)
         self.assertIn("1890.23", message)
@@ -54,7 +54,7 @@ class DiscordFormatTests(unittest.TestCase):
             "feature_snapshot": {},
         }
         message = format_discord_signal(event)
-        self.assertIn("Dual-zone trend pullback", message)
+        self.assertIn("Trend pullback", message)
         self.assertNotIn("Impulse ignition", message)
 
     def test_oi_hour_message_top_candidates(self):

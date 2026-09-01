@@ -45,6 +45,11 @@ Derived 15m, 1h, and 4h bars are local resamples of completed 5m observations;
 they are not a CoinAnalyze live-ingestion dependency. The gateway may perform a
 small REST warm backfill at startup, but the live stream is Bybit WS.
 
+Closed WebSocket bars may use the source-end encoding `14:44:59.999` for the
+`14:45` boundary. The resampler normalizes this representation before exact
+bucket matching; otherwise derived 4h buckets disappear and the hard admission
+gate correctly rejects candidates with unavailable `ATR14_4h`.
+
 ## Live strategies
 
 The approved policy universe is defined in `symbols/static_universe.json` and
@@ -116,10 +121,39 @@ only and exclude open/future bars.
 Missing context is `unavailable`, not fabricated support and not an automatic
 rejection. Scores rank candidates but cannot rescue a failed hard gate.
 
+Raw candidates are not trade intents. A candidate can be present in
+`raw_signals` and still be rejected by symbol-account policy, invalid or
+insufficient 4h ATR history, reward/risk, stop distance, expiry, or clash
+resolution. Only a selected candidate becomes an executor intent. Compact Hyro
+strategies are limited to `BTC`, `ETH`, `PAXG`, and `QQQ`; QQQ needs 14 complete
+4h bars before its ATR risk input can pass admission.
+
 Live clash resolution ranks same-direction candidates by score with deterministic
 priority and lexical tie breaks. Opposite directions require a score margin of
 `CLASH_MIN_SCORE_MARGIN` (default `2.0`); an unresolved clash remains advisory
 and produces no intent. Losing and failed candidates remain auditable.
+
+## Alpha messages and confidence
+
+Public alpha messages use the shared structured formatter for Discord and
+Telegram. They contain:
+
+- Human-readable strategy and exact strategy ID.
+- Human-readable setup and phase.
+- Admission/selection status when available.
+- Strategy-specific evidence only when present in the event snapshot.
+- Entry, invalidation, target(s), risk, reward/risk, and validity timestamps.
+- An explicit disclaimer that execution and fills are not confirmed.
+
+The provisional `confidence` and `confidence_status` fields remain in internal
+alpha events and audit tables, but are intentionally absent from public
+messages. Confidence calibration is deferred. No LLM confidence is authorized.
+
+Calibration is a separate read-only process that can consume event ledgers from
+multiple producers and completed market bars. It owns a separate calibration
+store/model registry and must never run inside the 5m evaluation path. The
+shared SQLite intent bus remains execution-only; it may be used only for
+optional fill and receipt correlation.
 
 ## Intent and execution safety
 
@@ -151,6 +185,17 @@ valid execution opportunities.
 Keep delivery disabled until the executor paper path, account, symbol universe,
 and protection behavior are verified. A Discord or LLM failure must not create,
 delay, or suppress an executor intent.
+
+### Production diagnosis, 2026-09-01
+
+The 5m WebSocket feed encoded closed bars one millisecond before the boundary.
+The resampler previously required exact endpoint equality, which discarded every
+derived 4h bucket and caused permitted candidates to fail the ATR hard gate. The
+timestamp normalization fix is covered by a regression test and is active in the
+restarted orchestrator. The first post-fix live cycle wrote an `SPX long`
+Fundamo intent; the Bybit delivery was accepted. Propr retries and order
+recovery are executor-owned states, not evidence that the analyst failed to
+produce the intent.
 
 ## PM sidecar
 
@@ -205,9 +250,10 @@ are observation-only and never go to Telegram or the executor.
 
 ## Discord message contracts
 
-- **Entry alpha:** bold `ALPHA · DIRECTION · ASSET`, setup family/strategy,
-  phase/confidence, trigger, invalidation, targets, validity window, and bounded
-  context.
+- **Entry alpha:** structured `ALPHA SIGNAL · DIRECTION · ASSET`, human-readable
+  strategy and exact ID, setup/phase, optional persisted evidence, trade plan,
+  risk profile, validity window, and execution disclaimer. Confidence is not
+  currently displayed.
 - **Research note:** optional `---` section with advisory verdict, thesis, and up
   to two limitations.
 - **Raw signals:** the exact fixed-width 30-minute format above.

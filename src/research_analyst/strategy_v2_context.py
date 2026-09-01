@@ -261,7 +261,11 @@ def resample_ohlcv(bars: pl.DataFrame, every: str) -> pl.DataFrame:
     if seconds is None:
         raise ValueError(f"unsupported resampling interval: {every}")
     rows = bars.sort("timestamp").to_dicts()
-    timestamps = [_ensure_utc(row["timestamp"]) for row in rows]
+    # Exchange feeds may encode closed bar ends one millisecond before the boundary.
+    def normalize_bar_end(value: Any) -> datetime:
+        return (_ensure_utc(value) + timedelta(milliseconds=1)).replace(microsecond=0)
+
+    timestamps = [normalize_bar_end(row["timestamp"]) for row in rows]
     deltas = [int((timestamps[i] - timestamps[i - 1]).total_seconds())
               for i in range(1, len(timestamps))
               if timestamps[i] > timestamps[i - 1]]
@@ -276,7 +280,7 @@ def resample_ohlcv(bars: pl.DataFrame, every: str) -> pl.DataFrame:
         grouped.setdefault(bucket_end, []).append(row)
     output: List[Dict[str, Any]] = []
     for bucket_end, bucket_rows in sorted(grouped.items()):
-        by_end = {_ensure_utc(row["timestamp"]): row for row in bucket_rows}
+        by_end = {normalize_bar_end(row["timestamp"]): row for row in bucket_rows}
         expected = [datetime.fromtimestamp(bucket_end - base_seconds * i, timezone.utc)
                     for i in range(required - 1, -1, -1)]
         if any(end not in by_end for end in expected):

@@ -13,7 +13,7 @@ import httpx
 
 import config
 from alpha_outbox import OUTBOX_DIR, dedupe_key
-from discord_format import format_discord_research_note, format_discord_signal
+from discord_format import format_alpha_signal, format_discord_research_note, format_discord_signal
 
 
 POLL_INTERVAL_SECONDS = 30
@@ -67,55 +67,7 @@ def validate_event(event: dict) -> None:
 
 
 def format_signal(event: dict) -> str:
-    setup_class = event["setup_class"]
-    if setup_class in {"dual_zone_follower", "dual_zone_short_follower"}:
-        family = "Dual-zone trend pullback"
-    elif setup_class.startswith("continuation"):
-        family = "Continuation"
-    elif setup_class == "accumulation_base":
-        family = "Accumulation base"
-    elif setup_class == "liquidity_reversal":
-        family = "Liquidity reversal"
-    elif setup_class in {"impulse_ignition", "squeeze_ignition"}:
-        family = "Impulse ignition"
-    else:
-        family = "Strategy setup"
-    trigger = event["entry_condition"]
-    trigger_text = trigger["type"].replace("_", " ")
-    if "price" in trigger:
-        trigger_text += f" at {trigger['price']:g}"
-    targets = ", ".join(f"{target:g}" for target in event["targets"])
-    expiry = parse_timestamp(event["valid_until"]).strftime("%Y-%m-%d %H:%M UTC")
-    observed = parse_timestamp(event["observed_at"]).strftime("%Y-%m-%d %H:%M UTC")
-    text = (
-        "ALPHA SIGNAL\n"
-        f"Strategy family: {family}\n"
-        f"Strategy: {event['strategy_id']}\n"
-        f"Asset: {event['asset']}\n"
-        f"Direction: {event['direction'].upper()}\n"
-        f"Phase: {event['phase']}\n"
-        f"Trigger: {trigger_text}\n"
-        f"Invalidation: {event['invalidation_price']:g}\n"
-        f"Targets: {targets}\n"
-        f"Expiry: {expiry}\n"
-        f"Observed: {observed}"
-    )
-    # Compact Context from persisted feature snapshot; omit any unavailable items
-    snap = event.get("feature_snapshot") or {}
-    parts = []
-    for k, label in (
-        ("fvg_4h", "4h FVG"),
-        ("order_block_4h", "4h OB"),
-        ("profile", "profile"),
-        ("flow_15m", "15m flow"),
-        ("coinalyze_candle_distributed_volume_profile_v1", "approx VP"),
-    ):
-        v = snap.get(k)
-        if v and str(v).lower() != "unavailable":
-            parts.append(f"{label}:{v}")
-    if parts:
-        text += "\nContext: " + "; ".join(parts)
-    return text
+    return format_alpha_signal(event, markdown=False)
 
 
 def format_research_note(report: dict) -> str:

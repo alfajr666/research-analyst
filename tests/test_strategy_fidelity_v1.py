@@ -32,6 +32,18 @@ def test_resampling_uses_end_stamps_and_omits_partial_buckets():
     assert result["data_purity"].to_list() == ["unknown"]
 
 
+def test_resampling_accepts_millisecond_bar_end_timestamps():
+    start = datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc)
+    bars = _five_minute_bars(48, start)
+    bars = bars.with_columns(
+        pl.col("timestamp").dt.offset_by("-1ms"),
+    )
+
+    result = resample_ohlcv(bars, "4h")
+
+    assert result["timestamp"].to_list() == [datetime(2026, 1, 1, 4, tzinfo=timezone.utc)]
+
+
 def test_wilder_indicators_have_declared_warmup_and_zero_stoch_denominator():
     bars = _five_minute_bars(20)
     rsi = wilder_rsi(bars["close"].to_list(), 14)

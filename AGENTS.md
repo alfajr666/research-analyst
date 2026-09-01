@@ -28,6 +28,9 @@
   `INTENT_BUS_BYBIT_ENABLED` must be enabled for Bybit delivery. Live Propr
   fan-out additionally requires `INTENT_BUS_PROPR_ENABLED=true`. Legacy JSON
   inbox writing is compatibility-only and defaults off.
+- Confidence calibration is outside the shared intent bus. A separate
+  read-only calibrator may consume cross-producer event and market ledgers and
+  publish versioned model artifacts without entering the 5m evaluation path.
 - The seven Fundamo strategies route Bybit deliveries exclusively to
   `bybit/fundamo`; admitted events are independently fanned out to the Propr
   bus target when enabled. Propr owns its account routing, sizing, risk gates,
@@ -49,6 +52,10 @@ delivery and execution handoff remain consumer-owned and must be verified from
 the publisher/execution-delivery tables before enabling additional routes.
 - LLM research review is disabled in the live analyst path; `research_context`
   is not required for strategy evaluation or intent delivery.
+- Public alpha messages use the structured strategy/setup, evidence, trade-plan,
+  risk, validity, and execution-disclaimer layout. Provisional confidence is
+  retained internally for audit but is deliberately omitted from Discord and
+  Telegram until an out-of-sample calibration model is approved.
 
 ## Production rollout state (2026-09-01)
 
@@ -66,10 +73,28 @@ the publisher/execution-delivery tables before enabling additional routes.
   new strategies emitted no candidates during those two cutoffs, so their
   actual executor delivery was not exercised by a live signal.
 - The signal publisher still reports one invalid event per observed cycle from
-  malformed pre-existing alpha outbox files missing `confidence`,
-  `entry_condition`, and `horizon_minutes`. This is isolated from pipeline
-  completion and remains follow-up work; do not treat publisher state as a
-  successful delivery receipt.
+  malformed pre-existing alpha outbox files missing internal required fields
+  such as `confidence`, `entry_condition`, and `horizon_minutes`. This is
+  isolated from pipeline completion; confidence is not a public message field,
+  and publisher state is not a successful delivery receipt.
+
+## Production diagnosis and verification (2026-09-01)
+
+- A no-intent period was traced to 5m WebSocket bars stamped one millisecond
+  before their closed-bar boundary, for example `14:44:59.999`. The local
+  resampler matched exact timestamps and discarded every derived 4h bucket, so
+  `ATR14_4h` was unavailable and permitted candidates failed hard admission.
+- `resample_ohlcv` now normalizes those timestamps before bucket matching, with
+  a regression test covering the feed encoding. The orchestrator was restarted
+  through `oxmgr` and loaded the fix; the 14:45 UTC cycle wrote an `SPX long`
+  Fundamo intent and Bybit accepted its delivery.
+- Raw candidates from compact Hyro strategies can still be captured for any
+  subscribed symbol, but only `BTC`, `ETH`, `PAXG`, and `QQQ` may pass the Hyro
+  symbol-account policy. QQQ also requires 14 complete 4h bars before its ATR
+  risk input is available.
+- Propr delivery and order recovery remain executor-owned. A Propr `RETRY`
+  receipt is not evidence of an analyst pipeline failure or a new analyst
+  intent.
 
 ## Verification
 
