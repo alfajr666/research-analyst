@@ -30,6 +30,9 @@ FUNDAMO_STRATEGY_IDS = frozenset((
     "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1",
     "ema-stack-15m-adx-stochrsi-5m-v1",
+    "gold-trend-ema-bb-stoch-v1",
+    "mtf-exhaustion-reversal-v1",
+    "trend-wall-v1",
 ))
 from trade_admission import derive_2r_target, resolved_account
 

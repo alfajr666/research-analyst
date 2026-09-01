@@ -176,6 +176,11 @@ COMPACT_STRATEGY_IDS = frozenset((
     "failed-break-v3", "bb-rsi-meanrev-v1",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
 ))
+FUNDAMO_STRATEGY_IDS = frozenset((
+    "dual-zone-follower-v2", "dual-zone-short-follower-v2",
+    "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
+    "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
+))
 DUAL_ZONE_STRATEGY_ID = "dual-zone-follower-v2"
 DUAL_ZONE_EXIT_EMA_LENGTH = int(os.getenv("DUAL_ZONE_EXIT_EMA_LENGTH", "7"))
 DUAL_ZONE_ANCHOR_EMA_LENGTH = int(os.getenv("DUAL_ZONE_ANCHOR_EMA_LENGTH", "26"))
@@ -198,6 +203,32 @@ DUAL_ZONE_ADX_DI_LENGTH = int(os.getenv("DUAL_ZONE_ADX_DI_LENGTH", "14"))
 DUAL_ZONE_ADX_SMOOTHING = int(os.getenv("DUAL_ZONE_ADX_SMOOTHING", "14"))
 DUAL_ZONE_MIN_ADX = float(os.getenv("DUAL_ZONE_MIN_ADX", "22.0"))
 DUAL_ZONE_USE_DI_DIRECTION = os.getenv("DUAL_ZONE_USE_DI_DIRECTION", "true").lower() == "true"
+EMA20_USE_SESSION_FILTER = os.getenv("EMA20_USE_SESSION_FILTER", "true").lower() == "true"
+EMA20_EXCHANGE_TIMEZONE = os.getenv("EMA20_EXCHANGE_TIMEZONE", "UTC")
+EMA9_TRIGGER_MEMORY_BARS = int(os.getenv("EMA9_TRIGGER_MEMORY_BARS", "30"))
+EMA_STACK_USE_ADX = os.getenv("EMA_STACK_USE_ADX", "true").lower() == "true"
+EMA_STACK_MIN_ADX = float(os.getenv("EMA_STACK_MIN_ADX", "20.0"))
+GOLD_FAST_EMA = int(os.getenv("GOLD_FAST_EMA", "50"))
+GOLD_SLOW_EMA = int(os.getenv("GOLD_SLOW_EMA", "200"))
+GOLD_BB_LENGTH = int(os.getenv("GOLD_BB_LENGTH", "20"))
+GOLD_BB_STD = float(os.getenv("GOLD_BB_STD", "2.0"))
+GOLD_RSI_LENGTH = int(os.getenv("GOLD_RSI_LENGTH", "14"))
+GOLD_STOCH_LENGTH = int(os.getenv("GOLD_STOCH_LENGTH", "14"))
+GOLD_K_SMOOTHING = int(os.getenv("GOLD_K_SMOOTHING", "3"))
+GOLD_D_SMOOTHING = int(os.getenv("GOLD_D_SMOOTHING", "3"))
+GOLD_ATR_LENGTH = int(os.getenv("GOLD_ATR_LENGTH", "14"))
+GOLD_ATR_STOP_MULTIPLIER = float(os.getenv("GOLD_ATR_STOP_MULTIPLIER", "3.5"))
+GOLD_TOUCH_TOLERANCE = float(os.getenv("GOLD_TOUCH_TOLERANCE", "0.0005"))
+MTF_EXHAUSTION_RSI_LENGTH = int(os.getenv("MTF_EXHAUSTION_RSI_LENGTH", "14"))
+MTF_EXHAUSTION_DIVERGENCE_LOOKBACK = int(os.getenv("MTF_EXHAUSTION_DIVERGENCE_LOOKBACK", "24"))
+MTF_EXHAUSTION_ATR_LENGTH = int(os.getenv("MTF_EXHAUSTION_ATR_LENGTH", "16"))
+MTF_EXHAUSTION_ATR_STOP_MULTIPLIER = float(os.getenv("MTF_EXHAUSTION_ATR_STOP_MULTIPLIER", "2.0"))
+MTF_EXHAUSTION_MAX_ADX = float(os.getenv("MTF_EXHAUSTION_MAX_ADX", "25.0"))
+TREND_WALL_EMA_LENGTH = int(os.getenv("TREND_WALL_EMA_LENGTH", "99"))
+TREND_WALL_ADX_MIN = float(os.getenv("TREND_WALL_ADX_MIN", "20.0"))
+TREND_WALL_WALL_PROXIMITY = float(os.getenv("TREND_WALL_WALL_PROXIMITY", "0.01"))
+TREND_WALL_ATR_LENGTH = int(os.getenv("TREND_WALL_ATR_LENGTH", "16"))
+TREND_WALL_ATR_STOP_MULTIPLIER = float(os.getenv("TREND_WALL_ATR_STOP_MULTIPLIER", "2.0"))
 WS_STREAM_TIMEFRAMES = os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").strip().lower().split(",")
 WS_MARKPRICE_ENABLED = os.getenv("WS_MARKPRICE_ENABLED", "true").lower() == "true"
 # Shard size for Bybit (per-connection topic cap). Binance uses one combined conn.
@@ -472,7 +503,9 @@ try:
 except (ValueError, TypeError):
     INTENT_ROUTING = {}
 for _fundamo_strategy in ("dual-zone-follower-v2", "dual-zone-short-follower-v2",
-                          "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1"):
+                           "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
+                           "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1",
+                           "trend-wall-v1"):
     INTENT_ROUTING.setdefault(_fundamo_strategy, {"exchange_id": "bybit", "account_id": "fundamo"})
 
 # --- Shared SQLite Intent Bus (spec SHARED_SQLITE_INTENT_BUS_SPEC.md §14) ---
@@ -587,6 +620,7 @@ PRICE_STRUCTURE_STRATEGY_IDS = {
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
     "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
+    "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
 }
 MIXED_STRATEGY_IDS = {
     "impulse-ignition-v2", "continuation-breakout-v2",

@@ -49,13 +49,17 @@ def format_pct(fraction: float | int | None, signed: bool = True) -> str:
 
 
 def _family(setup_class: str) -> str:
+    if setup_class in {"dual_zone_follower", "dual_zone_short_follower"}:
+        return "Dual-zone trend pullback"
     if setup_class.startswith("continuation"):
         return "Continuation"
     if setup_class == "accumulation_base":
         return "Accumulation base"
     if setup_class == "liquidity_reversal":
         return "Liquidity reversal"
-    return "Impulse ignition"
+    if setup_class in {"impulse_ignition", "squeeze_ignition"}:
+        return "Impulse ignition"
+    return "Strategy setup"
 
 
 def _context_parts(snap: dict) -> list[str]:
@@ -96,10 +100,7 @@ def format_discord_signal(event: dict) -> str:
     lines = [
         f"**ALPHA · {direction} · {event['asset']}**",
         f"{family} · `{event['strategy_id']}`",
-        (
-            f"Phase: `{event['phase']}` · Confidence: **{event['confidence']:.0%}** "
-            f"({event.get('confidence_status', 'uncalibrated')})"
-        ),
+        f"Phase: `{event['phase']}`",
         "",
         f"**Trigger:** {trigger_text}",
         f"**Invalidation:** `{event['invalidation_price']:g}`",

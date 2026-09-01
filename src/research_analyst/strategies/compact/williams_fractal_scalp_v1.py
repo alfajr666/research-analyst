@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import config
-from strategy_v2_context import completed_cycle_for, evaluation_symbols, has_active_event, last_completed_bar_fresh, load_bars_for_interval
+from strategy_v2_context import cutoff_from_id, ema_series, evaluation_symbols, has_active_event, last_completed_bar_fresh, load_bars_for_interval
 
 
 STRATEGY_ID = "williams-fractal-scalp-v1"
@@ -24,12 +24,8 @@ class WilliamsFractalScalpConfig:
     horizon_minutes: int = 60
 
 
-def _ema(values: list[float], span: int) -> list[float]:
-    alpha = 2.0 / (span + 1)
-    result = [float(values[0])]
-    for value in values[1:]:
-        result.append(alpha * float(value) + (1.0 - alpha) * result[-1])
-    return result
+def _ema(values: list[float], span: int) -> list[float | None]:
+    return ema_series(values, span)
 
 
 def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime, cfg: WilliamsFractalScalpConfig | None = None) -> dict | None:
@@ -42,12 +38,16 @@ def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime, cfg: Wil
 
     closes = [float(x) for x in bars["close"].to_list()]
     ema20, ema50, ema100 = (_ema(closes, n) for n in (20, 50, 100))
+    if any(series[-1] is None for series in (ema20, ema50, ema100)):
+        return None
     center = bars.height - 1 - cfg.fractal_n
     window = bars.slice(center - cfg.fractal_n, 2 * cfg.fractal_n + 1)
     center_low = float(bars["low"][center])
     center_high = float(bars["high"][center])
     bull = center_low == min(float(x) for x in window["low"].to_list())
     bear = center_high == max(float(x) for x in window["high"].to_list())
+    if any(value is None for value in (ema20[center], ema50[center], ema100[center], ema20[-2], ema50[-2])):
+        return None
     long_stack = ema20[-1] > ema50[-1] > ema100[-1] and ema20[-1] > ema20[-2] and ema50[-1] > ema50[-2]
     short_stack = ema20[-1] < ema50[-1] < ema100[-1] and ema20[-1] < ema20[-2] and ema50[-1] < ema50[-2]
     center_close = float(bars["close"][center])
@@ -77,9 +77,10 @@ def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime, cfg: Wil
         "entry_condition": {"type": "market", "price": round(close, 8)},
         "invalidation_price": round(stop, 8), "targets": [round(target, 8)], "plugin_version": PLUGIN_VERSION,
         "feature_snapshot": {"source_symbol": symbol, "execution_interval": EXECUTION_INTERVAL,
-                              "fractal_n": cfg.fractal_n, "ema20": round(ema20[-1], 8),
+                               "fractal_n": cfg.fractal_n, "ema20": round(ema20[-1], 8),
                               "ema50": round(ema50[-1], 8), "ema100": round(ema100[-1], 8),
-                              "risk": round(risk, 8), "target_r": cfg.target_r},
+                               "risk": round(risk, 8), "target_r": cfg.target_r,
+                               "cutoff": cutoff.isoformat()},
     }
 
 
@@ -87,7 +88,7 @@ def evaluate(conn, cutoff: datetime | None = None, *, cfg: WilliamsFractalScalpC
              snapshot: dict | None = None, alpha_db_path=None, outbox_dir=None, eval_interval: str = EXECUTION_INTERVAL) -> list[dict]:
     cfg = cfg or WilliamsFractalScalpConfig()
     snapshot = snapshot or {}
-    cutoff = cutoff or completed_cycle_for(snapshot.get("now"), EXECUTION_INTERVAL)
+    cutoff = cutoff or cutoff_from_id(str(snapshot.get("cutoff_at") or ""), snapshot.get("now"))
     events = []
     for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
         bars = load_bars_for_interval(conn, symbol, EXECUTION_INTERVAL, cutoff)
@@ -100,7 +101,7 @@ def evaluate(conn, cutoff: datetime | None = None, *, cfg: WilliamsFractalScalpC
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
     conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
     try:
-        events = evaluate(conn, snapshot=snapshot)
+        events = evaluate(conn, cutoff=cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now")), snapshot=snapshot)
         for event in events:
             event["input_snapshot_id"] = cutoff_id
         return events

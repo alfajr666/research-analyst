@@ -30,7 +30,7 @@ import httpx
 import polars as pl
 
 import config
-from strategy_v2_context import resample_ohlcv
+from strategy_v2_context import load_bars_for_interval, resample_ohlcv
 from evaluation_trigger import publish as publish_evaluation_trigger
 
 
@@ -498,6 +498,12 @@ def _executemany_rows(conn, rows: List[Dict[str, Any]]) -> None:
         (observation_id, source, venue, native_symbol, asset, market_kind,
          interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(observation_id) DO UPDATE SET
+            source_start=excluded.source_start,
+            source_end=excluded.source_end,
+            retrieved_at=excluded.retrieved_at,
+            retrieval_kind=excluded.retrieval_kind,
+            payload_json=excluded.payload_json
         """,
         [
             (
@@ -511,6 +517,17 @@ def _executemany_rows(conn, rows: List[Dict[str, Any]]) -> None:
     conn.commit()
 
 
+def _publish_base_triggers(rows: List[Dict[str, Any]]) -> None:
+    """Publish each newly committed base-bar cutoff exactly once per interval."""
+    cutoffs = {
+        (row.get("interval"), row.get("source_end"))
+        for row in rows
+        if row.get("interval") in ("1m", "5m") and row.get("source_end") is not None
+    }
+    for interval, cutoff in sorted(cutoffs, key=lambda item: (item[1], item[0])):
+        publish_evaluation_trigger(cutoff, interval=interval)
+
+
 def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) -> int:
     """Build 15m/1h/4h derived bars from recent 5m and upsert them.
 
@@ -521,53 +538,46 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
     written = 0
     start = now - timedelta(minutes=RESAMPLE_LOOKBACK_MIN)
     for asset in bases:
-        rows = conn.execute(
-            """
-            SELECT source_end,
-                   CAST(json_extract(payload_json,'$.open') AS REAL),
-                   CAST(json_extract(payload_json,'$.high') AS REAL),
-                   CAST(json_extract(payload_json,'$.low') AS REAL),
-                   CAST(json_extract(payload_json,'$.close') AS REAL),
-                   COALESCE(CAST(json_extract(payload_json,'$.volume') AS REAL),0.0)
-            FROM source_observations
-            WHERE asset=? AND interval='5m'
-              AND source IN (?,?)
-              AND source_end <= ? AND source_end >= ?
-            ORDER BY source_end ASC
-            LIMIT 400
-            """,
-            (asset, config.BYBIT_WS_SOURCE, config.BINANCE_WS_SOURCE, now, start),
-        ).fetchall()
-        if len(rows) < 3:
-            continue
-        df = pl.DataFrame(
-            {
-                    "timestamp": [_row_timestamp(r[0]) for r in rows],
-                "open": [float(r[1]) for r in rows],
-                "high": [float(r[2]) for r in rows],
-                "low": [float(r[3]) for r in rows],
-                "close": [float(r[4]) for r in rows],
-                "volume": [float(r[5]) for r in rows],
-            }
+        bars = load_bars_for_interval(
+            conn, asset, "5m", now,
+            lookback_days=max(1, RESAMPLE_LOOKBACK_MIN // 1440),
         )
+        if bars.height < 3:
+            continue
+        df = bars
+        # Very old test/backfill rows used source_start == source_end and
+        # represented bar starts. Live rows use the canonical exclusive end.
+        # Normalize that legacy shape before applying the shared resampler.
+        stamped = conn.execute(
+            """SELECT COUNT(*), SUM(source_start = source_end)
+               FROM source_observations
+              WHERE asset=? AND interval='5m' AND source_end <= ? AND source_end >= ?""",
+            (asset, now, start),
+        ).fetchone()
+        if stamped and stamped[0] and stamped[0] == stamped[1]:
+            df = df.with_columns((pl.col("timestamp") + pl.duration(minutes=5)).alias("timestamp"))
         for every in ("15m", "1h", "4h"):
             res = resample_ohlcv(df, every)
             if res.is_empty():
                 continue
-            for t, o, h, l, c, v in zip(
+            for t, o, h, l, c, v, provenance, purity in zip(
                 res["timestamp"].to_list(), res["open"].to_list(), res["high"].to_list(),
                 res["low"].to_list(), res["close"].to_list(), res["volume"].to_list(),
+                res["source_provenance"].to_list(), res["data_purity"].to_list(),
             ):
                 end = (_ts(int(t.timestamp() * 1000)) if hasattr(t, "timestamp") else _ts(int(t)))
                 row = {
                     "observation_id": make_observation_id(ws_source, "derived", asset + "USDT", every, end),
                     "source": ws_source, "venue": "derived", "native_symbol": asset + "USDT",
                     "asset": asset, "market_kind": MARKET_KIND, "interval": every,
-                    "source_start": end, "source_end": end,
+                    "source_start": end - timedelta(minutes={"15m": 15, "1h": 60, "4h": 240}[every]),
+                    "source_end": end,
                     "retrieved_at": now, "retrieval_kind": "resampled",
                     "payload_json": json.dumps({
                         "open": o, "high": h, "low": l, "close": c, "volume": v,
                         "open_interest": None, "funding_rate": None,
+                        "provenance": {"sources": provenance, "base_interval": "5m",
+                                       "source_end": end.isoformat(), "data_purity": purity},
                     }),
                 }
                 _PENDING.append(row)
@@ -589,14 +599,12 @@ async def writer_task(queue: asyncio.Queue, bases: List[str], ws_source: str) ->
                 batch.append(item)
                 if len(batch) >= 500:
                     _executemany_rows(conn, batch)
-                    for cutoff in {r["source_end"] for r in batch if r.get("interval") == "5m"}:
-                        publish_evaluation_trigger(cutoff)
+                    _publish_base_triggers(batch)
                     batch.clear()
             except asyncio.TimeoutError:
                 if batch:
                     _executemany_rows(conn, batch)
-                    for cutoff in {r["source_end"] for r in batch if r.get("interval") == "5m"}:
-                        publish_evaluation_trigger(cutoff)
+                    _publish_base_triggers(batch)
                     batch.clear()
                 if time.monotonic() - last_resample >= 60:
                     resample_and_persist(conn, bases, datetime.now(timezone.utc), ws_source)
@@ -642,7 +650,7 @@ async def _bybit_conn(topics: List[str], queue: asyncio.Queue, source: str) -> N
                         topic = msg.get("topic", "")
                         if topic.startswith("kline."):
                             rec = normalize_bybit_kline(msg)
-                            if rec:
+                            if rec and rec.get("confirm"):
                                 _record_message(is_bar=True)
                                 queue.put_nowait(bar_record_to_row(rec, source, venue, "stream"))
                         elif topic.startswith("markPrice."):
@@ -682,7 +690,7 @@ async def _binance_conn(streams: List[str], queue: asyncio.Queue, source: str) -
                     etype = data.get("e")
                     if etype == "kline":
                         rec = normalize_binance_kline(data)
-                        if rec:
+                        if rec and rec.get("confirm"):
                             queue.put_nowait(bar_record_to_row(rec, source, venue, "stream"))
                     elif etype == "markPriceUpdate":
                         rec = normalize_binance_mark(data)

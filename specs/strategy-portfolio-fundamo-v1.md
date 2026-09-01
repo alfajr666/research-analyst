@@ -2,7 +2,9 @@
 
 ## Status
 
-Implementation specification. No implementation is included in this document.
+Implementation specification. Detailed strategy fidelity, resampling, cadence,
+and repair requirements are defined by
+`specs/strategy-fidelity-repair-and-expansion-v1.md`.
 
 ## Purpose
 
@@ -68,7 +70,8 @@ Common operational defaults:
 - Signal validity: 5 minutes unless the executor contract requires a different
   explicit value.
 - Take-profit mode: fixed full close.
-- All three strategy routes: `exchange_id=bybit`, `account_id=fundamo`.
+- Downstream deployment policy may route these strategy IDs to
+  `exchange_id=bybit`, `account_id=fundamo`; plugins remain account-agnostic.
 
 ## Pipeline placement
 
@@ -102,9 +105,9 @@ admission later rejects.
    wiring. Historical events remain immutable.
 3. Add all new IDs to the appropriate admission/purity classification used by
    the alpha outbox.
-4. Add explicit per-strategy routing entries for every new ID to Fundamo.
-5. Add the symbol-account-strategy policy as a hard gate; compact Hyro
-   restrictions must not be implemented inside strategy code.
+4. Add explicit downstream routing entries for every new ID to Fundamo.
+5. Apply symbol-account-strategy policy downstream; compact Hyro restrictions
+   must not be implemented inside strategy code.
 6. Add configuration prefixes and documented defaults without changing global
    intent sizing ownership.
 7. Preserve plugin failure isolation: one strategy or symbol failure must not

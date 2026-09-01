@@ -49,7 +49,7 @@ small REST warm backfill at startup, but the live stream is Bybit WS.
 
 The approved policy universe is defined in `symbols/static_universe.json` and
 currently contains 92 Bybit-compatible bases. The active execution-admission set is the
-four Fundamo strategy families:
+seven Fundamo strategy families:
 
 | Strategy | Primary evaluation |
 | --- | --- |
@@ -57,6 +57,9 @@ four Fundamo strategy families:
 | `dual-zone-short-follower-v2` | 5m, with confirmed 1h ADX/DI |
 | `ema20-pullback-h4-trend-v1` | universal 5m, with 1h signal and 4h trend context |
 | `ema-stack-15m-adx-stochrsi-5m-v1` | 5m, with confirmed 15m/1h context |
+| `gold-trend-ema-bb-stoch-v1` | 5m trend-aligned Bollinger pullback |
+| `mtf-exhaustion-reversal-v1` | 5m reversal with 1h/4h exhaustion context |
+| `trend-wall-v1` | 15m pullback/reclaim of a 1h EMA99 wall |
 
 `STRATEGY_ENABLED_IDS`, `STRATEGY_ACTIVE_IDS`, and `plugin_states` control
 registration and runtime activation.
@@ -77,7 +80,7 @@ and subscribes to the four permanent symbols. Fresh `OPEN` position assets from
 The feed and gateway health files expose the feed ID, validity window, selected
 gainers/losers, fallback state, and subscribed count.
 
-The four active strategies route their Bybit deliveries exclusively to account
+The seven active Fundamo strategies route their Bybit deliveries exclusively to account
 `fundamo`. When Propr fan-out is enabled, the same admitted thesis is delivered
 independently as `target=propr`; Propr owns its account and execution controls:
 
@@ -87,6 +90,9 @@ independently as `target=propr`; Propr owns its account and execution controls:
 | `dual-zone-short-follower-v2` | `fundamo` |
 | `ema20-pullback-h4-trend-v1` | `fundamo` |
 | `ema-stack-15m-adx-stochrsi-5m-v1` | `fundamo` |
+| `gold-trend-ema-bb-stoch-v1` | `fundamo` |
+| `mtf-exhaustion-reversal-v1` | `fundamo` |
+| `trend-wall-v1` | `fundamo` |
 
 ## Decision pipeline
 
@@ -119,8 +125,8 @@ and produces no intent. Losing and failed candidates remain auditable.
 
 When `INTENT_DELIVERY_ENABLED=true`, a selected candidate is atomically
 published to the shared executor bus. Compact intents are forcibly routed to
-`exchange_id=bybit`, `account_id=hyro`; dual-zone intents use their explicit
-`fundamo` route. The analyst sends thesis fields only and never emits an `order_type`
+`exchange_id=bybit`, `account_id=hyro`; all seven Fundamo strategy intents use their
+explicit `bybit/fundamo` route. The analyst sends thesis fields only and never emits an `order_type`
 instruction. The executor profile selects the entry order policy. The producer
 preserves an explicit strategy target or derives a 2R target from a valid entry
 and stop; otherwise delivery is rejected. The executor owns credentials,
@@ -254,6 +260,27 @@ orchestrator evaluates that explicit cutoff. There is no timer-based evaluation
 fallback. Trigger claims have a lease, failed work is retried up to the configured
 limit, and stranded claims are recovered after restart.
 
+### Verified rollout (2026-09-01)
+
+The live evaluation allowlist contains 11 strategies: four compact Hyro
+strategies and seven Fundamo strategies. The newly enabled Fundamo strategies
+are `gold-trend-ema-bb-stoch-v1`, `mtf-exhaustion-reversal-v1`, and
+`trend-wall-v1`.
+
+After restarting `research-analyst-ws`, `research-analyst-orchestrator`, and
+`research-analyst-pm-sidecar` through `oxmgr`, the 05:20 and 05:25 UTC 5m
+cutoffs completed across 34 subscribed symbols. All 11 strategies completed
+or correctly skipped according to cadence, and all three new strategies
+completed evaluation in both 5m cutoffs. The services remained healthy with
+zero new restarts.
+
+The new strategies emitted no candidates during those two cutoffs, so their
+actual executor delivery was not exercised by a live signal. The signal
+publisher continues to report one invalid event per observed cycle from
+pre-existing malformed alpha outbox files missing `confidence`,
+`entry_condition`, and `horizon_minutes`; this is isolated from pipeline
+completion and remains follow-up work.
+
 ## Setup and verification
 
 ```bash
@@ -290,8 +317,8 @@ the next feed only at the next four-hour UTC boundary.
 Research Analyst publishes validated schema-v1 intents to `target=bybit` and,
 when enabled, adapted schema-v2 intents to `target=propr` at the shared bus path
 configured by `INTENT_BUS_DB`. Enable the targets with
-`INTENT_BUS_BYBIT_ENABLED=true` and `INTENT_BUS_PROPR_ENABLED=true`. All four
-active strategies route their Bybit deliveries to `bybit/fundamo`. The Propr
+`INTENT_BUS_BYBIT_ENABLED=true` and `INTENT_BUS_PROPR_ENABLED=true`. All seven
+active Fundamo strategies route their Bybit deliveries to `bybit/fundamo`. The Propr
 executor independently consumes `target=propr` deliveries and writes its own
 receipts. The legacy filesystem inbox is compatibility-only and disabled by
 default. Research Analyst never claims bus deliveries or reads execution

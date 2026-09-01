@@ -1,6 +1,6 @@
 # Agent Notes
 
-**Last reviewed:** 2026-08-31
+**Last reviewed:** 2026-09-01
 
 ## Runtime Contract
 
@@ -28,7 +28,7 @@
   `INTENT_BUS_BYBIT_ENABLED` must be enabled for Bybit delivery. Live Propr
   fan-out additionally requires `INTENT_BUS_PROPR_ENABLED=true`. Legacy JSON
   inbox writing is compatibility-only and defaults off.
-- The four live strategies route Bybit deliveries exclusively to
+- The seven Fundamo strategies route Bybit deliveries exclusively to
   `bybit/fundamo`; admitted events are independently fanned out to the Propr
   bus target when enabled. Propr owns its account routing, sizing, risk gates,
   and receipts.
@@ -49,6 +49,27 @@ delivery and execution handoff remain consumer-owned and must be verified from
 the publisher/execution-delivery tables before enabling additional routes.
 - LLM research review is disabled in the live analyst path; `research_context`
   is not required for strategy evaluation or intent delivery.
+
+## Production rollout state (2026-09-01)
+
+- The live evaluation allowlist contains 11 strategies: four compact Hyro
+  strategies and seven Fundamo strategies.
+- The three newly enabled Fundamo strategies are
+  `gold-trend-ema-bb-stoch-v1`, `mtf-exhaustion-reversal-v1`, and
+  `trend-wall-v1`. They are registered, cadence-controlled at 5m, and
+  forcibly routed downstream to `bybit/fundamo`.
+- After restarting `research-analyst-ws`,
+  `research-analyst-orchestrator`, and `research-analyst-pm-sidecar` through
+  `oxmgr`, the 05:20 and 05:25 UTC 5m cutoffs completed across 34 subscribed
+  symbols. All three new strategies completed evaluation in both cutoffs.
+- The services were healthy with zero new restarts after verification. The
+  new strategies emitted no candidates during those two cutoffs, so their
+  actual executor delivery was not exercised by a live signal.
+- The signal publisher still reports one invalid event per observed cycle from
+  malformed pre-existing alpha outbox files missing `confidence`,
+  `entry_condition`, and `horizon_minutes`. This is isolated from pipeline
+  completion and remains follow-up work; do not treat publisher state as a
+  successful delivery receipt.
 
 ## Verification
 

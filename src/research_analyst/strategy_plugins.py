@@ -25,7 +25,9 @@ MIXED_STRATEGY_IDS = getattr(config, "MIXED_STRATEGY_IDS", set())
 ADMISSION_STRATEGY_IDS = {"failed-break-v3", "bb-rsi-meanrev-v1",
                            "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
                             "dual-zone-follower-v2", "dual-zone-short-follower-v2",
-                            "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1"}
+                            "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
+                            "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1",
+                            "trend-wall-v1"}
 
 
 def _get_bar_purity(conn, asset: str, observed_at: Any, interval: str = "15m") -> Dict[str, Any]:
@@ -73,6 +75,7 @@ KNOWN_STRATEGIES = {
     "ema9-continuation-stochrsi-v1",
     "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
+    "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
 }
 
 @dataclass
@@ -106,21 +109,27 @@ def _load_builtin_plugins():
     from strategies.v2.dual_zone_follower_v2 import run_short_plugin as dual_zone_short_run
     from strategies.v2.ema20_pullback_h4_trend_v1 import run_plugin as ema20_run
     from strategies.v2.ema_stack_adx_stochrsi_5m_v1 import run_plugin as stack_run
+    from strategies.v2.gold_trend_ema_bb_stoch_v1 import run_plugin as gold_run
+    from strategies.v2.mtf_exhaustion_reversal_v1 import run_plugin as exhaustion_run
+    from strategies.v2.trend_wall_v1 import run_plugin as wall_run
 
-    register(StrategyPlugin("accumulation-base-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), acc_v2_run))
-    register(StrategyPlugin("impulse-ignition-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), ign_v2_run))
-    register(StrategyPlugin("continuation-breakout-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), cont_v2_run))
-    register(StrategyPlugin("rsi-reclaim-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), rsi_reclaim_run))
-    register(StrategyPlugin("liquidity-sweep-reversal-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), lsr_run))
-    register(StrategyPlugin("bb-rsi-meanrev-v1", "v1", ("bars_5m",), (), bb_rsi_run))
+    register(StrategyPlugin("accumulation-base-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), acc_v2_run, "15m"))
+    register(StrategyPlugin("impulse-ignition-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), ign_v2_run, "15m"))
+    register(StrategyPlugin("continuation-breakout-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), cont_v2_run, "15m"))
+    register(StrategyPlugin("rsi-reclaim-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), rsi_reclaim_run, "15m"))
+    register(StrategyPlugin("liquidity-sweep-reversal-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), lsr_run, "15m"))
+    register(StrategyPlugin("bb-rsi-meanrev-v1", "v1", ("bars_5m",), (), bb_rsi_run, "5m"))
     # Primary execution bars gate invocation; each plugin loads its own HTF context.
-    register(StrategyPlugin("failed-break-v3", "v3", ("bars_5m",), (), failed_break_run))
-    register(StrategyPlugin("williams-fractal-scalp-v1", "v1", ("bars_1m",), (), williams_run))
-    register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v1", ("bars_1m",), (), ema9_run))
+    register(StrategyPlugin("failed-break-v3", "v3", ("bars_5m",), (), failed_break_run, "5m"))
+    register(StrategyPlugin("williams-fractal-scalp-v1", "v1", ("bars_1m",), (), williams_run, "1m"))
+    register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v1", ("bars_1m",), (), ema9_run, "1m"))
     register(StrategyPlugin("dual-zone-follower-v2", "v2", ("bars_5m",), (), dual_zone_run, "5m"))
     register(StrategyPlugin("dual-zone-short-follower-v2", "v2", ("bars_5m",), (), dual_zone_short_run, "5m"))
     register(StrategyPlugin("ema20-pullback-h4-trend-v1", "v1", ("bars_5m",), (), ema20_run, "5m"))
     register(StrategyPlugin("ema-stack-15m-adx-stochrsi-5m-v1", "v1", ("bars_5m",), (), stack_run, "5m"))
+    register(StrategyPlugin("gold-trend-ema-bb-stoch-v1", "v1", ("bars_5m",), (), gold_run, "5m"))
+    register(StrategyPlugin("mtf-exhaustion-reversal-v1", "v1", ("bars_5m",), (), exhaustion_run, "5m"))
+    register(StrategyPlugin("trend-wall-v1", "v1", ("bars_5m",), (), wall_run, "5m"))
 
 
 _load_builtin_plugins()
@@ -385,6 +394,14 @@ def _cutoff_from_id(cutoff_id: str, fallback: datetime | None) -> datetime:
         return fallback
 
 
+def cutoff_for_plugin(cutoff_id: str, snapshot: dict) -> datetime:
+    """Return the immutable cutoff supplied to a plugin, never wall-clock time."""
+    value = snapshot.get("cutoff_at")
+    if value is not None:
+        return _cutoff_from_id(str(value), None)
+    return _cutoff_from_id(cutoff_id, snapshot.get("now"))
+
+
 def _ensure_cutoff_run_finalized(db_path: str | Path, cutoff_id: str, interval: str, cutoff: datetime) -> None:
     """Upsert a finalized cutoff_run row so plugins can read a consistent snapshot."""
     conn = config.get_db_connection(read_only=False, db_path=db_path or config.ANALYST_DB_PATH)
@@ -454,6 +471,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         snapshot = _build_snapshot(db_path, cutoff_id, now, market_db_path)
     eval_interval = snapshot.get("eval_interval", "15m")
     cutoff = _cutoff_from_id(cutoff_id, now)
+    snapshot["cutoff_at"] = cutoff
     freshness = _data_freshness_seconds(snapshot["market_db_path"], eval_interval, cutoff)
     attempted_symbols, feed_metadata = subscription_assets(cutoff)
     snapshot["attempted_symbols"] = len(attempted_symbols)
@@ -491,7 +509,10 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                 ev.setdefault("input_snapshot_id", cutoff_id)
                 ev.setdefault("source_evidence_ids", [])
                 ev.setdefault("confidence_status", "uncalibrated")
-                ev["feature_snapshot"] = dict(snapshot.get("feature_snapshots", {}).get(ev.get("asset", ""), {}))
+                # Plugin evidence is part of the replay contract. Generic
+                # materialized features must never replace it.
+                ev.setdefault("feature_snapshot", {})
+                ev["feature_snapshot"] = dict(ev["feature_snapshot"])
                 try:
                     connp = config.get_db_connection(read_only=True, db_path=snapshot["market_db_path"])
                     purity_info = _get_bar_purity(connp, ev.get("asset", ""), ev.get("observed_at"), interval=eval_interval)
@@ -556,7 +577,7 @@ def invoke_plugins_for_intervals(db_path: str | Path, now: datetime | None = Non
     now = now or datetime.now(timezone.utc)
     out: Dict[str, Dict[str, object]] = {}
     for iv in eval_intervals:
-        cutoff = cutoff_at if cutoff_at is not None and iv == "5m" else completed_cycle_for(now, iv)
+        cutoff = cutoff_at if cutoff_at is not None and (iv == "5m" or len(eval_intervals) == 1) else completed_cycle_for(now, iv)
         cutoff_id = _interval_cutoff_id(iv, cutoff)
         _ensure_cutoff_run_finalized(db_path, cutoff_id, iv, cutoff)
         snapshot = _build_snapshot(db_path, cutoff_id, now, market_db_path)

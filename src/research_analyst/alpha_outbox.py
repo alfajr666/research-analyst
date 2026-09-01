@@ -16,11 +16,15 @@ OUTBOX_DIR = config.DEFAULT_DB_DIR / "alpha_outbox"
 
 
 def dedupe_key(event: dict) -> str:
-    """Return the stable identity for one strategy observation."""
+    """Return stable identity for one strategy observation and input snapshot."""
     observed_at = event["observed_at"]
     if hasattr(observed_at, "isoformat"):
         observed_at = observed_at.isoformat()
-    material = "|".join((event["strategy_id"], event["asset"], event["direction"], str(observed_at)))
+    material = "|".join((
+        str(event["strategy_id"]), str(event.get("plugin_version", "")),
+        str(event["asset"]), str(event["direction"]), str(observed_at),
+        str(event.get("input_snapshot_id", event.get("cutoff_id", ""))),
+    ))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

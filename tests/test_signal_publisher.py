@@ -226,8 +226,17 @@ class SignalPublisherTests(unittest.TestCase):
     def test_format_contains_portable_signal_fields(self):
         payload = event(self.current_time, self.current_time + timedelta(hours=1))
         message = format_signal(payload)
-        for value in ("Continuation", "SOL", "LONG", "confirmed_expansion", "67%", "breakout above", "142.7", "148.1, 151", "2026-08-16 11:30 UTC", "2026-08-16 10:30 UTC"):
+        for value in ("Continuation", "SOL", "LONG", "confirmed_expansion", "breakout above", "142.7", "148.1, 151", "2026-08-16 11:30 UTC", "2026-08-16 10:30 UTC"):
             self.assertIn(value, message)
+        self.assertNotIn("Confidence", message)
+
+    def test_telegram_format_labels_dual_zone_correctly(self):
+        payload = event(self.current_time, self.current_time + timedelta(hours=1))
+        payload["setup_class"] = "dual_zone_follower"
+        payload["strategy_id"] = "dual-zone-follower-v2"
+        message = format_signal(payload)
+        self.assertIn("Dual-zone trend pullback", message)
+        self.assertNotIn("Impulse ignition", message)
 
     def test_delivers_telegram_and_discord_independently(self):
         payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
@@ -275,7 +284,7 @@ class SignalPublisherTests(unittest.TestCase):
         message = format_discord_signal(payload)
         self.assertIn("**ALPHA · LONG · SOL**", message)
         self.assertIn("Continuation", message)
-        self.assertIn("**67%**", message)
+        self.assertNotIn("Confidence", message)
 
 
 if __name__ == "__main__":

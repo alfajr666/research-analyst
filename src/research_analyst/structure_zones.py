@@ -28,13 +28,8 @@ def compute_atr(df: pl.DataFrame, period: int = 14) -> float:
 def _resample_to_higher(df: pl.DataFrame, every: str = "1h") -> pl.DataFrame:
     if df.is_empty():
         return df
-    df = df.sort("timestamp")
-    return df.group_by_dynamic("timestamp", every=every).agg([
-        pl.col("open").first(),
-        pl.col("high").max(),
-        pl.col("low").min(),
-        pl.col("close").last(),
-    ])
+    from strategy_v2_context import resample_ohlcv
+    return resample_ohlcv(df, every)
 
 
 def detect_fvg(bars: pl.DataFrame, atr: float | None = None, min_gap_mult: float = 0.25, tf: str = "1h") -> List[Dict[str, Any]]:

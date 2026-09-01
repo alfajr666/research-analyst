@@ -3,26 +3,21 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
 import config
-from strategy_v2_context import completed_cycle_for, evaluation_symbols, has_active_event, last_completed_bar_fresh, load_bars_for_interval
+from strategy_v2_context import (
+    cutoff_from_id, ema_series, evaluation_symbols, has_active_event,
+    last_completed_bar_fresh, load_bars_for_interval, wilder_atr, wilder_rsi,
+)
 
 STRATEGY_ID = "ema9-continuation-stochrsi-v1"
 SETUP_CLASS = "ema9_continuation"
 PHASE = "stochrsi_trigger"
 PLUGIN_VERSION = "v1"
+TRIGGER_MEMORY_BARS = int(getattr(config, "EMA9_TRIGGER_MEMORY_BARS", 30))
 
 
 def _rsi(values: list[float], length: int = 14) -> list[float | None]:
-    out: list[float | None] = [None] * len(values)
-    gains = losses = 0.0
-    for i in range(1, len(values)):
-        delta = values[i] - values[i - 1]
-        gains = (gains * (length - 1) + max(delta, 0.0)) / length
-        losses = (losses * (length - 1) + max(-delta, 0.0)) / length
-        out[i] = 100.0 if losses == 0 else 100.0 - 100.0 / (1.0 + gains / losses)
-    return out
+    return wilder_rsi(values, length)
 
 
 def _stoch_rsi(values: list[float]) -> tuple[list[float | None], list[float | None], list[float | None]]:
@@ -54,32 +49,22 @@ def _atr(rows, length: int = 14) -> float:
     rows = list(rows)
     if not rows:
         return 0.0
-    tr = []
-    for i, row in enumerate(rows):
-        high = float(row["high"])
-        low = float(row["low"])
-        close = float(row["close"])
-        prev = float(rows[i - 1]["close"]) if i else close
-        tr.append(max(high - low, abs(high - prev), abs(low - prev)))
-    value = tr[0]
-    for current in tr[1:]:
-        value = (value * (length - 1) + current) / length
-    return value
+    import polars as pl
+    return float(wilder_atr(pl.DataFrame(rows), length) or 0.0)
 
 
 def evaluate_symbol(bars_5m, bars_1m, *, asset: str, symbol: str, cutoff: datetime) -> dict | None:
     if bars_5m.is_empty() or bars_1m.is_empty():
         return None
-    if not last_completed_bar_fresh(bars_5m, cutoff) or bars_5m.height < 30 or bars_1m.height < 40:
+    if (not last_completed_bar_fresh(bars_5m, cutoff)
+            or bars_5m.height < 30 or bars_1m.height < 40):
         return None
     five = bars_5m.to_dicts()
     window = five[-15:]
     closes = [float(x["close"]) for x in five]
-    ema = closes[0]
-    emas = []
-    for close in closes:
-        ema = close * 0.2 + ema * 0.8
-        emas.append(ema)
+    emas = ema_series(closes, 9)
+    if emas[-1] is None:
+        return None
     ema_window = emas[-15:]
     above = all(float(row["close"]) >= ema_window[i] for i, row in enumerate(window))
     below = all(float(row["close"]) <= ema_window[i] for i, row in enumerate(window))
@@ -97,11 +82,12 @@ def evaluate_symbol(bars_5m, bars_1m, *, asset: str, symbol: str, cutoff: dateti
     i = len(vals) - 1
     if any(x is None for x in (k[i], k[i - 1], d[i], d[i - 1], rsi[i])):
         return None
-    memory = any((x is not None and (x <= 20 if above else x >= 80)) for x in k[:i])
+    memory_start = max(0, i - TRIGGER_MEMORY_BARS)
+    memory = any((x is not None and (x <= 20 if above else x >= 80)) for x in k[memory_start:i])
     cross = k[i - 1] <= d[i - 1] and k[i] > d[i] if above else k[i - 1] >= d[i - 1] and k[i] < d[i]
-    ema1 = vals[0]
-    for close in vals:
-        ema1 = close * 0.2 + ema1 * 0.8
+    ema1 = ema_series(vals, 9)[-1]
+    if ema1 is None:
+        return None
     if not (memory and cross and (vals[-1] > ema1 if above else vals[-1] < ema1)):
         return None
     observed = one[-1]["timestamp"]
@@ -116,13 +102,13 @@ def evaluate_symbol(bars_5m, bars_1m, *, asset: str, symbol: str, cutoff: dateti
             "valid_until": (observed + timedelta(minutes=5)).isoformat(), "horizon_minutes": 5,
             "confidence": 0.5, "confidence_status": "uncalibrated", "entry_condition": {"type": "market", "price": entry},
             "invalidation_price": stop, "targets": [target], "plugin_version": PLUGIN_VERSION,
-            "metadata": {"source_symbol": symbol, "atr14_5m": atr, "risk": risk,
+             "metadata": {"source_symbol": symbol, "atr14_5m": atr, "risk": risk,
                          "strategy_exits": {"long": "bear_cross_and_rsi_above_70_after_overbought", "short": "bull_cross_and_rsi_below_30_after_oversold"},
-                         "protective_take_profit_r": 2.0}, "feature_snapshot": {"ema9_5m": emas[-1], "stoch_k_1m": k[i], "stoch_d_1m": d[i], "rsi_1m": rsi[i]}}
+             "protective_take_profit_r": 2.0, "trigger_memory_bars": TRIGGER_MEMORY_BARS}, "feature_snapshot": {"ema9_5m": emas[-1], "stoch_k_1m": k[i], "stoch_d_1m": d[i], "rsi_1m": rsi[i], "cutoff": cutoff.isoformat()}}
 
 
 def evaluate(conn, cutoff: datetime | None = None, *, snapshot: dict | None = None, alpha_db_path=None, outbox_dir=None, eval_interval="5m") -> list[dict]:
-    snapshot = snapshot or {}; cutoff = cutoff or completed_cycle_for(snapshot.get("now"), "5m")
+    snapshot = snapshot or {}; cutoff = cutoff or cutoff_from_id(str(snapshot.get("cutoff_at") or ""), snapshot.get("now"))
     events = []
     for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
         event = evaluate_symbol(load_bars_for_interval(conn, symbol, "5m", cutoff), load_bars_for_interval(conn, symbol, "1m", cutoff), asset=asset, symbol=symbol, cutoff=cutoff)
@@ -133,7 +119,7 @@ def evaluate(conn, cutoff: datetime | None = None, *, snapshot: dict | None = No
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
     conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
     try:
-        events = evaluate(conn, snapshot=snapshot)
+        events = evaluate(conn, cutoff=cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now")), snapshot=snapshot)
         for event in events:
             event["input_snapshot_id"] = cutoff_id
         return events

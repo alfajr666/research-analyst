@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import config
-from strategy_v2_context import completed_cycle_for, evaluation_symbols, last_completed_bar_fresh, load_bars_for_interval
+from strategy_v2_context import (
+    cutoff_from_id, evaluation_symbols, has_active_event, last_completed_bar_fresh,
+    load_bars_for_interval, stoch_rsi, wilder_atr, wilder_rsi,
+)
 
 STRATEGY_ID = "bb-rsi-meanrev-v1"
 PLUGIN_VERSION = "v1"
@@ -18,22 +21,10 @@ class BBRsiMeanRevConfig:
     divergence_pivot: int = 5
 
 def _rsi(closes: list[float], length: int) -> list[float | None]:
-    out: list[float | None] = [None] * len(closes)
-    if len(closes) <= length: return out
-    gain = loss = 0.0
-    for i in range(1, length + 1):
-        d = closes[i] - closes[i - 1]; gain += max(d, 0.0); loss += max(-d, 0.0)
-    gain /= length; loss /= length; out[length] = 100.0 if loss == 0 else 100.0 - 100.0 / (1.0 + gain / loss)
-    for i in range(length + 1, len(closes)):
-        d = closes[i] - closes[i - 1]; gain = (gain * (length - 1) + max(d, 0.0)) / length; loss = (loss * (length - 1) + max(-d, 0.0)) / length
-        out[i] = 100.0 if loss == 0 else 100.0 - 100.0 / (1.0 + gain / loss)
-    return out
+    return wilder_rsi(closes, length)
 
 def _atr(bars, length: int) -> float:
-    h, l, c = (bars[x].to_list() for x in ("high", "low", "close")); trs = [max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])) for i in range(1, len(c))]
-    value = trs[0] if trs else 0.0; alpha = 1 / length
-    for tr in trs[1:]: value = alpha * tr + (1 - alpha) * value
-    return value
+    return float(wilder_atr(bars, length) or 0.0)
 
 def _divergence(bars, rsi, pivot):
     l, h = bars["low"].to_list(), bars["high"].to_list(); lp, hp = [], []
@@ -50,10 +41,17 @@ def _divergence(bars, rsi, pivot):
 def evaluate_symbol(bars, *, asset, symbol, cutoff, cfg=None):
     cfg = cfg or BBRsiMeanRevConfig()
     if bars.is_empty() or bars.height < cfg.bb_length + cfg.divergence_pivot * 2 or not last_completed_bar_fresh(bars, cutoff): return None
-    closes = [float(x) for x in bars["close"].to_list()]; w = closes[-cfg.bb_length:]; mid = sum(w) / cfg.bb_length; sd = (sum((x-mid)**2 for x in w) / cfg.bb_length) ** .5; lower, upper = mid - 2*sd, mid + 2*sd
+    if bars["timestamp"][-1] > cutoff: return None
+    closes = [float(x) for x in bars["close"].to_list()]
+    w = closes[-cfg.bb_length:]
+    mid = sum(w) / cfg.bb_length
+    sd = (sum((x-mid)**2 for x in w) / cfg.bb_length) ** .5
+    band_width = cfg.bb_multiplier * 2.0 * sd
+    lower, upper = mid - cfg.bb_multiplier * sd, mid + cfg.bb_multiplier * sd
     widths = []
     for i in range(cfg.bb_length-1, len(closes)):
-        x = closes[i-cfg.bb_length+1:i+1]; m = sum(x)/cfg.bb_length; widths.append(4*(sum((v-m)**2 for v in x)/cfg.bb_length)**.5)
+        x = closes[i-cfg.bb_length+1:i+1]; m = sum(x)/cfg.bb_length
+        widths.append(cfg.bb_multiplier * 2.0 * (sum((v-m)**2 for v in x)/cfg.bb_length)**.5)
     if widths[-1] < sum(widths[-30:]) / min(30, len(widths)) * cfg.skinny_ratio: return None
     rsi = _rsi(closes, cfg.rsi_length); current = rsi[-1]
     if current is None: return None
@@ -62,15 +60,15 @@ def evaluate_symbol(bars, *, asset, symbol, cutoff, cfg=None):
     if not (long_signal or short_signal) or atr <= 0: return None
     direction = "long" if long_signal else "short"; stop = min(float(row["low"]), lower)-atr*.25 if direction == "long" else max(float(row["high"]), upper)+atr*.25; observed = row["timestamp"]
     if observed.tzinfo is None: observed = observed.replace(tzinfo=timezone.utc)
-    return {"schema_version": 1, "strategy_id": STRATEGY_ID, "asset": asset.upper(), "direction": direction, "setup_class": "bb_rsi_mean_reversion", "phase": "band_extreme_or_divergence", "observed_at": observed.isoformat(), "valid_until": (observed+timedelta(minutes=5)).isoformat(), "horizon_minutes": 5, "confidence": .5, "confidence_status": "uncalibrated", "entry_condition": {"type": "market", "price": entry}, "invalidation_price": stop, "targets": [mid], "plugin_version": PLUGIN_VERSION, "feature_snapshot": {"source_symbol": symbol, "execution_timeframe": "5m", "bb_length": 30, "bb_multiplier": 2, "rsi_length": 13, "rsi": current, "lower_band": lower, "middle_band": mid, "upper_band": upper, "atr": atr, "bullish_divergence": bull, "bearish_divergence": bear}}
+    return {"schema_version": 1, "strategy_id": STRATEGY_ID, "asset": asset.upper(), "direction": direction, "setup_class": "bb_rsi_mean_reversion", "phase": "band_extreme_or_divergence", "observed_at": observed.isoformat(), "valid_until": (observed+timedelta(minutes=5)).isoformat(), "horizon_minutes": 5, "confidence": .5, "confidence_status": "uncalibrated", "entry_condition": {"type": "market", "price": entry}, "invalidation_price": stop, "targets": [mid], "plugin_version": PLUGIN_VERSION, "feature_snapshot": {"source_symbol": symbol, "execution_timeframe": "5m", "bb_length": cfg.bb_length, "bb_multiplier": cfg.bb_multiplier, "bb_width": band_width, "rsi_length": cfg.rsi_length, "rsi": current, "lower_band": lower, "middle_band": mid, "upper_band": upper, "atr": atr, "bullish_divergence": bull, "bearish_divergence": bear, "cutoff": cutoff.isoformat()}}
 
 def run_plugin(cutoff_id, snapshot):
     conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path")); emitted = []
     try:
-        cutoff = completed_cycle_for(snapshot.get("now"), "5m")
+        cutoff = cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now"))
         for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
             event = evaluate_symbol(load_bars_for_interval(conn, symbol, "5m", cutoff), asset=asset, symbol=symbol, cutoff=cutoff)
-            if event is not None:
+            if event is not None and (not event.get("direction") or not has_active_event(STRATEGY_ID, asset, event["direction"], now=cutoff)):
                 event["input_snapshot_id"] = cutoff_id; emitted.append(event)
         return emitted
     finally: conn.close()

@@ -12,6 +12,7 @@ COMPACT_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 FUNDAMO_STRATEGIES = frozenset((
     "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
+    "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
 ))
 COMPACT_STRATEGIES = frozenset(getattr(config, "COMPACT_STRATEGY_IDS", ()))
 

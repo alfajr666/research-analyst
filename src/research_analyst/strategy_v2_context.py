@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+import math
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import polars as pl
 
@@ -50,6 +51,21 @@ def completed_cycle_for(now: datetime | None, interval: str) -> datetime:
     return now.replace(minute=now.minute - now.minute % minutes, second=0, microsecond=0)
 
 
+def cutoff_from_id(cutoff_id: str, fallback: datetime | None = None) -> datetime:
+    """Parse an evaluator cutoff ID or explicit cutoff without using wall time."""
+    text = str(cutoff_id or "")
+    if ":" in text:
+        text = text.split(":", 1)[1]
+    elif "20" in text:
+        text = text[text.find("20"):]
+    try:
+        return _ensure_utc(datetime.fromisoformat(text.replace("Z", "+00:00")))
+    except (TypeError, ValueError):
+        if fallback is None:
+            raise
+        return _ensure_utc(fallback)
+
+
 def _ensure_utc(ts: datetime) -> datetime:
     if isinstance(ts, str):
         ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -74,7 +90,7 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
                payload_json
          FROM source_observations
          WHERE asset = ? AND interval=?
-           AND source_end < ? AND source_end >= ?
+            AND source_end <= ? AND source_end >= ?
             AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0
          ORDER BY source_end ASC
         """,
@@ -137,29 +153,7 @@ def load_preferred_15m_bars(conn, asset: Optional[str] = None, native_symbol: Op
         asset = _asset_from_symbol(native_symbol)
     if not asset:
         asset = "BTC"
-    raw = _load_raw_observations_for_asset(conn, asset, cutoff, start, interval="15m")
-    rows = _prefer_rows(raw)
-    if not rows:
-        return pl.DataFrame()
-    df = pl.DataFrame(
-        {
-            "timestamp": [r["timestamp"] for r in rows],
-            "open": [r["open"] for r in rows],
-            "high": [r["high"] for r in rows],
-            "low": [r["low"] for r in rows],
-            "close": [r["close"] for r in rows],
-            "volume": [r["volume"] for r in rows],
-            "open_interest": [r["open_interest"] for r in rows],
-            "funding_rate": [r["funding_rate"] for r in rows],
-            "source": [r["source"] for r in rows],
-        },
-        strict=False,
-    )
-    if "open_interest" in df.columns:
-        df = df.with_columns(pl.col("open_interest").fill_null(0.0))
-    if "funding_rate" in df.columns:
-        df = df.with_columns(pl.col("funding_rate").fill_null(0.0))
-    return df
+    return load_bars_for_interval(conn, asset, "15m", cutoff, lookback_days)
 
 
 def load_15m_bars(conn, symbol: str, cutoff: datetime, lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
@@ -170,19 +164,29 @@ def load_15m_bars(conn, symbol: str, cutoff: datetime, lookback_days: int = LOOK
 
 def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
                            lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
-    """Load preferred bars for an arbitrary eval interval (1m/5m/15m/...).
-    HTF intervals (1h/4h) are resampled by ws_gateway and stored directly, so
-    they load the same way; 15m/1h/4h are derived, 1m/5m streamed.
+    """Load canonical bars, deriving every higher timeframe from 5m rows.
+
+    The market database may retain derived rows for operational inspection, but
+    strategy evaluation never consumes them. This keeps delayed replay and live
+    evaluation on one bucket convention.
     """
     asset = _asset_from_symbol(symbol)
     cutoff = _ensure_utc(cutoff)
+    if interval in {"15m", "1h", "4h"}:
+        base_lookback = max(lookback_days, 60 if interval == "4h" else 16)
+        start = cutoff - timedelta(days=base_lookback)
+        raw = _prefer_rows(_load_raw_observations_for_asset(conn, asset, cutoff, start, interval="5m"))
+        return resample_ohlcv(_rows_to_frame(raw), interval)
     start = cutoff - timedelta(days=lookback_days)
     raw = _load_raw_observations_for_asset(conn, asset, cutoff, start, interval=interval)
     rows = _prefer_rows(raw)
+    return _rows_to_frame(rows)
+
+
+def _rows_to_frame(rows: List[Dict[str, Any]]) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame()
-    df = pl.DataFrame(
-        {
+    data = {
             "timestamp": [r["timestamp"] for r in rows],
             "open": [r["open"] for r in rows],
             "high": [r["high"] for r in rows],
@@ -192,14 +196,15 @@ def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
             "open_interest": [r["open_interest"] for r in rows],
             "funding_rate": [r["funding_rate"] for r in rows],
             "source": [r["source"] for r in rows],
-        },
-        strict=False,
+        }
+    if "source_provenance" in rows[0]:
+        data["source_provenance"] = [r.get("source_provenance", []) for r in rows]
+    if "data_purity" in rows[0]:
+        data["data_purity"] = [r.get("data_purity", "unknown") for r in rows]
+    return pl.DataFrame(data, strict=False).with_columns(
+        pl.col("open_interest").fill_null(0.0),
+        pl.col("funding_rate").fill_null(0.0),
     )
-    if "open_interest" in df.columns:
-        df = df.with_columns(pl.col("open_interest").fill_null(0.0))
-    if "funding_rate" in df.columns:
-        df = df.with_columns(pl.col("funding_rate").fill_null(0.0))
-    return df
 
 
 def load_btc_15m(conn, cutoff: datetime, lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
@@ -244,44 +249,146 @@ def evaluation_symbols(conn, cutoff: datetime, snapshot: dict | None = None) -> 
 
 
 def resample_ohlcv(bars: pl.DataFrame, every: str) -> pl.DataFrame:
+    """Resample closed end-stamped bars into complete UTC-aligned buckets.
+
+    Input timestamps are exclusive bar ends. A bucket ending at ``12:00`` thus
+    expects base bars ending at ``11:50``, ``11:55`` and ``12:00``. Incomplete
+    buckets are deliberately omitted rather than persisted or evaluated.
+    """
     if bars.is_empty():
         return bars
-    bars = bars.sort("timestamp")
-    agg = [
-        pl.col("open").first(),
-        pl.col("high").max(),
-        pl.col("low").min(),
-        pl.col("close").last(),
-        pl.col("volume").sum(),
-    ]
-    if "open_interest" in bars.columns:
-        agg.append(pl.col("open_interest").last())
-    if "funding_rate" in bars.columns:
-        agg.append(pl.col("funding_rate").last())
-    return bars.group_by_dynamic("timestamp", every=every).agg(agg)
+    seconds = {"15m": 900, "1h": 3600, "4h": 14400}.get(every)
+    if seconds is None:
+        raise ValueError(f"unsupported resampling interval: {every}")
+    rows = bars.sort("timestamp").to_dicts()
+    timestamps = [_ensure_utc(row["timestamp"]) for row in rows]
+    deltas = [int((timestamps[i] - timestamps[i - 1]).total_seconds())
+              for i in range(1, len(timestamps))
+              if timestamps[i] > timestamps[i - 1]]
+    base_seconds = min(deltas) if deltas else 300
+    if base_seconds <= 0 or seconds % base_seconds:
+        return pl.DataFrame()
+    required = seconds // base_seconds
+    grouped: Dict[int, List[Dict[str, Any]]] = {}
+    for row, timestamp in zip(rows, timestamps):
+        epoch = int(timestamp.timestamp())
+        bucket_end = ((epoch + seconds - 1) // seconds) * seconds
+        grouped.setdefault(bucket_end, []).append(row)
+    output: List[Dict[str, Any]] = []
+    for bucket_end, bucket_rows in sorted(grouped.items()):
+        by_end = {_ensure_utc(row["timestamp"]): row for row in bucket_rows}
+        expected = [datetime.fromtimestamp(bucket_end - base_seconds * i, timezone.utc)
+                    for i in range(required - 1, -1, -1)]
+        if any(end not in by_end for end in expected):
+            continue
+        ordered = [by_end[end] for end in expected]
+        output.append({
+            "timestamp": datetime.fromtimestamp(bucket_end, timezone.utc),
+            "open": float(ordered[0]["open"]),
+            "high": max(float(row["high"]) for row in ordered),
+            "low": min(float(row["low"]) for row in ordered),
+            "close": float(ordered[-1]["close"]),
+            "volume": sum(float(row.get("volume") or 0.0) for row in ordered),
+            "open_interest": ordered[-1].get("open_interest", 0.0),
+            "funding_rate": ordered[-1].get("funding_rate", 0.0),
+            "source": ordered[-1].get("source", "resampled"),
+            "source_provenance": sorted({str(row.get("source", "unknown")) for row in ordered}),
+            "data_purity": "pure_ws" if all(str(row.get("source", "")).endswith("_ws") for row in ordered) else "unknown",
+        })
+    return _rows_to_frame(output)
 
 
 def ema_last(closes: Sequence[float], span: int) -> float | None:
     if len(closes) < span:
         return None
-    series = pl.Series("close", [float(c) for c in closes]).ewm_mean(span=span, adjust=False)
-    val = float(series[-1])
-    if val != val:  # NaN
+    return ema_series(closes, span)[-1]
+
+
+def ema_series(values: Sequence[float], span: int) -> List[float | None]:
+    """TradingView-style EMA with an SMA seed at the declared warmup point."""
+    out: List[float | None] = [None] * len(values)
+    if span <= 0 or len(values) < span:
+        return out
+    seed = sum(float(value) for value in values[:span]) / span
+    out[span - 1] = seed
+    alpha = 2.0 / (span + 1.0)
+    for index in range(span, len(values)):
+        out[index] = alpha * float(values[index]) + (1.0 - alpha) * out[index - 1]
+    return out
+
+
+def wilder_rsi(values: Sequence[float], length: int = 14) -> List[float | None]:
+    """Wilder RMA RSI, equivalent to TradingView ``ta.rsi``."""
+    out: List[float | None] = [None] * len(values)
+    if length <= 0 or len(values) <= length:
+        return out
+    gains = [max(float(values[i]) - float(values[i - 1]), 0.0) for i in range(1, len(values))]
+    losses = [max(float(values[i - 1]) - float(values[i]), 0.0) for i in range(1, len(values))]
+    gain = sum(gains[:length]) / length
+    loss = sum(losses[:length]) / length
+
+    def value() -> float:
+        if loss == 0:
+            return 100.0 if gain > 0 else 0.0
+        return 100.0 - 100.0 / (1.0 + gain / loss)
+
+    out[length] = value()
+    for index in range(length + 1, len(values)):
+        gain = (gain * (length - 1) + gains[index - 1]) / length
+        loss = (loss * (length - 1) + losses[index - 1]) / length
+        out[index] = value()
+    return out
+
+
+def wilder_atr(bars: pl.DataFrame, length: int = 14) -> float | None:
+    """Wilder RMA true range with no seeded value before warmup."""
+    if bars.is_empty() or length <= 0 or bars.height < length:
         return None
-    return val
+    highs = [float(value) for value in bars["high"].to_list()]
+    lows = [float(value) for value in bars["low"].to_list()]
+    closes = [float(value) for value in bars["close"].to_list()]
+    true_ranges = [highs[0] - lows[0]]
+    true_ranges.extend(max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]),
+                           abs(lows[i] - closes[i - 1])) for i in range(1, len(closes)))
+    atr = sum(true_ranges[:length]) / length
+    for current in true_ranges[length:]:
+        atr = (atr * (length - 1) + current) / length
+    return atr if math.isfinite(atr) and atr > 0 else None
+
+
+def stoch_rsi(values: Sequence[float], rsi_length: int = 14, stoch_length: int = 14,
+              k_smoothing: int = 3, d_smoothing: int = 3) -> tuple[List[float | None], ...]:
+    """Return raw StochRSI, SMA K, SMA D using explicit zero-denominator rules."""
+    rsi = wilder_rsi(values, rsi_length)
+    raw: List[float | None] = [None] * len(values)
+    for index in range(len(values)):
+        window = rsi[index - stoch_length + 1:index + 1] if index + 1 >= stoch_length else []
+        if len(window) != stoch_length or any(value is None for value in window):
+            continue
+        low, high = min(window), max(window)
+        raw[index] = 0.0 if high == low else 100.0 * (rsi[index] - low) / (high - low)
+    k: List[float | None] = [None] * len(values)
+    d: List[float | None] = [None] * len(values)
+    for index in range(len(values)):
+        window = raw[index - k_smoothing + 1:index + 1] if index + 1 >= k_smoothing else []
+        if len(window) == k_smoothing and all(value is not None for value in window):
+            k[index] = sum(window) / k_smoothing
+        window_k = k[index - d_smoothing + 1:index + 1] if index + 1 >= d_smoothing else []
+        if len(window_k) == d_smoothing and all(value is not None for value in window_k):
+            d[index] = sum(window_k) / d_smoothing
+    return raw, k, d
 
 
 def last_completed_bar_fresh(bars_15m: pl.DataFrame, cutoff: datetime) -> bool:
     if bars_15m.is_empty():
         return False
     latest = _ensure_utc(bars_15m["timestamp"][-1])
-    return cutoff - latest <= MAX_BAR_AGE
+    cutoff = _ensure_utc(cutoff)
+    return latest <= cutoff and cutoff - latest <= MAX_BAR_AGE
 
 
 def atr_last(bars: pl.DataFrame, period: int = 14) -> float | None:
-    if bars.height < period + 1:
-        return None
-    return float(compute_atr(bars, period=period))
+    return wilder_atr(bars, period)
 
 
 def structure_bias_4h(bars_4h: pl.DataFrame) -> str:

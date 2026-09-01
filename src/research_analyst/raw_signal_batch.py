@@ -18,7 +18,10 @@ def capture(event, db_path=None):
     """Best effort only: this function cannot affect alpha or intent delivery."""
     try:
         observed = _utc(event["observed_at"])
-        material = "|".join(str(event.get(k, "")) for k in ("strategy_id", "asset", "direction", "observed_at"))
+        material = "|".join(str(event.get(k, "")) for k in (
+            "strategy_id", "plugin_version", "asset", "direction", "observed_at",
+            "input_snapshot_id",
+        ))
         raw_id = hashlib.sha256(material.encode()).hexdigest()
         payload = json.dumps(event, sort_keys=True, separators=(",", ":"), default=str)
         conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH)

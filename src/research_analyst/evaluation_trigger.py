@@ -15,32 +15,37 @@ import config
 TRIGGER_DIR = Path(os.getenv("EVALUATION_TRIGGER_DIR", str(config.DEFAULT_DB_DIR / "evaluation_triggers")))
 
 
-def cutoff_key(cutoff_at: datetime) -> str:
-    """Return a filesystem-safe canonical key for one completed 5m cutoff."""
+def cutoff_key(cutoff_at: datetime, interval: str = "5m") -> str:
+    """Return a filesystem-safe canonical key for one completed cutoff."""
     if isinstance(cutoff_at, str):
         cutoff_at = datetime.fromisoformat(cutoff_at.replace("Z", "+00:00"))
     if cutoff_at.tzinfo is None:
         cutoff_at = cutoff_at.replace(tzinfo=timezone.utc)
     cutoff_at = cutoff_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
-    cutoff_at = cutoff_at.replace(minute=cutoff_at.minute - cutoff_at.minute % 5)
-    return cutoff_at.strftime("5m-%Y-%m-%dT%H-%M-00Z")
+    minutes = {"1m": 1, "5m": 5}.get(interval, 5)
+    cutoff_at = cutoff_at.replace(minute=cutoff_at.minute - cutoff_at.minute % minutes)
+    return cutoff_at.strftime(f"{interval}-%Y-%m-%dT%H-%M-00Z")
 
 
-def publish(cutoff_at: datetime, trigger_dir: Path | None = None) -> tuple[bool, Path]:
-    """Atomically publish one 5m cutoff; duplicate publication is harmless."""
+def publish(cutoff_at: datetime, trigger_dir: Path | None = None,
+            *, interval: str = "5m") -> tuple[bool, Path]:
+    """Atomically publish one completed base cutoff; duplicate publication is harmless."""
+    if interval not in {"1m", "5m"}:
+        raise ValueError(f"unsupported evaluation trigger interval: {interval}")
     if isinstance(cutoff_at, str):
         cutoff_at = datetime.fromisoformat(cutoff_at.replace("Z", "+00:00"))
     if cutoff_at.tzinfo is None:
         cutoff_at = cutoff_at.replace(tzinfo=timezone.utc)
     cutoff_at = cutoff_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
-    cutoff_at = cutoff_at.replace(minute=cutoff_at.minute - cutoff_at.minute % 5)
+    minutes = 1 if interval == "1m" else 5
+    cutoff_at = cutoff_at.replace(minute=cutoff_at.minute - cutoff_at.minute % minutes)
     directory = Path(trigger_dir or TRIGGER_DIR)
     directory.mkdir(parents=True, exist_ok=True)
-    key = cutoff_key(cutoff_at)
+    key = cutoff_key(cutoff_at, interval)
     destination = directory / f"{key}.json"
     if destination.exists() or destination.with_suffix(".claimed").exists() or destination.with_suffix(".processed").exists():
         return False, destination
-    payload = {"interval": "5m", "cutoff_at": cutoff_at.astimezone(timezone.utc).isoformat()}
+    payload = {"interval": interval, "cutoff_at": cutoff_at.astimezone(timezone.utc).isoformat()}
     fd, temporary = tempfile.mkstemp(prefix=".trigger-", suffix=".tmp", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -66,7 +71,15 @@ def pending(trigger_dir: Path | None = None) -> list[Path]:
     if not directory.exists():
         return []
     recover_claimed(directory)
-    return sorted(directory.glob("5m-*.json"))
+    paths = [*directory.glob("1m-*.json"), *directory.glob("5m-*.json")]
+    def order(path: Path) -> tuple[datetime, str]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            value = datetime.fromisoformat(payload["cutoff_at"].replace("Z", "+00:00"))
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            value = datetime.max.replace(tzinfo=timezone.utc)
+        return value, path.name
+    return sorted(paths, key=order)
 
 
 def claim(path: Path) -> Path:
@@ -81,7 +94,8 @@ def recover_claimed(trigger_dir: Path | None = None) -> int:
     directory = Path(trigger_dir or TRIGGER_DIR)
     lease = getattr(config, "EVALUATION_LEASE_SECONDS", 600)
     recovered = 0
-    for path in directory.glob("5m-*.claimed") if directory.exists() else ():
+    paths = [*directory.glob("1m-*.claimed"), *directory.glob("5m-*.claimed")] if directory.exists() else []
+    for path in paths:
         if time.time() - path.stat().st_mtime >= lease:
             path.rename(path.with_suffix(".json"))
             recovered += 1

@@ -1,7 +1,23 @@
 """EMA20 pullback with completed 4h trend confirmation."""
 from datetime import timedelta, timezone
+from zoneinfo import ZoneInfo
 import config
-from strategy_v2_context import completed_cycle_for, ema_last, atr_last, evaluation_symbols, load_bars_for_interval
+from strategy_v2_context import cutoff_from_id, ema_last, atr_last, evaluation_symbols, has_active_event, load_bars_for_interval
+
+STRATEGY_ID = "ema20-pullback-h4-trend-v1"
+
+
+def _session_passes(timestamp, cutoff):
+    """Use the configured exchange timezone; direct fixture calls may omit it."""
+    if cutoff is None:
+        return True
+    if not getattr(config, "EMA20_USE_SESSION_FILTER", True):
+        return True
+    try:
+        local = timestamp.astimezone(ZoneInfo(getattr(config, "EMA20_EXCHANGE_TIMEZONE", "UTC")))
+    except Exception:
+        return False
+    return 15 <= local.hour < 23
 
 def evaluate_symbol(bars, bars4, *, asset, symbol, cutoff, direction):
     if bars.height < 25 or bars4.height < 200: return None
@@ -10,16 +26,19 @@ def evaluate_symbol(bars, bars4, *, asset, symbol, cutoff, direction):
     if not all(x and x>0 for x in (e20,atr,e50,e200)): return None
     long=direction=="long"; regime=float(bars4["close"][-1])>e200 and e50>e200 if long else float(bars4["close"][-1])<e200 and e50<e200
     pattern=float(r["low"])<=e20 and close>e20 and close>float(r["open"]) and float(p["close"])<float(p["open"]) and close>=float(p["open"]) if long else float(r["high"])>=e20 and close<e20 and close<float(r["open"]) and float(p["close"])>float(p["open"]) and close<=float(p["open"])
-    if not regime or not pattern: return None
+    if not regime or not pattern or not _session_passes(r["timestamp"], cutoff): return None
     swing=min(bars["low"].tail(10).to_list()) if long else max(bars["high"].tail(10).to_list()); stop=swing-atr if long else swing+atr; target=close+2*(close-stop) if long else close-2*(stop-close)
     ts=r["timestamp"].replace(tzinfo=timezone.utc) if r["timestamp"].tzinfo is None else r["timestamp"]
-    return {"schema_version":1,"strategy_id":"ema20-pullback-h4-trend-v1","asset":asset.upper(),"direction":direction,"setup_class":"ema20_pullback_h4_trend","phase":"long_pullback" if long else "short_pullback","observed_at":ts.isoformat(),"valid_until":(ts+timedelta(minutes=5)).isoformat(),"horizon_minutes":5,"confidence":0.5,"confidence_status":"uncalibrated","entry_condition":{"type":"limit_at_ema20_pullback","price":close},"entry_price":close,"invalidation_price":stop,"targets":[target],"feature_snapshot":{"source_symbol":symbol,"ema20_1h":e20,"atr14_1h":atr,"close_4h":float(bars4["close"][-1]),"ema50_4h":e50,"ema200_4h":e200,"swing_extreme":swing}}
+    return {"schema_version":1,"strategy_id":STRATEGY_ID,"asset":asset.upper(),"direction":direction,"setup_class":"ema20_pullback_h4_trend","phase":"long_pullback" if long else "short_pullback","observed_at":ts.isoformat(),"valid_until":(ts+timedelta(minutes=5)).isoformat(),"horizon_minutes":5,"confidence":0.5,"confidence_status":"uncalibrated","entry_condition":{"type":"limit_at_ema20_pullback","price":close},"entry_price":close,"invalidation_price":stop,"targets":[target],"feature_snapshot":{"source_symbol":symbol,"ema20_1h":e20,"atr14_1h":atr,"close_4h":float(bars4["close"][-1]),"ema50_4h":e50,"ema200_4h":e200,"swing_extreme":swing,"current_bullish":long and close > float(r["open"]),"previous_bearish":long and float(p["close"]) < float(p["open"]),"session_passed":True,"cutoff":cutoff.isoformat() if cutoff else None}}
 def run_plugin(cutoff_id,snapshot):
-    cutoff=completed_cycle_for(snapshot.get("now"),"5m"); conn=config.get_db_connection(read_only=True,db_path=snapshot.get("market_db_path"))
+    cutoff=cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now")); conn=config.get_db_connection(read_only=True,db_path=snapshot.get("market_db_path"))
     try:
         out=[]
+        if cutoff.minute != 0:
+            return out
         for symbol, a in evaluation_symbols(conn, cutoff, snapshot):
             b=load_bars_for_interval(conn,symbol,"1h",cutoff); h=load_bars_for_interval(conn,symbol,"4h",cutoff); e= evaluate_symbol(b,h,asset=a,symbol=symbol,cutoff=cutoff,direction="long") or evaluate_symbol(b,h,asset=a,symbol=symbol,cutoff=cutoff,direction="short")
-            if e: e["input_snapshot_id"]=cutoff_id; out.append(e)
+            if e and not has_active_event(STRATEGY_ID, a, e["direction"], now=cutoff):
+                e["input_snapshot_id"]=cutoff_id; out.append(e)
         return out
     finally: conn.close()

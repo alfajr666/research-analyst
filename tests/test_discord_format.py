@@ -35,9 +35,27 @@ class DiscordFormatTests(unittest.TestCase):
         message = format_discord_signal(event)
         self.assertIn("**ALPHA · LONG · ETH**", message)
         self.assertIn("Accumulation base", message)
-        self.assertIn("**65%**", message)
+        self.assertNotIn("Confidence", message)
         self.assertIn("1890.23", message)
         self.assertIn("vol spike 8.74×", message)
+
+    def test_dual_zone_is_not_labeled_as_impulse_ignition(self):
+        event = {
+            "asset": "ETH",
+            "direction": "long",
+            "setup_class": "dual_zone_follower",
+            "strategy_id": "dual-zone-follower-v2",
+            "phase": "channel_a",
+            "entry_condition": {"type": "limit_at_ema_context", "price": 2475.04},
+            "invalidation_price": 2444.48,
+            "targets": [2547.59],
+            "observed_at": "2026-09-01T04:34:00+00:00",
+            "valid_until": "2026-09-01T04:39:00+00:00",
+            "feature_snapshot": {},
+        }
+        message = format_discord_signal(event)
+        self.assertIn("Dual-zone trend pullback", message)
+        self.assertNotIn("Impulse ignition", message)
 
     def test_oi_hour_message_top_candidates(self):
         feed = {

@@ -67,11 +67,19 @@ def validate_event(event: dict) -> None:
 
 
 def format_signal(event: dict) -> str:
-    family = "Continuation" if event["setup_class"].startswith("continuation") else (
-        "Accumulation base" if event["setup_class"] == "accumulation_base" else (
-            "Liquidity reversal" if event["setup_class"] == "liquidity_reversal" else "Impulse ignition"
-        )
-    )
+    setup_class = event["setup_class"]
+    if setup_class in {"dual_zone_follower", "dual_zone_short_follower"}:
+        family = "Dual-zone trend pullback"
+    elif setup_class.startswith("continuation"):
+        family = "Continuation"
+    elif setup_class == "accumulation_base":
+        family = "Accumulation base"
+    elif setup_class == "liquidity_reversal":
+        family = "Liquidity reversal"
+    elif setup_class in {"impulse_ignition", "squeeze_ignition"}:
+        family = "Impulse ignition"
+    else:
+        family = "Strategy setup"
     trigger = event["entry_condition"]
     trigger_text = trigger["type"].replace("_", " ")
     if "price" in trigger:
@@ -86,7 +94,6 @@ def format_signal(event: dict) -> str:
         f"Asset: {event['asset']}\n"
         f"Direction: {event['direction'].upper()}\n"
         f"Phase: {event['phase']}\n"
-        f"Confidence: {event['confidence']:.0%} ({event.get('confidence_status', 'uncalibrated')})\n"
         f"Trigger: {trigger_text}\n"
         f"Invalidation: {event['invalidation_price']:g}\n"
         f"Targets: {targets}\n"

@@ -9,8 +9,8 @@ from datetime import datetime, timezone, timedelta
 import config
 from alpha_outbox import OUTBOX_DIR
 
-def _get_or_create_cutoff_run(cutoff_at: datetime) -> str:
-    cutoff_id = "cutoff-" + cutoff_at.strftime("%Y-%m-%dT%H-%M-00Z")
+def _get_or_create_cutoff_run(cutoff_at: datetime, interval: str = "5m") -> str:
+    cutoff_id = f"{interval}:{cutoff_at.isoformat().replace('+00:00', 'Z')}"
     conn = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
     try:
         row = conn.execute(
@@ -375,9 +375,10 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
 
     # Cutoff + plugins (data platform v2 path). Legacy direct evaluators cleaned up post cutover.
     try:
-        from strategy_v2_context import completed_cycle
-        cutoff_at = cutoff_at or completed_cycle(datetime.now(timezone.utc))
-        cutoff_id = _get_or_create_cutoff_run(cutoff_at)
+        from strategy_v2_context import completed_cycle_for
+        primary_interval = (eval_intervals or ["5m"])[0]
+        cutoff_at = cutoff_at or completed_cycle_for(datetime.now(timezone.utc), primary_interval)
+        cutoff_id = _get_or_create_cutoff_run(cutoff_at, primary_interval)
         # finalize now that ingestion complete
         conn = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
         try:
@@ -395,25 +396,16 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
             nowf = datetime.now(timezone.utc)
             # Load recent 15m bars from the market-owned source observations.
             market_conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
-            static_assets = config.load_static_symbols()
-            placeholders = ",".join("?" for _ in static_assets)
-            assets = [row[0] for row in market_conn.execute(
-                f"SELECT DISTINCT asset FROM source_observations "
-                f"WHERE interval = '15m' AND asset IN ({placeholders}) ORDER BY asset",
-                static_assets,
-            ).fetchall()]
-            bars_by_asset = {}
-            for asset in assets:
-                rows = market_conn.execute("""
-                    SELECT source_end, json_extract(payload_json, '$.open'), json_extract(payload_json, '$.high'),
-                           json_extract(payload_json, '$.low'), json_extract(payload_json, '$.close')
-                    FROM source_observations
-                    WHERE asset = ? AND interval = '15m'
-                      AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0
-                    ORDER BY source_end DESC LIMIT 300
-                """, (asset,)).fetchall()
-                if rows:
-                    bars_by_asset[asset] = rows  # newest first, will reverse
+            from symbol_rotation import subscription_assets
+            assets, _ = subscription_assets(cutoff_at)
+            from strategy_v2_context import load_bars_for_interval
+            bars_by_asset = {
+                asset: (
+                    load_bars_for_interval(market_conn, asset, "1h", cutoff_at),
+                    load_bars_for_interval(market_conn, asset, "4h", cutoff_at),
+                )
+                for asset in assets
+            }
             market_conn.close()
 
             # Compute FVG / Order Blocks on 1h + 4h for each asset (advisory)
@@ -424,29 +416,11 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
                 pl = None
 
             zone_rows = []
-            for asset, raw in bars_by_asset.items():
-                if not pl or len(raw) < 20:
+            for asset, frames in bars_by_asset.items():
+                if not pl:
                     continue
-                # build df (reverse to ascending)
-                data = []
-                for ts, o, h, l, c in reversed(raw):
-                    if None in (o, h, l, c):
-                        continue
-                    data.append({
-                        "timestamp": ts,
-                        "open": float(o), "high": float(h), "low": float(l), "close": float(c)
-                    })
-                if len(data) < 10:
-                    continue
-                df15 = pl.DataFrame(data)
-                for tf, every in [("1h", "1h"), ("4h", "4h")]:
+                for tf, df in zip(("1h", "4h"), frames):
                     try:
-                        df = df15.group_by_dynamic("timestamp", every=every).agg([
-                            pl.col("open").first(),
-                            pl.col("high").max(),
-                            pl.col("low").min(),
-                            pl.col("close").last(),
-                        ]).sort("timestamp")
                         if df.height < 5:
                             continue
                         atr = compute_atr(df)
@@ -692,7 +666,7 @@ def main():
             try:
                 payload = json.loads(trigger.read_text(encoding="utf-8"))
                 cutoff_at = datetime.fromisoformat(payload["cutoff_at"].replace("Z", "+00:00"))
-                run_pipeline(cutoff_at=cutoff_at, eval_intervals=["5m"])
+                run_pipeline(cutoff_at=cutoff_at, eval_intervals=[payload.get("interval", "5m")])
                 try:
                     publish_events()
                 except Exception as error:
