@@ -50,6 +50,17 @@ class RegimeSessionHealthcheckTests(unittest.TestCase):
                  patch.object(regime_session_healthcheck, "process_running", return_value=True):
                 self.assertEqual(regime_session_healthcheck.main(), 1)
 
+    def test_split_json_cycle_is_reassembled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "regime.log"
+            serialized = json.dumps(_cycle())
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            midpoint = len(serialized) // 2
+            path.write_text(f"{now}: {serialized[:midpoint]}\n{serialized[midpoint:]}\n")
+            with patch.object(regime_session_healthcheck, "LOG", path), \
+                 patch.object(regime_session_healthcheck, "process_running", return_value=True):
+                self.assertEqual(regime_session_healthcheck.main(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

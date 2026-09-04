@@ -57,13 +57,29 @@ def latest_cycle(log_path: Path | None = None) -> tuple[float, dict] | None:
         lines = log_path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return None
-    for line in reversed(lines):
-        if len(line) < 22 or line[19:21] != ": ":
-            continue
+    records: list[tuple[datetime, str]] = []
+    current_at: datetime | None = None
+    current_payload: list[str] = []
+    for line in lines:
+        if len(line) >= 21 and line[19:21] == ": ":
+            if current_at is not None:
+                records.append((current_at, "".join(current_payload)))
+            try:
+                current_at = datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                current_at = None
+                current_payload = []
+                continue
+            current_payload = [line[21:]]
+        elif current_at is not None:
+            current_payload.append(line)
+    if current_at is not None:
+        records.append((current_at, "".join(current_payload)))
+
+    for recorded_at, serialized_payload in reversed(records):
         try:
-            recorded_at = datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            payload = json.loads(line[21:])
-        except (ValueError, json.JSONDecodeError):
+            payload = json.loads(serialized_payload)
+        except json.JSONDecodeError:
             continue
         if isinstance(payload, dict) and REQUIRED_FIELDS <= payload.keys():
             return recorded_at.timestamp(), payload
