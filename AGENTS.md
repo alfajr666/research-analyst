@@ -163,6 +163,11 @@ The executor owns credentials, sizing, leverage, venue precision, orders,
 fills, protective stops, take-profit execution, and receipts. Analyst logs must
 not claim execution state. The legacy filesystem inbox is compatibility-only.
 
+Alpha outbox events persist the admitted target in the top-level `targets`
+field. The publisher can recover that field for legacy events when
+`_admission_result.selected_take_profit` is present; events without a
+recoverable target remain invalid and are not delivered.
+
 ## PM Sidecar
 
 The PM sidecar is a separate managed process and the sole LLM position manager.
@@ -191,8 +196,10 @@ oxmgr logs research-analyst-pm-sidecar --lines 40
 
 The regime-session target uses `scripts/regime_session_healthcheck.py`; the
 probe requires a running worker and a recent completed cycle with valid 1h/4h
-readiness and gate summary fields. Its tracked oxmgr definition is
-`ops/oxfile.toml`.
+readiness and gate summary fields. It accepts both timestamp-prefixed records
+and long JSON records persisted without a prefix by `oxmgr`, using the cycle's
+`cutoff_at` for freshness. Its tracked oxmgr definition is `ops/oxfile.toml`;
+the full worker invocation belongs in the app's `command` field.
 
 The core managed targets are:
 

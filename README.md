@@ -206,6 +206,11 @@ credentials, sizing, leverage, precision, orders, fills, protective stops,
 take-profit execution, and receipts. Research Analyst never claims execution
 state.
 
+The alpha outbox stores admitted targets in the top-level `targets` field.
+Publisher compatibility handling can reconstruct that field from
+`_admission_result.selected_take_profit` for legacy events; events without a
+recoverable target remain invalid and are not delivered.
+
 ## PM Sidecar
 
 The PM sidecar is independent from the orchestrator and is the sole LLM
@@ -232,8 +237,11 @@ oxmgr logs research-analyst-pm-sidecar --lines 40
 
 `research-analyst-regime-session` is health-checked by
 `scripts/regime_session_healthcheck.py`, which verifies the worker process and
-the recency and shape of its latest completed cycle. The tracked oxmgr
-definition is `ops/oxfile.toml`.
+the recency and shape of its latest completed cycle. The probe handles both
+timestamp-prefixed output and long JSON records persisted without a timestamp
+prefix by `oxmgr`, using `cutoff_at` as the cycle freshness value. The tracked
+oxmgr definition is `ops/oxfile.toml`, and the full worker invocation is kept in
+the app's `command` field.
 
 For a deployment of explicitly approved code, restart only services importing
 the changed modules. Verify fresh cutoff logs, restart counts, market freshness,
