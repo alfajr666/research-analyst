@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -15,15 +15,23 @@ import config
 TRIGGER_DIR = Path(os.getenv("EVALUATION_TRIGGER_DIR", str(config.DEFAULT_DB_DIR / "evaluation_triggers")))
 
 
-def cutoff_key(cutoff_at: datetime, interval: str = "5m") -> str:
-    """Return a filesystem-safe canonical key for one completed cutoff."""
+def _canonical_cutoff(cutoff_at: datetime | str, interval: str) -> datetime:
+    """Normalize exchange ``boundary - 1ms`` timestamps before flooring."""
     if isinstance(cutoff_at, str):
         cutoff_at = datetime.fromisoformat(cutoff_at.replace("Z", "+00:00"))
     if cutoff_at.tzinfo is None:
         cutoff_at = cutoff_at.replace(tzinfo=timezone.utc)
-    cutoff_at = cutoff_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    cutoff_at = cutoff_at.astimezone(timezone.utc)
+    if cutoff_at.microsecond >= 999_000:
+        cutoff_at += timedelta(milliseconds=1)
+    cutoff_at = cutoff_at.replace(second=0, microsecond=0)
     minutes = {"1m": 1, "5m": 5}.get(interval, 5)
-    cutoff_at = cutoff_at.replace(minute=cutoff_at.minute - cutoff_at.minute % minutes)
+    return cutoff_at.replace(minute=cutoff_at.minute - cutoff_at.minute % minutes)
+
+
+def cutoff_key(cutoff_at: datetime, interval: str = "5m") -> str:
+    """Return a filesystem-safe canonical key for one completed cutoff."""
+    cutoff_at = _canonical_cutoff(cutoff_at, interval)
     return cutoff_at.strftime(f"{interval}-%Y-%m-%dT%H-%M-00Z")
 
 
@@ -32,13 +40,7 @@ def publish(cutoff_at: datetime, trigger_dir: Path | None = None,
     """Atomically publish one completed base cutoff; duplicate publication is harmless."""
     if interval not in {"1m", "5m"}:
         raise ValueError(f"unsupported evaluation trigger interval: {interval}")
-    if isinstance(cutoff_at, str):
-        cutoff_at = datetime.fromisoformat(cutoff_at.replace("Z", "+00:00"))
-    if cutoff_at.tzinfo is None:
-        cutoff_at = cutoff_at.replace(tzinfo=timezone.utc)
-    cutoff_at = cutoff_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
-    minutes = 1 if interval == "1m" else 5
-    cutoff_at = cutoff_at.replace(minute=cutoff_at.minute - cutoff_at.minute % minutes)
+    cutoff_at = _canonical_cutoff(cutoff_at, interval)
     directory = Path(trigger_dir or TRIGGER_DIR)
     directory.mkdir(parents=True, exist_ok=True)
     key = cutoff_key(cutoff_at, interval)

@@ -27,6 +27,16 @@ class EvaluationTriggerTests(unittest.TestCase):
             duplicate_processed, _ = publish(cutoff, root)
             self.assertFalse(duplicate_processed)
 
+    def test_exchange_boundary_minus_one_millisecond_maps_to_next_cutoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            created, path = publish(
+                datetime(2026, 8, 29, 14, 44, 59, 999000, tzinfo=timezone.utc),
+                Path(directory),
+            )
+
+            self.assertTrue(created)
+            self.assertEqual(path.name, "5m-2026-08-29T14-45-00Z.json")
+
     def test_claim_recovery_and_bounded_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

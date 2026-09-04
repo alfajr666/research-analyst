@@ -65,6 +65,35 @@ BINANCE_OI_DISCORD_SKIP_EMPTY = os.getenv("BINANCE_OI_DISCORD_SKIP_EMPTY", "true
 MARKET_DB_PATH = os.getenv("MARKET_DB_PATH", str(DEFAULT_DB_DIR / "market.sqlite3"))
 ANALYST_DB_PATH = os.getenv("ANALYST_DB_PATH", str(DEFAULT_DB_DIR / "analyst.sqlite3"))
 INGEST_INTERVAL_MINS = int(os.getenv("INGEST_INTERVAL_MINS", "5"))
+ENTRY_POLICY_MODE = os.getenv("ENTRY_POLICY_MODE", "shadow").strip().lower()
+ENTRY_POLICY_COOLDOWN_MINUTES = int(os.getenv("ENTRY_POLICY_COOLDOWN_MINUTES", "30"))
+if ENTRY_POLICY_MODE not in {"off", "shadow", "enforce"}:
+    raise ValueError("ENTRY_POLICY_MODE must be off, shadow, or enforce")
+if ENTRY_POLICY_COOLDOWN_MINUTES < 0:
+    raise ValueError("ENTRY_POLICY_COOLDOWN_MINUTES must not be negative")
+REGIME_SESSION_MODE = os.getenv("REGIME_SESSION_MODE", "shadow").strip().lower()
+REGIME_DB_PATH = os.getenv("REGIME_DB_PATH", str(DEFAULT_DB_DIR / "regime.sqlite3"))
+REGIME_SESSION_GRACE_SECONDS = int(os.getenv("REGIME_SESSION_GRACE_SECONDS", "30"))
+REGIME_SESSION_COOLDOWN_MINUTES = int(os.getenv("REGIME_SESSION_COOLDOWN_MINUTES", "30"))
+REGIME_SESSION_FAMILY_ON_THRESHOLD = float(os.getenv("REGIME_SESSION_FAMILY_ON_THRESHOLD", "0.35"))
+REGIME_SESSION_FAMILY_OFF_THRESHOLD = float(os.getenv("REGIME_SESSION_FAMILY_OFF_THRESHOLD", "0.25"))
+if REGIME_SESSION_MODE not in {"off", "shadow", "enforce"}:
+    raise ValueError("REGIME_SESSION_MODE must be off, shadow, or enforce")
+if REGIME_SESSION_GRACE_SECONDS < 0:
+    raise ValueError("REGIME_SESSION_GRACE_SECONDS must not be negative")
+if REGIME_SESSION_COOLDOWN_MINUTES < 0:
+    raise ValueError("REGIME_SESSION_COOLDOWN_MINUTES must not be negative")
+if not 0 <= REGIME_SESSION_FAMILY_OFF_THRESHOLD <= REGIME_SESSION_FAMILY_ON_THRESHOLD <= 1:
+    raise ValueError("REGIME_SESSION_FAMILY_OFF_THRESHOLD and ON_THRESHOLD must be ordered in [0, 1]")
+REGIME_SCORE_ADX_NORMALIZATION = float(os.getenv("REGIME_SCORE_ADX_NORMALIZATION", "50"))
+REGIME_SCORE_ADX_LENGTH = int(os.getenv("REGIME_SCORE_ADX_LENGTH", "14"))
+REGIME_SCORE_ADX_SMOOTHING = int(os.getenv("REGIME_SCORE_ADX_SMOOTHING", "14"))
+REGIME_SCORE_VOL_WINDOW_BARS = int(os.getenv("REGIME_SCORE_VOL_WINDOW_BARS", "12"))
+REGIME_SCORE_TRANSITION_CENTER_UTC_MINUTE = int(os.getenv("REGIME_SCORE_TRANSITION_CENTER_UTC_MINUTE", "780"))
+REGIME_SCORE_TRANSITION_WIDTH_MINUTES = int(os.getenv("REGIME_SCORE_TRANSITION_WIDTH_MINUTES", "60"))
+REGIME_SCORE_TRANSITION_MIN_DISCOUNT = float(os.getenv("REGIME_SCORE_TRANSITION_MIN_DISCOUNT", "0.5"))
+REGIME_SCORE_REVERSAL_MIN_PRIOR_TREND = float(os.getenv("REGIME_SCORE_REVERSAL_MIN_PRIOR_TREND", "0.55"))
+REGIME_SCORE_REVERSAL_DECAY_MIN = float(os.getenv("REGIME_SCORE_REVERSAL_DECAY_MIN", "0.15"))
 EVALUATION_TRIGGER_DIR = Path(os.getenv("EVALUATION_TRIGGER_DIR", str(DEFAULT_DB_DIR / "evaluation_triggers")))
 EVALUATION_RECOVERY_SCAN_SECONDS = int(os.getenv("EVALUATION_RECOVERY_SCAN_SECONDS", "5"))
 EVALUATION_LEASE_SECONDS = int(os.getenv("EVALUATION_LEASE_SECONDS", "600"))
@@ -80,6 +109,10 @@ DISCOVERY_MIN_RESIDENCY_HOURS = int(os.getenv("DISCOVERY_MIN_RESIDENCY_HOURS", "
 DEEP_BACKFILL_BATCH_SIZE = int(os.getenv("DEEP_BACKFILL_BATCH_SIZE", "5"))
 DEEP_BACKFILL_LEASE_MINUTES = int(os.getenv("DEEP_BACKFILL_LEASE_MINUTES", "30"))
 DEEP_BACKFILL_RETRY_BASE_MINUTES = int(os.getenv("DEEP_BACKFILL_RETRY_BASE_MINUTES", "5"))
+DEEP_BACKFILL_HOURS = int(os.getenv("DEEP_BACKFILL_HOURS", "96"))
+DEEP_WARMUP_4H_ATR_BARS = int(os.getenv("DEEP_WARMUP_4H_ATR_BARS", "14"))
+DEEP_WARMUP_SWING_LOOKBACK = int(os.getenv("DEEP_WARMUP_SWING_LOOKBACK", "20"))
+DEEP_WARMUP_GATE_ENABLED = os.getenv("DEEP_WARMUP_GATE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 BINANCE_OI_ROTATION_ENABLED = os.getenv("BINANCE_OI_ROTATION_ENABLED", "true").lower() == "true"
 BINANCE_OI_ROTATION_SCANNER_VERSION = os.getenv("BINANCE_OI_ROTATION_SCANNER_VERSION", "v1")
 BINANCE_OI_ROTATION_MIN_24H_VOLUME_USD = float(os.getenv("BINANCE_OI_ROTATION_MIN_24H_VOLUME_USD", "5000000"))
@@ -107,6 +140,7 @@ ANALYST_SCHEMA_TABLES = frozenset({
     "alpha_confidence_observations", "research_requests", "research_reports",
     "research_run_metrics", "research_artifacts", "research_evidence", "pipeline_runs",
     "execution_deliveries", "cutoff_runs", "feature_snapshots", "structure_zones",
+    "entry_policy_observations", "regime_scores", "regime_gate_decisions",
 })
 
 
@@ -175,11 +209,14 @@ COMPACT_STRATEGY_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 COMPACT_STRATEGY_IDS = frozenset((
     "failed-break-v3", "bb-rsi-meanrev-v1",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
+    "ema9-adx-stochrsi-state-v1",
 ))
 FUNDAMO_STRATEGY_IDS = frozenset((
+    "ema99-retest-adx-fundamo-v1",
     "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
+    "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
 ))
 DUAL_ZONE_STRATEGY_ID = "dual-zone-follower-v2"
 DUAL_ZONE_EXIT_EMA_LENGTH = int(os.getenv("DUAL_ZONE_EXIT_EMA_LENGTH", "7"))
@@ -203,11 +240,90 @@ DUAL_ZONE_ADX_DI_LENGTH = int(os.getenv("DUAL_ZONE_ADX_DI_LENGTH", "14"))
 DUAL_ZONE_ADX_SMOOTHING = int(os.getenv("DUAL_ZONE_ADX_SMOOTHING", "14"))
 DUAL_ZONE_MIN_ADX = float(os.getenv("DUAL_ZONE_MIN_ADX", "22.0"))
 DUAL_ZONE_USE_DI_DIRECTION = os.getenv("DUAL_ZONE_USE_DI_DIRECTION", "true").lower() == "true"
+EMA99_RETEST_STRATEGY_ID = "ema99-retest-adx-fundamo-v1"
+EMA99_RETEST_FAST_EMA_LENGTH = int(os.getenv("EMA99_RETEST_FAST_EMA_LENGTH", "26"))
+EMA99_RETEST_SLOW_EMA_LENGTH = int(os.getenv("EMA99_RETEST_SLOW_EMA_LENGTH", "99"))
+EMA99_RETEST_RSI_LENGTH = int(os.getenv("EMA99_RETEST_RSI_LENGTH", "14"))
+EMA99_RETEST_ATR_LENGTH = int(os.getenv("EMA99_RETEST_ATR_LENGTH", "14"))
+EMA99_RETEST_ATR_STOP_MULTIPLIER = float(os.getenv("EMA99_RETEST_ATR_STOP_MULTIPLIER", "2.0"))
+EMA99_RETEST_ADX_TIMEFRAME = os.getenv("EMA99_RETEST_ADX_TIMEFRAME", "1h")
+EMA99_RETEST_ADX_LENGTH = int(os.getenv("EMA99_RETEST_ADX_LENGTH", "14"))
+EMA99_RETEST_ADX_SMOOTHING = int(os.getenv("EMA99_RETEST_ADX_SMOOTHING", "14"))
+EMA99_RETEST_MIN_ADX = float(os.getenv("EMA99_RETEST_MIN_ADX", "25.0"))
+EMA99_RETEST_MAX_RETEST_DISTANCE_PCT = float(os.getenv("EMA99_RETEST_MAX_RETEST_DISTANCE_PCT", "0.1"))
+EMA99_RETEST_LONG_EXIT_RSI = float(os.getenv("EMA99_RETEST_LONG_EXIT_RSI", "72.0"))
+EMA99_RETEST_SHORT_EXIT_RSI = float(os.getenv("EMA99_RETEST_SHORT_EXIT_RSI", "28.0"))
+EMA99_RETEST_EXIT_SPREAD_PCT = float(os.getenv("EMA99_RETEST_EXIT_SPREAD_PCT", "0.5"))
 EMA20_USE_SESSION_FILTER = os.getenv("EMA20_USE_SESSION_FILTER", "true").lower() == "true"
 EMA20_EXCHANGE_TIMEZONE = os.getenv("EMA20_EXCHANGE_TIMEZONE", "UTC")
 EMA9_TRIGGER_MEMORY_BARS = int(os.getenv("EMA9_TRIGGER_MEMORY_BARS", "30"))
 EMA_STACK_USE_ADX = os.getenv("EMA_STACK_USE_ADX", "true").lower() == "true"
 EMA_STACK_MIN_ADX = float(os.getenv("EMA_STACK_MIN_ADX", "20.0"))
+EMA9_ADX_STRATEGY_ID = "ema9-adx-stochrsi-state-v1"
+EMA9_ADX_ADX_LENGTH = int(os.getenv("EMA9_ADX_ADX_LENGTH", "14"))
+EMA9_ADX_ADX_MIN = float(os.getenv("EMA9_ADX_ADX_MIN", "20.0"))
+EMA9_ADX_RSI_LENGTH = int(os.getenv("EMA9_ADX_RSI_LENGTH", "14"))
+EMA9_ADX_STOCH_LENGTH = int(os.getenv("EMA9_ADX_STOCH_LENGTH", "14"))
+EMA9_ADX_K_LENGTH = int(os.getenv("EMA9_ADX_K_LENGTH", "3"))
+EMA9_ADX_D_LENGTH = int(os.getenv("EMA9_ADX_D_LENGTH", "3"))
+EMA9_ADX_EMA_LENGTH = int(os.getenv("EMA9_ADX_EMA_LENGTH", "9"))
+EMA9_ADX_ATR_LENGTH = int(os.getenv("EMA9_ADX_ATR_LENGTH", "14"))
+EMA9_ADX_ATR_MULTIPLIER = float(os.getenv("EMA9_ADX_ATR_MULTIPLIER", "2.0"))
+EMA9_ADX_STRUCTURE_BARS = int(os.getenv("EMA9_ADX_STRUCTURE_BARS", "15"))
+EMA9_ADX_EXTENSION_OFFSET_PCT = float(os.getenv("EMA9_ADX_EXTENSION_OFFSET_PCT", "5.0"))
+EMA9_ADX_EXTENSION_LONG_K = float(os.getenv("EMA9_ADX_EXTENSION_LONG_K", "80.0"))
+EMA9_ADX_EXTENSION_SHORT_K = float(os.getenv("EMA9_ADX_EXTENSION_SHORT_K", "20.0"))
+EMA9_ADX_MOMENTUM_LONG_K = float(os.getenv("EMA9_ADX_MOMENTUM_LONG_K", "80.0"))
+EMA9_ADX_MOMENTUM_SHORT_K = float(os.getenv("EMA9_ADX_MOMENTUM_SHORT_K", "20.0"))
+EMA9_ADX_MOMENTUM_LONG_RSI = float(os.getenv("EMA9_ADX_MOMENTUM_LONG_RSI", "75.0"))
+EMA9_ADX_MOMENTUM_SHORT_RSI = float(os.getenv("EMA9_ADX_MOMENTUM_SHORT_RSI", "25.0"))
+EMA9_ADX_ENTRY_VALIDITY_MINUTES = int(os.getenv("EMA9_ADX_ENTRY_VALIDITY_MINUTES", "5"))
+EMA99_DOUBLE_TOUCH_STRATEGY_ID = "ema99-double-touch-stochrsi-state-v1"
+EMA99_DOUBLE_TOUCH_EMA_LENGTH = int(os.getenv("EMA99_DOUBLE_TOUCH_EMA_LENGTH", "99"))
+EMA99_DOUBLE_TOUCH_PROXIMITY_PCT = float(os.getenv("EMA99_DOUBLE_TOUCH_PROXIMITY_PCT", "0.5"))
+EMA99_DOUBLE_TOUCH_RSI1_LENGTH = int(os.getenv("EMA99_DOUBLE_TOUCH_RSI1_LENGTH", "14"))
+EMA99_DOUBLE_TOUCH_RSI1_MIN = float(os.getenv("EMA99_DOUBLE_TOUCH_RSI1_MIN", "40.0"))
+EMA99_DOUBLE_TOUCH_RSI1_MAX = float(os.getenv("EMA99_DOUBLE_TOUCH_RSI1_MAX", "60.0"))
+EMA99_DOUBLE_TOUCH_STOCH_RSI_LENGTH = int(os.getenv("EMA99_DOUBLE_TOUCH_STOCH_RSI_LENGTH", "14"))
+EMA99_DOUBLE_TOUCH_STOCH_LENGTH = int(os.getenv("EMA99_DOUBLE_TOUCH_STOCH_LENGTH", "14"))
+EMA99_DOUBLE_TOUCH_K_LENGTH = int(os.getenv("EMA99_DOUBLE_TOUCH_K_LENGTH", "3"))
+EMA99_DOUBLE_TOUCH_D_LENGTH = int(os.getenv("EMA99_DOUBLE_TOUCH_D_LENGTH", "3"))
+EMA99_DOUBLE_TOUCH_OVERBOUGHT = float(os.getenv("EMA99_DOUBLE_TOUCH_OVERBOUGHT", "80.0"))
+EMA99_DOUBLE_TOUCH_OVERSOLD = float(os.getenv("EMA99_DOUBLE_TOUCH_OVERSOLD", "20.0"))
+EMA99_DOUBLE_TOUCH_FAST_EMA = int(os.getenv("EMA99_DOUBLE_TOUCH_FAST_EMA", "7"))
+EMA99_DOUBLE_TOUCH_SLOW_EMA = int(os.getenv("EMA99_DOUBLE_TOUCH_SLOW_EMA", "26"))
+EMA99_DOUBLE_TOUCH_CROSS_LOOKBACK = int(os.getenv("EMA99_DOUBLE_TOUCH_CROSS_LOOKBACK", "10"))
+EMA99_DOUBLE_TOUCH_RSI5_LENGTH = int(os.getenv("EMA99_DOUBLE_TOUCH_RSI5_LENGTH", "14"))
+EMA99_DOUBLE_TOUCH_ATR_LENGTH = int(os.getenv("EMA99_DOUBLE_TOUCH_ATR_LENGTH", "14"))
+EMA99_DOUBLE_TOUCH_ATR_MULTIPLIER = float(os.getenv("EMA99_DOUBLE_TOUCH_ATR_MULTIPLIER", "1.0"))
+EMA99_DOUBLE_TOUCH_ADX_LENGTH = int(os.getenv("EMA99_DOUBLE_TOUCH_ADX_LENGTH", "14"))
+EMA99_DOUBLE_TOUCH_ADX_MIN = float(os.getenv("EMA99_DOUBLE_TOUCH_ADX_MIN", "20.0"))
+EMA99_DOUBLE_TOUCH_LONG_TP_RSI = float(os.getenv("EMA99_DOUBLE_TOUCH_LONG_TP_RSI", "70.0"))
+EMA99_DOUBLE_TOUCH_SHORT_TP_RSI = float(os.getenv("EMA99_DOUBLE_TOUCH_SHORT_TP_RSI", "30.0"))
+EMA99_DOUBLE_TOUCH_TP_EMA_PCT = float(os.getenv("EMA99_DOUBLE_TOUCH_TP_EMA_PCT", "3.0"))
+EMA99_DOUBLE_TOUCH_ENTRY_VALIDITY_MINUTES = int(os.getenv("EMA99_DOUBLE_TOUCH_ENTRY_VALIDITY_MINUTES", "5"))
+EMA7_26_CROSS_HAMMER_STRATEGY_ID = "ema7-26-cross-hammer-shooting-star-1h-adx-v1"
+EMA7_26_CROSS_FAST_EMA = int(os.getenv("EMA7_26_CROSS_FAST_EMA", "7"))
+EMA7_26_CROSS_SLOW_EMA = int(os.getenv("EMA7_26_CROSS_SLOW_EMA", "26"))
+EMA7_26_CROSS_SETUP_LOOKBACK = int(os.getenv("EMA7_26_CROSS_SETUP_LOOKBACK", "10"))
+EMA7_26_CROSS_EMA_PROXIMITY_PCT = float(os.getenv("EMA7_26_CROSS_EMA_PROXIMITY_PCT", "0.25"))
+EMA7_26_CROSS_MIN_BODY = float(os.getenv("EMA7_26_CROSS_MIN_BODY", "0.0"))
+EMA7_26_CROSS_HAMMER_LOWER_WICK_RATIO = float(os.getenv("EMA7_26_CROSS_HAMMER_LOWER_WICK_RATIO", "2.0"))
+EMA7_26_CROSS_HAMMER_UPPER_WICK_RATIO = float(os.getenv("EMA7_26_CROSS_HAMMER_UPPER_WICK_RATIO", "0.5"))
+EMA7_26_CROSS_STAR_UPPER_WICK_RATIO = float(os.getenv("EMA7_26_CROSS_STAR_UPPER_WICK_RATIO", "2.0"))
+EMA7_26_CROSS_STAR_LOWER_WICK_RATIO = float(os.getenv("EMA7_26_CROSS_STAR_LOWER_WICK_RATIO", "0.5"))
+EMA7_26_CROSS_RSI_LENGTH = int(os.getenv("EMA7_26_CROSS_RSI_LENGTH", "14"))
+EMA7_26_CROSS_ENTRY_RSI_MIN = float(os.getenv("EMA7_26_CROSS_ENTRY_RSI_MIN", "40.0"))
+EMA7_26_CROSS_ENTRY_RSI_MAX = float(os.getenv("EMA7_26_CROSS_ENTRY_RSI_MAX", "60.0"))
+EMA7_26_CROSS_ATR_LENGTH = int(os.getenv("EMA7_26_CROSS_ATR_LENGTH", "14"))
+EMA7_26_CROSS_ATR_STOP_MULTIPLIER = float(os.getenv("EMA7_26_CROSS_ATR_STOP_MULTIPLIER", "1.0"))
+EMA7_26_CROSS_ADX_LENGTH = int(os.getenv("EMA7_26_CROSS_ADX_LENGTH", "14"))
+EMA7_26_CROSS_ADX_SMOOTHING = int(os.getenv("EMA7_26_CROSS_ADX_SMOOTHING", "14"))
+EMA7_26_CROSS_ADX_MIN = float(os.getenv("EMA7_26_CROSS_ADX_MIN", "20.0"))
+EMA7_26_CROSS_LONG_EXIT_RSI = float(os.getenv("EMA7_26_CROSS_LONG_EXIT_RSI", "28.0"))
+EMA7_26_CROSS_SHORT_EXIT_RSI = float(os.getenv("EMA7_26_CROSS_SHORT_EXIT_RSI", "72.0"))
+EMA7_26_CROSS_EXIT_SPREAD_BPS = float(os.getenv("EMA7_26_CROSS_EXIT_SPREAD_BPS", "50.0"))
+EMA7_26_CROSS_ENTRY_VALIDITY_MINUTES = int(os.getenv("EMA7_26_CROSS_ENTRY_VALIDITY_MINUTES", "5"))
 GOLD_FAST_EMA = int(os.getenv("GOLD_FAST_EMA", "50"))
 GOLD_SLOW_EMA = int(os.getenv("GOLD_SLOW_EMA", "200"))
 GOLD_BB_LENGTH = int(os.getenv("GOLD_BB_LENGTH", "20"))
@@ -420,8 +536,10 @@ STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
         "STRATEGY_ENABLED_IDS",
         "failed-break-v3,bb-rsi-meanrev-v1,williams-fractal-scalp-v1,"
-        "ema9-continuation-stochrsi-v1,dual-zone-follower-v2,dual-zone-short-follower-v2,"
-        "ema20-pullback-h4-trend-v1,ema-stack-15m-adx-stochrsi-5m-v1"
+        "ema9-adx-stochrsi-state-v1,dual-zone-follower-v2,dual-zone-short-follower-v2,"
+        "ema20-pullback-h4-trend-v1,gold-trend-ema-bb-stoch-v1,"
+        "mtf-exhaustion-reversal-v1,ema99-double-touch-stochrsi-state-v1,"
+        "ema7-26-cross-hammer-shooting-star-1h-adx-v1"
     ).split(",") if s.strip()
 )
 
@@ -515,6 +633,12 @@ DATA_FRESHNESS_MAX_SECONDS = float(os.getenv("DATA_FRESHNESS_MAX_SECONDS", "600"
 CLASH_MIN_SCORE_MARGIN = float(os.getenv("CLASH_MIN_SCORE_MARGIN", "2.0"))
 STRATEGY_PRIORITY = {}
 INTENT_MAX_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MAX_STOP_DISTANCE_PCT", "0.05"))
+STRUCTURAL_STOP_ADMISSION_ENABLED = os.getenv("STRUCTURAL_STOP_ADMISSION_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+STRUCTURAL_STOP_REQUIRED_STRATEGIES = frozenset(
+    value.strip() for value in os.getenv("STRUCTURAL_STOP_REQUIRED_STRATEGIES", "").split(",") if value.strip()
+)
+_STRUCTURAL_STOP_GAP_RAW = os.getenv("STRUCTURAL_STOP_MAX_REFERENCE_GAP_PCT", "").strip()
+STRUCTURAL_STOP_MAX_REFERENCE_GAP_PCT = float(_STRUCTURAL_STOP_GAP_RAW) if _STRUCTURAL_STOP_GAP_RAW else None
 # Per-strategy routing to executor profiles (exchange/account). JSON map keyed by
 # strategy_id; each value may override any of: exchange_id, account_id, source,
 # take_profit_mode, validity_minutes. Strategies not listed fall back to
@@ -527,10 +651,11 @@ try:
         INTENT_ROUTING = {}
 except (ValueError, TypeError):
     INTENT_ROUTING = {}
-for _fundamo_strategy in ("dual-zone-follower-v2", "dual-zone-short-follower-v2",
+for _fundamo_strategy in ("ema99-retest-adx-fundamo-v1", "dual-zone-follower-v2", "dual-zone-short-follower-v2",
                            "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
                            "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1",
-                           "trend-wall-v1"):
+                           "trend-wall-v1", "ema99-double-touch-stochrsi-state-v1",
+                           "ema7-26-cross-hammer-shooting-star-1h-adx-v1"):
     INTENT_ROUTING.setdefault(_fundamo_strategy, {"exchange_id": "bybit", "account_id": "fundamo"})
 
 # --- Shared SQLite Intent Bus (spec SHARED_SQLITE_INTENT_BUS_SPEC.md §14) ---
@@ -640,12 +765,16 @@ LEGACY_SCANNER_ENABLED = os.getenv("LEGACY_SCANNER_ENABLED", "false").lower() ==
 
 # Emit classification (normative, see spec)
 PRICE_STRUCTURE_STRATEGY_IDS = {
+    "ema99-retest-adx-fundamo-v1",
     "accumulation-base-v2", "rsi-reclaim-v1",
     "liquidity-sweep-reversal-v1", "bb-rsi-meanrev-v1", "failed-break-v3",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
     "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
+    "ema9-adx-stochrsi-state-v1",
+    "ema99-double-touch-stochrsi-state-v1",
+    "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
 }
 MIXED_STRATEGY_IDS = {
     "impulse-ignition-v2", "continuation-breakout-v2",
@@ -787,6 +916,18 @@ def init_analyst_db(db_path: str | Path | None = None):
             status_id TEXT PRIMARY KEY, raw_signal_id TEXT NOT NULL, hard_gate_status TEXT,
             score_status TEXT, clash_status TEXT, executor_intent_status TEXT, reason TEXT,
             recorded_at TEXT NOT NULL)""")
+        policy_migration = "2026-09-04-entry-policy-observations"
+        if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (policy_migration,)).fetchone() is None:
+            conn.execute("""CREATE TABLE IF NOT EXISTS entry_policy_observations (
+                candidate_id TEXT PRIMARY KEY, observed_at TEXT NOT NULL,
+                policy_version TEXT NOT NULL, mode TEXT NOT NULL, decision TEXT NOT NULL,
+                session_name TEXT NOT NULL, session_phase TEXT NOT NULL,
+                session_elapsed_minutes INTEGER, market_family TEXT NOT NULL,
+                environment_state TEXT NOT NULL, reasons_json TEXT NOT NULL,
+                recorded_at TEXT NOT NULL
+            )""")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_entry_policy_observed_at ON entry_policy_observations (observed_at)")
+            conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (policy_migration,))
         conn.execute("""CREATE TABLE IF NOT EXISTS discord_signal_batches (
             window_start TEXT PRIMARY KEY, window_end TEXT NOT NULL, status TEXT NOT NULL,
             candidate_count INTEGER NOT NULL, message_count INTEGER NOT NULL DEFAULT 0,
@@ -849,6 +990,7 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                 opened_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 strategy_id VARCHAR NOT NULL,
                 current_pnl DOUBLE,
+                stop_loss DOUBLE,
                 status VARCHAR NOT NULL DEFAULT 'open',
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL
             );
@@ -859,7 +1001,7 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                 position_id VARCHAR NOT NULL,
                 strategy_id VARCHAR NOT NULL,
                 asset VARCHAR NOT NULL,
-                action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp')),
+                action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp', 'update_stop')),
                 reason VARCHAR,
                 htf_bias VARCHAR,
                 rr DOUBLE,
@@ -873,7 +1015,8 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
             );
         """)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(pm_advice)")}
-        if "confidence" not in columns:
+        table_sql = str(conn.execute("SELECT sql FROM sqlite_master WHERE name='pm_advice'").fetchone()[0]).lower()
+        if "confidence" not in columns or "update_stop" not in table_sql:
             # SQLite cannot alter a CHECK constraint. Rebuild the legacy table so
             # near_tp decisions can be persisted without losing existing advice.
             conn.execute("ALTER TABLE pm_advice RENAME TO pm_advice_legacy_v1")
@@ -883,7 +1026,7 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                     position_id VARCHAR NOT NULL,
                     strategy_id VARCHAR NOT NULL,
                     asset VARCHAR NOT NULL,
-                    action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp')),
+                    action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp', 'update_stop')),
                     reason VARCHAR,
                     htf_bias VARCHAR,
                     rr DOUBLE,
@@ -913,6 +1056,9 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
             ):
                 if name not in columns:
                     conn.execute(f"ALTER TABLE pm_advice ADD COLUMN {name} {definition}")
+        position_columns = {row[1] for row in conn.execute("PRAGMA table_info(positions_feed)")}
+        if "stop_loss" not in position_columns:
+            conn.execute("ALTER TABLE positions_feed ADD COLUMN stop_loss DOUBLE")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pm_advice_pos ON pm_advice (position_id, cutoff_at);")
         if not is_alpha:
             # Create option_chains table (15-min snapshots)

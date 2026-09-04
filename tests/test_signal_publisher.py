@@ -173,45 +173,6 @@ class SignalPublisherTests(unittest.TestCase):
         self.assertEqual(self.rows("SELECT count(*) FROM alpha_events"), [(1,)])
         self.assertEqual(self.rows("SELECT attempt_number, status FROM signal_deliveries ORDER BY attempt_number"), [(1, "failed"), (2, "sent")])
 
-    @unittest.skip("LLM research module was removed from the live architecture")
-    def test_llm_mode_waits_for_review_then_appends_it_to_delivery(self):
-        payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
-        self.write(payload)
-        transport = FakeTransport()
-        report = {
-            "verdict": "neutral", "thesis_summary": "Local evidence is mixed.",
-            "limitations": ["No external sources are included."],
-        }
-        with patch.object(config, "LLM_RESEARCH_ENABLED", True), \
-             patch.object(config, "LLM_INCLUDE_IN_TELEGRAM", True), \
-             patch("research_repository.ResearchCoordinator.process", return_value={}), \
-             patch("research_repository.latest_event_report", return_value=report):
-            self.assertEqual(self.publisher(transport).run_once(), {"persisted": 1, "sent": 0, "failed": 0, "invalid": 0})
-            self.assertEqual(self.rows("SELECT status FROM research_requests"), [("pending",)])
-            connection = sqlite3.connect(str(self.db))
-            try:
-                connection.execute("UPDATE research_requests SET status = 'completed'")
-            finally:
-                connection.close()
-            self.assertEqual(self.publisher(transport).run_once(), {"persisted": 0, "sent": 1, "failed": 0, "invalid": 0})
-        self.assertIn("Research note (advisory)", transport.messages[0])
-
-    @unittest.skip("LLM research module was removed from the live architecture")
-    def test_llm_failure_falls_back_to_deterministic_delivery(self):
-        payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
-        self.write(payload)
-        transport = FakeTransport()
-        with patch.object(config, "LLM_RESEARCH_ENABLED", True), \
-             patch("research_repository.ResearchCoordinator.process", return_value={}):
-            self.publisher(transport).run_once()
-            connection = sqlite3.connect(str(self.db))
-            try:
-                connection.execute("UPDATE research_requests SET status = 'failed'")
-            finally:
-                connection.close()
-            self.assertEqual(self.publisher(transport).run_once()["sent"], 1)
-        self.assertNotIn("Research note", transport.messages[0])
-
     def test_persisted_event_transitions_to_expired(self):
         payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(minutes=1))
         self.write(payload)
@@ -258,6 +219,13 @@ class SignalPublisherTests(unittest.TestCase):
         self.assertIn("**ALPHA SIGNAL · LONG · SOL**", discord.messages[0])
         channels = sorted(row[0] for row in self.rows("SELECT channel FROM signal_deliveries"))
         self.assertEqual(channels, ["discord", "telegram"])
+
+    def test_does_not_invoke_retired_filesystem_execution_adapter(self):
+        payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
+        self.write(payload)
+        with patch("execution_adapter.ExecutionAdapter.deliver") as deliver:
+            self.publisher(FakeTransport()).run_once()
+        deliver.assert_not_called()
 
     def test_discord_failure_does_not_block_telegram(self):
         payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))

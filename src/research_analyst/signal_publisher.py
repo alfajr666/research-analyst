@@ -321,13 +321,8 @@ class SignalPublisher:
                     outcome = self._deliver(connection, event, self.now(), channel, transport)
                     if outcome:
                         results[outcome] += 1
-            # Execution delivery is independent of Telegram and alpha persistence.
-            # Its failures are durable in execution_deliveries and never abort this loop.
-            try:
-                from execution_adapter import ExecutionAdapter
-                ExecutionAdapter().deliver(connection)
-            except Exception as error:
-                print(f"Execution adapter error: {error}", file=sys.stderr)
+            # Executor delivery is performed by alpha_outbox through the shared
+            # SQLite intent bus. Do not invoke the retired filesystem adapter here.
             connection.commit()
         finally:
             connection.close()

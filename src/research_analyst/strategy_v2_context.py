@@ -20,17 +20,21 @@ LOOKBACK_DAYS = 16
 
 
 def _asset_from_symbol(symbol: str) -> str:
-    s = str(symbol or "")
+    s = str(symbol or "").strip()
+    upper = s.upper()
     if "_PERP" in s or "_PERP.A" in s or s.endswith(".A"):
         base = s.split("_")[0].split("USDT")[0].split("USD")[0]
         return base.upper() or "BTC"
-    if "-USDT-PERP" in s:
-        return s.split("-")[0].upper()
+    if "-USDT-PERP" in upper:
+        return upper.split("-")[0]
     # fallback guess
     for c in ("BTC", "ETH", "SOL", "PAXG", "XAUT"):
-        if c in s.upper():
+        if c in upper:
             return c
-    return s[:3].upper() or "BTC"
+    for suffix in ("USDT", "USD"):
+        if upper.endswith(suffix) and len(upper) > len(suffix):
+            return upper[:-len(suffix)].rstrip("_-") or "BTC"
+    return upper or "BTC"
 
 
 def completed_cycle(now: datetime | None = None) -> datetime:
@@ -87,7 +91,7 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
                COALESCE(CAST(json_extract(payload_json, '$.volume') AS REAL), 0.0),
                CAST(json_extract(payload_json, '$.open_interest') AS REAL),
                CAST(json_extract(payload_json, '$.funding_rate') AS REAL),
-               payload_json
+               payload_json, observation_id
          FROM source_observations
          WHERE asset = ? AND interval=?
             AND source_end <= ? AND source_end >= ?
@@ -109,6 +113,7 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
             "open_interest": float(r[7]) if r[7] is not None else None,
             "funding_rate": float(r[8]) if r[8] is not None else None,
             "payload": r[9],
+            "source_observation_ids": [str(r[10])] if r[10] else [],
         })
     return out
 
@@ -201,6 +206,8 @@ def _rows_to_frame(rows: List[Dict[str, Any]]) -> pl.DataFrame:
         data["source_provenance"] = [r.get("source_provenance", []) for r in rows]
     if "data_purity" in rows[0]:
         data["data_purity"] = [r.get("data_purity", "unknown") for r in rows]
+    if "source_observation_ids" in rows[0]:
+        data["source_observation_ids"] = [r.get("source_observation_ids", []) for r in rows]
     return pl.DataFrame(data, strict=False).with_columns(
         pl.col("open_interest").fill_null(0.0),
         pl.col("funding_rate").fill_null(0.0),
@@ -298,6 +305,12 @@ def resample_ohlcv(bars: pl.DataFrame, every: str) -> pl.DataFrame:
             "source": ordered[-1].get("source", "resampled"),
             "source_provenance": sorted({str(row.get("source", "unknown")) for row in ordered}),
             "data_purity": "pure_ws" if all(str(row.get("source", "")).endswith("_ws") for row in ordered) else "unknown",
+            "source_observation_ids": sorted({
+                str(observation_id)
+                for row in ordered
+                for observation_id in row.get("source_observation_ids", [])
+                if observation_id
+            }),
         })
     return _rows_to_frame(output)
 
@@ -313,8 +326,7 @@ def ema_series(values: Sequence[float], span: int) -> List[float | None]:
     out: List[float | None] = [None] * len(values)
     if span <= 0 or len(values) < span:
         return out
-    seed = sum(float(value) for value in values[:span]) / span
-    out[span - 1] = seed
+    out[span - 1] = sum(float(value) for value in values[:span]) / span
     alpha = 2.0 / (span + 1.0)
     for index in range(span, len(values)):
         out[index] = alpha * float(values[index]) + (1.0 - alpha) * out[index - 1]
@@ -345,7 +357,7 @@ def wilder_rsi(values: Sequence[float], length: int = 14) -> List[float | None]:
 
 
 def wilder_atr(bars: pl.DataFrame, length: int = 14) -> float | None:
-    """Wilder RMA true range with no seeded value before warmup."""
+    """Return the final Wilder ATR after its declared warmup."""
     if bars.is_empty() or length <= 0 or bars.height < length:
         return None
     highs = [float(value) for value in bars["high"].to_list()]
@@ -363,6 +375,8 @@ def wilder_atr(bars: pl.DataFrame, length: int = 14) -> float | None:
 def stoch_rsi(values: Sequence[float], rsi_length: int = 14, stoch_length: int = 14,
               k_smoothing: int = 3, d_smoothing: int = 3) -> tuple[List[float | None], ...]:
     """Return raw StochRSI, SMA K, SMA D using explicit zero-denominator rules."""
+    if min(rsi_length, stoch_length, k_smoothing, d_smoothing) <= 0:
+        return ([None] * len(values),) * 3
     rsi = wilder_rsi(values, rsi_length)
     raw: List[float | None] = [None] * len(values)
     for index in range(len(values)):

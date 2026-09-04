@@ -32,8 +32,8 @@ import polars as pl
 
 import config
 from strategy_v2_context import load_bars_for_interval, resample_ohlcv
-from db_maintenance import prune_market_db, vacuum_sqlite
 from evaluation_trigger import publish as publish_evaluation_trigger
+from db_maintenance import prune_market_db, vacuum_sqlite
 
 
 MARKET_KIND = "usdt_perp"
@@ -46,14 +46,14 @@ RESAMPLE_LOOKBACK_MIN = int(os.getenv("WS_RESAMPLE_LOOKBACK_MIN", "1440"))  # 24
 # Streamed base timeframes -> exchange-specific tokens.
 STREAMED_TFS = [t.strip() for t in os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").split(",") if t.strip()]
 WS_MESSAGE_TIMEOUT_SECONDS = 90
-_LAST_MARKET_MAINTENANCE = 0.0
-_LAST_MARKET_VACUUM = 0.0
 WS_STALE_SECONDS = int(os.getenv("WS_STALE_SECONDS", "180"))
 _STARTED_MONOTONIC = time.monotonic()
+_LAST_MARKET_MAINTENANCE = 0.0
+_LAST_MARKET_VACUUM = 0.0
 _HEALTH = {
     "last_message_at": None, "last_bar_at": None, "active_connections": 0,
     "reconnect_count": 0, "last_error": None, "subscribed_count": 0,
-    "feed_id": None, "fallback_state": None,
+    "feed_id": None, "fallback_state": None, "warmup": {},
 }
 
 
@@ -446,8 +446,36 @@ def flush_pending() -> int:
     return len(rows)
 
 
+def _ensure_deep_backfill_jobs(symbols: List[str]) -> int:
+    """Record rotation membership before any provider backfill starts."""
+    from warmup import ensure_backfill_jobs
+
+    conn = config.get_db_connection(db_path=config.MARKET_DB_PATH)
+    try:
+        created = ensure_backfill_jobs(conn, symbols)
+        return created
+    finally:
+        conn.close()
+
+
+def _refresh_deep_backfill_jobs(symbols: List[str]) -> dict[str, str]:
+    """Refresh durable warmup state from the latest completed 5m boundary."""
+    from warmup import ensure_backfill_jobs, ready_assets, refresh_backfill_jobs
+
+    now = datetime.now(timezone.utc)
+    cutoff = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
+    conn = config.get_db_connection(db_path=config.MARKET_DB_PATH)
+    try:
+        ensure_backfill_jobs(conn, symbols, now=now)
+        _, details = ready_assets(conn, symbols, cutoff)
+        _HEALTH["warmup"] = details
+        return refresh_backfill_jobs(conn, symbols, cutoff, now=now)
+    finally:
+        conn.close()
+
+
 def backfill_via_rest(provider: str, symbols: List[str], hours: int) -> int:
-    """Seed recent 1m + 5m history via REST so evaluators have a warm window immediately."""
+    """Seed recent 1m + 5m history via paginated REST backfill."""
     source = config.BYBIT_WS_SOURCE if provider == "bybit" else config.BINANCE_WS_SOURCE
     venue = provider
     written = 0
@@ -457,11 +485,25 @@ def backfill_via_rest(provider: str, symbols: List[str], hours: int) -> int:
                 try:
                     if provider == "bybit":
                         token = BYBIT_TF_TOKEN.get(tf, tf)
-                        r = client.get("https://api.bybit.com/v5/market/kline", params={
-                            "category": "linear", "symbol": sym, "interval": token, "limit": max(2, hours * 60 // (5 if tf == "5m" else 1)),
-                        })
-                        js = r.json()
-                        rows = js.get("result", {}).get("list", []) if isinstance(js.get("result"), dict) else []
+                        remaining = max(2, hours * 60 // (5 if tf == "5m" else 1))
+                        end_ms = None
+                        rows = []
+                        while remaining > 0:
+                            params = {
+                                "category": "linear", "symbol": sym, "interval": token,
+                                "limit": min(1000, remaining),
+                            }
+                            if end_ms is not None:
+                                params["end"] = end_ms
+                            js = client.get("https://api.bybit.com/v5/market/kline", params=params).json()
+                            page = js.get("result", {}).get("list", []) if isinstance(js.get("result"), dict) else []
+                            if not page:
+                                break
+                            rows.extend(page)
+                            remaining -= len(page)
+                            if len(page) < params["limit"]:
+                                break
+                            end_ms = int(page[-1][0]) - 1
                         for row in reversed(rows):
                             rec = {
                                 "native_symbol": sym, "asset": _base_from_perp(sym), "interval": tf,
@@ -473,10 +515,25 @@ def backfill_via_rest(provider: str, symbols: List[str], hours: int) -> int:
                             _queue_row(bar_record_to_row(rec, source, venue, "backfill"))
                             written += 1
                     else:
-                        r = client.get("https://fapi.binance.com/fapi/v1/klines", params={
-                            "symbol": sym, "interval": BINANCE_TF_STREAM.get(tf, tf), "limit": max(2, hours * 60 // (5 if tf == "5m" else 1)),
-                        })
-                        for row in r.json():
+                        remaining = max(2, hours * 60 // (5 if tf == "5m" else 1))
+                        end_ms = None
+                        rows = []
+                        while remaining > 0:
+                            params = {
+                                "symbol": sym, "interval": BINANCE_TF_STREAM.get(tf, tf),
+                                "limit": min(1500, remaining),
+                            }
+                            if end_ms is not None:
+                                params["endTime"] = end_ms
+                            page = client.get("https://fapi.binance.com/fapi/v1/klines", params=params).json()
+                            if not isinstance(page, list) or not page:
+                                break
+                            rows.extend(page)
+                            remaining -= len(page)
+                            if len(page) < params["limit"]:
+                                break
+                            end_ms = int(page[0][0]) - 1
+                        for row in rows:
                             rec = {
                                 "native_symbol": sym, "asset": _base_from_perp(sym), "interval": tf,
                                 "open": float(row[1]), "high": float(row[2]), "low": float(row[3]),
@@ -523,10 +580,12 @@ def _executemany_rows(conn, rows: List[Dict[str, Any]]) -> None:
 
 def _publish_base_triggers(rows: List[Dict[str, Any]]) -> None:
     """Publish each newly committed base-bar cutoff exactly once per interval."""
+    now = datetime.now(timezone.utc)
     cutoffs = {
         (row.get("interval"), row.get("source_end"))
         for row in rows
         if row.get("interval") in ("1m", "5m") and row.get("source_end") is not None
+        and _row_timestamp(row["source_end"]) <= now
     }
     for interval, cutoff in sorted(cutoffs, key=lambda item: (item[1], item[0])):
         publish_evaluation_trigger(cutoff, interval=interval)
@@ -755,6 +814,11 @@ async def _supervise_provider(provider: str, supervisor: SubscriptionSupervisor,
                 continue
             result = supervisor.reconcile(desired, feed)
             observed_feed_id = feed.get("feed_id")
+            if result["added"]:
+                _ensure_deep_backfill_jobs(result["added"])
+                deep_hours = max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS)
+                await asyncio.to_thread(backfill_via_rest, provider, result["added"], deep_hours)
+                _refresh_deep_backfill_jobs(result["added"])
             print(
                 f"[ws_gateway] reconcile feed={result['feed_id']} "
                 f"added={len(result['added'])} removed={len(result['removed'])} "
@@ -782,12 +846,17 @@ async def run_async() -> None:
     _HEALTH["feed_id"] = feed.get("feed_id")
     _HEALTH["fallback_state"] = feed.get("fallback_reason")
 
+    _ensure_deep_backfill_jobs(bases)
+    _refresh_deep_backfill_jobs(bases)
+
     if config.WS_BYBIT_ENABLED:
-        n = backfill_via_rest("bybit", bases, config.WS_BACKFILL_HOURS)
+        n = backfill_via_rest("bybit", bases, max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS))
         print(f"[ws_gateway] bybit backfill wrote {n} bars")
+        _refresh_deep_backfill_jobs(bases)
     if config.WS_BINANCE_ENABLED:
-        n = backfill_via_rest("binance", bases, config.WS_BACKFILL_HOURS)
+        n = backfill_via_rest("binance", bases, max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS))
         print(f"[ws_gateway] binance backfill wrote {n} bars")
+        _refresh_deep_backfill_jobs(bases)
 
     queue: asyncio.Queue = asyncio.Queue()
     ws_source = config.BYBIT_WS_SOURCE if config.WS_BYBIT_ENABLED else config.BINANCE_WS_SOURCE

@@ -38,10 +38,21 @@ def detect_fvg(bars: pl.DataFrame, atr: float | None = None, min_gap_mult: float
         return []
     if atr is None:
         atr = compute_atr(bars)
+    if atr is None or atr <= 0:
+        return []
     min_gap = min_gap_mult * atr
     bars = bars.sort("timestamp")
     fvgs: List[Dict] = []
     rows = bars.to_dicts()
+
+    def evidence_for(items: List[Dict]) -> List[str]:
+        return sorted({
+            str(item_id)
+            for item in items
+            for item_id in item.get("source_observation_ids", [])
+            if item_id
+        })
+
     for i in range(2, len(rows)):
         prev_high = float(rows[i-2]["high"])
         curr_low = float(rows[i]["low"])
@@ -51,6 +62,8 @@ def detect_fvg(bars: pl.DataFrame, atr: float | None = None, min_gap_mult: float
                 "type": "fvg",
                 "direction": "bullish",
                 "timeframe": tf,
+                "created_index": i,
+                "source_evidence_ids": evidence_for(rows[i-2:i+1]),
                 "start": rows[i-2]["timestamp"],
                 "end": rows[i]["timestamp"],
                 "low": prev_high,
@@ -67,6 +80,8 @@ def detect_fvg(bars: pl.DataFrame, atr: float | None = None, min_gap_mult: float
                 "type": "fvg",
                 "direction": "bearish",
                 "timeframe": tf,
+                "created_index": i,
+                "source_evidence_ids": evidence_for(rows[i-2:i+1]),
                 "start": rows[i-2]["timestamp"],
                 "end": rows[i]["timestamp"],
                 "low": curr_high,
@@ -75,25 +90,38 @@ def detect_fvg(bars: pl.DataFrame, atr: float | None = None, min_gap_mult: float
                 "state": "active",
                 "created_at": rows[i]["timestamp"],
             })
-    # simplistic mitigation/fill/invalidate on subsequent bars (demo)
+    # Lifecycle is evaluated only by bars after the FVG exists. A future bar
+    # cannot retroactively change the state of a zone before its creation.
     for f in fvgs:
-        for j in range(3, len(rows)):
+        for j in range(f["created_index"] + 1, len(rows)):
             b = rows[j]
             blo, bhi, bcl = float(b["low"]), float(b["high"]), float(b["close"])
             if f["direction"] == "bullish":
-                if blo <= f["low"] and bhi >= f["low"]:
-                    f["state"] = "partial"
-                if bhi >= f["high"]:
-                    f["state"] = "filled"
+                touched = blo <= f["high"] and bhi >= f["low"]
                 if bcl < f["low"]:
                     f["state"] = "invalidated"
-            else:
-                if bhi >= f["high"] and blo <= f["high"]:
-                    f["state"] = "partial"
+                    f["invalidated_at"] = b["timestamp"]
+                    break
                 if blo <= f["low"]:
                     f["state"] = "filled"
+                    f["filled_at"] = b["timestamp"]
+                    break
+                if touched and f["state"] == "active":
+                    f["state"] = "partial"
+                    f["first_mitigated_at"] = b["timestamp"]
+            else:
+                touched = bhi >= f["low"] and blo <= f["high"]
                 if bcl > f["high"]:
                     f["state"] = "invalidated"
+                    f["invalidated_at"] = b["timestamp"]
+                    break
+                if bhi >= f["high"]:
+                    f["state"] = "filled"
+                    f["filled_at"] = b["timestamp"]
+                    break
+                if touched and f["state"] == "active":
+                    f["state"] = "partial"
+                    f["first_mitigated_at"] = b["timestamp"]
     return fvgs
 
 
@@ -102,8 +130,10 @@ def detect_order_blocks(bars: pl.DataFrame, atr: float | None = None, swing_look
         return []
     if atr is None:
         atr = compute_atr(bars)
-    min_disp = 1.5 * atr
+    if atr is None or atr <= 0:
+        return []
     bars = bars.sort("timestamp")
+    min_disp = 1.5 * atr
     rows = bars.to_dicts()
     obs: List[Dict] = []
     for i in range(swing_lookback , len(rows)):
@@ -115,13 +145,20 @@ def detect_order_blocks(bars: pl.DataFrame, atr: float | None = None, swing_look
         prev_swing_high = max(swing_highs) if swing_highs else 0
         prev_swing_low = min(swing_lows) if swing_lows else 0
         opposing = rows[i-1]
-        if disp_close > prev_swing_high and (disp_high - disp_low) >= min_disp:
+        if disp_close > prev_swing_high and (disp_high - disp_low) >= min_disp and float(opposing.get("close", 0)) <= float(opposing.get("open", 0)):
             zone_low = float(opposing["low"])
             zone_high = float(opposing["high"])
             obs.append({
                 "type": "order_block",
                 "direction": "bullish",
                 "timeframe": tf,
+                "created_index": i,
+                "source_evidence_ids": sorted({
+                    str(item_id)
+                    for row in rows[i-1:i+1]
+                    for item_id in row.get("source_observation_ids", [])
+                    if item_id
+                }),
                 "start": opposing["timestamp"],
                 "end": rows[i]["timestamp"],
                 "low": zone_low,
@@ -129,13 +166,20 @@ def detect_order_blocks(bars: pl.DataFrame, atr: float | None = None, swing_look
                 "state": "active",
                 "created_at": rows[i]["timestamp"],
             })
-        if disp_close < prev_swing_low and (disp_high - disp_low) >= min_disp:
+        if disp_close < prev_swing_low and (disp_high - disp_low) >= min_disp and float(opposing.get("close", 0)) >= float(opposing.get("open", 0)):
             zone_low = float(opposing["low"])
             zone_high = float(opposing["high"])
             obs.append({
                 "type": "order_block",
                 "direction": "bearish",
                 "timeframe": tf,
+                "created_index": i,
+                "source_evidence_ids": sorted({
+                    str(item_id)
+                    for row in rows[i-1:i+1]
+                    for item_id in row.get("source_observation_ids", [])
+                    if item_id
+                }),
                 "start": opposing["timestamp"],
                 "end": rows[i]["timestamp"],
                 "low": zone_low,
@@ -144,22 +188,52 @@ def detect_order_blocks(bars: pl.DataFrame, atr: float | None = None, swing_look
                 "created_at": rows[i]["timestamp"],
             })
     for o in obs:
-        for j in range(len(rows) - 3, len(rows)):
+        for j in range(o["created_index"] + 1, len(rows)):
             b = rows[j]
-            blo, bhi = float(b["low"]), float(b["high"])
-            if o["direction"] == "bullish" and blo <= o["high"] and bhi >= o["low"]:
+            blo, bhi, bcl = float(b["low"]), float(b["high"]), float(b["close"])
+            touched = blo <= o["high"] and bhi >= o["low"]
+            if o["direction"] == "bullish":
+                if bcl < o["low"]:
+                    o["state"] = "invalidated"
+                    o["invalidated_at"] = b["timestamp"]
+                    break
+                if blo <= o["low"]:
+                    o["state"] = "filled"
+                    o["filled_at"] = b["timestamp"]
+                    break
+            else:
+                if bcl > o["high"]:
+                    o["state"] = "invalidated"
+                    o["invalidated_at"] = b["timestamp"]
+                    break
+                if bhi >= o["high"]:
+                    o["state"] = "filled"
+                    o["filled_at"] = b["timestamp"]
+                    break
+            if touched and o["state"] == "active":
                 o["state"] = "partial"
-            if o["direction"] == "bearish" and bhi >= o["low"] and blo <= o["high"]:
-                o["state"] = "partial"
+                o["first_mitigated_at"] = b["timestamp"]
     return obs
 
 
 def get_active_zones_for_snapshot(zones: List[Dict], max_per: int = 3) -> List[Dict]:
     """Return at most the 3 most recent active per asset/tf/dir/type."""
-    active = [z for z in zones if z.get("state") == "active"]
-    # group and take latest 3 (naive sort by created)
-    active.sort(key=lambda z: z.get("created_at", 0), reverse=True)
-    return active[:max_per]
+    grouped: Dict[tuple, List[Dict]] = {}
+    for zone in zones:
+        if zone.get("state") not in ("active", "partial"):
+            continue
+        key = (
+            str(zone.get("asset", "")).upper(),
+            str(zone.get("timeframe", "")),
+            str(zone.get("direction", "")),
+            str(zone.get("type") or zone.get("kind", "")),
+        )
+        grouped.setdefault(key, []).append(zone)
+    selected: List[Dict] = []
+    for group in grouped.values():
+        group.sort(key=lambda z: (z.get("created_at", z.get("end", "")), str(z.get("reference_id", ""))), reverse=True)
+        selected.extend(group[:max_per])
+    return selected
 
 
 def attach_zone_evidence(event: dict, zones: List[Dict]) -> dict:

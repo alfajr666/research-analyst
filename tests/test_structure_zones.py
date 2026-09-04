@@ -48,6 +48,17 @@ class FVGOrderBlockFixtureTests(unittest.TestCase):
         self.assertGreater(f["gap"], 0.25 * atr)
         self.assertEqual(f["state"], "active")
 
+    def test_fvg_carries_base_observation_evidence(self):
+        bars = self._make_bars(
+            closes=[100, 101, 105],
+            highs=[100.5, 101.5, 105.5],
+            lows=[99.5, 100.5, 104.5],
+        ).with_columns(pl.Series("source_observation_ids", [["obs-1"], ["obs-2"], ["obs-3"]]))
+
+        fvg = detect_fvg(bars, atr=2.0, min_gap_mult=0.25)[0]
+
+        self.assertEqual(fvg["source_evidence_ids"], ["obs-1", "obs-2", "obs-3"])
+
     def test_fvg_mitigation_on_wick(self):
         bars = self._make_bars(
             closes=[100, 101, 105, 103],
@@ -62,10 +73,21 @@ class FVGOrderBlockFixtureTests(unittest.TestCase):
     def test_fvg_fill_and_invalidation(self):
         # Fill when reaches far boundary
         bars = self._make_bars(
-            closes=[100, 101, 105, 108],  # reaches far
+            closes=[100, 101, 105, 102],
+            highs=[100.5, 101.5, 105.5, 104.0],
+            lows=[99.5, 100.5, 104.5, 100.0],  # reaches bullish far boundary
         )
         fvgs = detect_fvg(bars, atr=2.0)
         self.assertTrue(any(f["state"] == "filled" for f in fvgs))
+
+        # A bar before creation must not mutate the later FVG.
+        bars_before_creation = self._make_bars(
+            closes=[100, 90, 105],
+            highs=[100.5, 101.5, 105.5],
+            lows=[80.0, 89.5, 104.5],
+        )
+        later = detect_fvg(bars_before_creation, atr=2.0)
+        self.assertEqual(later[0]["state"], "active")
 
         # Invalidate on close through
         bars2 = self._make_bars(

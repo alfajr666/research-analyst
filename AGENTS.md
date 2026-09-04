@@ -1,117 +1,188 @@
-# Agent Notes
+# Research Analyst Agent Guide
 
 **Last reviewed:** 2026-09-04
 
+This repository is a read-and-decide market research service. It produces
+auditable candidates and validated trade intents. It does not hold exchange
+credentials, size positions, place orders, or claim that an intent was filled.
+
 ## Runtime Contract
 
-- The WebSocket gateway owns `data/market.sqlite3` and publishes completed 5m
-  evaluation triggers.
-- The orchestrator consumes one trigger per completed 5m cutoff and writes
-  selected intents to the shared executor inbox.
-- The PM sidecar is a separate managed process from the orchestrator. It reads
-  executor 1m snapshots and is the single LLM PM authority on a five-minute
-  decision cadence, writing `HOLD`, `REDUCE`, `EXIT`, or `NEAR_TP` decisions to
-  the executor's shared decision inbox.
-- Shared handoff paths are anchored to `BYBIT_EXECUTOR_DIR`: `data/intents`,
-  `data/position-snapshots`, and `data/position-decisions` are the same paths
-  used by the executor. Do not create analyst-local copies.
-- Market freshness is a hard admission gate. Missing data or data older than
-  `DATA_FRESHNESS_MAX_SECONDS` (default 600) rejects the candidate.
-- Health freshness queries must exclude open/future bars with `source_end <= now`.
-- The scorer ranks candidates that pass all hard gates; it is not another gate.
-- Never point both services at one database or run duplicate database writers.
-- The gateway and orchestrator run periodic retention through
-  `src/research_analyst/db_maintenance.py`. Market cleanup runs on the gateway
-  writer connection; analyst cleanup runs on the orchestrator-owned connection.
-- Retention may remove recomputable snapshots and terminal audit rows, but must
-  retain active, pending, running, and retryable work. SQLite `VACUUM` is
-  throttled separately from row deletion and must never run from a second
-  writer process.
-- `data/binance_oi.db` is a DuckDB file owned by the separate
-  `binance-scanner-oi` project. Do not open, prune, or schedule maintenance for
-  it from this repository; its owner must perform its own retention.
-- Production strategies use the repository's tested in-house EMA, RSI, ATR,
-  ADX, StochRSI, and Bollinger implementations. Do not replace them with a TA
-  library without numerical parity tests and an explicit strategy-version
-  change.
+```text
+Bybit public tickers
+  -> symbol-rotation worker
+  -> versioned performance feed
+  -> ws_gateway subscriptions
+       Bybit public WS: completed 1m + 5m bars
+       startup/re-entry REST backfill
+       local 5m -> 15m/1h/4h resampling
+       -> data/market.sqlite3
+       -> durable 1m/5m evaluation triggers
 
-- The shared SQLite bus at `/home/ubuntu/shared/intent-bus/intent_bus.sqlite3`
-  is the authoritative executor handoff. Publish only after admission and
-  routing; never claim receipts or execution state in this repository.
-- `INTENT_BUS_DB` must be an explicit absolute path and
-  `INTENT_BUS_BYBIT_ENABLED` must be enabled for Bybit delivery. Live Propr
-  fan-out additionally requires `INTENT_BUS_PROPR_ENABLED=true`. Legacy JSON
-  inbox writing is compatibility-only and defaults off.
-- Confidence calibration is outside the shared intent bus. A separate
-  read-only calibrator may consume cross-producer event and market ledgers and
-  publish versioned model artifacts without entering the 5m evaluation path.
-- The seven Fundamo strategies route Bybit deliveries exclusively to
-  `bybit/fundamo`; admitted events are independently fanned out to the Propr
-  bus target when enabled. Propr owns its account routing, sizing, risk gates,
-  and receipts.
+data/market.sqlite3 + completed 5m cutoff
+  -> regime-session worker
+       per-asset regime score and session decision
+       -> data/regime.sqlite3
 
-## Production audit state (2026-08-30)
+completed evaluation trigger
+  -> orchestrator
+       exact preceding 5m regime scope
+       full-universe feature materialization
+       strategy plugins
+       raw candidate ledger
+       deterministic admission and clash resolution
+       alpha ledger and publisher
+       -> shared SQLite intent bus, when enabled
 
-The daemon consumes completed gateway triggers, runs the pipeline, and invokes
-the signal publisher after successful evaluation. Publisher failures are kept
-separate from ingestion failures; the trigger is only processed after the
-pipeline itself succeeds. `raw_signals` remains an observation ledger and the
-30-minute Discord batch is non-blocking.
+executor 1m position snapshots
+  -> independent PM sidecar
+       HOLD / REDUCE / EXIT / NEAR_TP
+       -> executor decision inbox
+```
 
-Snapshot positions without an originating intent are classified as
-`strategy_id=unmanaged`. The PM sidecar emits a durable neutral `HOLD` advice
-and decision for those positions without calling the LLM or creating an exit.
-Normal positions retain their originating strategy metadata. First-write bus
-delivery and execution handoff remain consumer-owned and must be verified from
-the publisher/execution-delivery tables before enabling additional routes.
-- LLM research review is disabled in the live analyst path; `research_context`
-  is not required for strategy evaluation or intent delivery.
-- Public alpha messages use the structured strategy/setup, evidence, trade-plan,
-  risk, validity, and execution-disclaimer layout. Provisional confidence is
-  retained internally for audit but is deliberately omitted from Discord and
-  Telegram until an out-of-sample calibration model is approved.
+The gateway emits triggers only after market observations are committed. The
+orchestrator claims triggers in cutoff order, uses a lease for crash recovery,
+and marks a trigger processed only after the pipeline succeeds. Publisher
+failures are separate from pipeline failures.
 
-## Production rollout state (2026-09-01)
+## Database Ownership
 
-- The live evaluation allowlist contains 11 strategies: four compact Hyro
-  strategies and seven Fundamo strategies.
-- The three newly enabled Fundamo strategies are
-  `gold-trend-ema-bb-stoch-v1`, `mtf-exhaustion-reversal-v1`, and
-  `trend-wall-v1`. They are registered, cadence-controlled at 5m, and
-  forcibly routed downstream to `bybit/fundamo`.
-- After restarting `research-analyst-ws`,
-  `research-analyst-orchestrator`, and `research-analyst-pm-sidecar` through
-  `oxmgr`, the 05:20 and 05:25 UTC 5m cutoffs completed across 34 subscribed
-  symbols. All three new strategies completed evaluation in both cutoffs.
-- The services were healthy with zero new restarts after verification. The
-  new strategies emitted no candidates during those two cutoffs, so their
-  actual executor delivery was not exercised by a live signal.
-- The signal publisher still reports one invalid event per observed cycle from
-  malformed pre-existing alpha outbox files missing internal required fields
-  such as `confidence`, `entry_condition`, and `horizon_minutes`. This is
-  isolated from pipeline completion; confidence is not a public message field,
-  and publisher state is not a successful delivery receipt.
+- `data/market.sqlite3` is owned and written by `ws_gateway`.
+- `data/analyst.sqlite3` is owned and written by the orchestrator.
+- `data/regime.sqlite3` is owned and written by the regime-session worker; the
+  orchestrator reads it for the exact evaluation cutoff.
+- `/home/ubuntu/shared/intent-bus/intent_bus.sqlite3` is the authoritative
+  executor handoff and is written through the shared bus publisher.
+- `data/binance_oi.db` belongs to the separate `binance-scanner-oi` project.
+  Never open, prune, or maintain it from this repository.
 
-## Production diagnosis and verification (2026-09-01)
+Never point two services at one database and never run duplicate database
+writers. Gateway retention runs on the gateway writer connection. Analyst
+retention runs on the orchestrator connection. Retention must preserve active,
+pending, running, and retryable work. `VACUUM` is separately throttled and must
+not run from a second writer.
 
-- A no-intent period was traced to 5m WebSocket bars stamped one millisecond
-  before their closed-bar boundary, for example `14:44:59.999`. The local
-  resampler matched exact timestamps and discarded every derived 4h bucket, so
-  `ATR14_4h` was unavailable and permitted candidates failed hard admission.
-- `resample_ohlcv` now normalizes those timestamps before bucket matching, with
-  a regression test covering the feed encoding. The orchestrator was restarted
-  through `oxmgr` and loaded the fix; the 14:45 UTC cycle wrote an `SPX long`
-  Fundamo intent and Bybit accepted its delivery.
-- Raw candidates from compact Hyro strategies can still be captured for any
-  subscribed symbol, but only `BTC`, `ETH`, `PAXG`, and `QQQ` may pass the Hyro
-  symbol-account policy. QQQ also requires 14 complete 4h bars before its ATR
-  risk input is available.
-- Propr delivery and order recovery remain executor-owned. A Propr `RETRY`
-  receipt is not evidence of an analyst pipeline failure or a new analyst
-  intent.
+## Regime Session
+
+The regime worker runs once per completed 5m cutoff for the current subscription
+feed. It loads each asset's completed 5m observations, derives 1h and 4h bars,
+computes ADX and realized-volatility inputs, and persists an immutable score and
+gate decision.
+
+The score is a research ranking input. Data readiness is a hard admission
+condition. The in-house ADX implementation requires 57 complete 4h bars with
+the default length and smoothing of 14. During warmup, `status=insufficient_data`
+and `regime_score_insufficient_data` are expected and must fail closed. Do not
+lower the requirement or fabricate higher-timeframe data.
+
+`REGIME_SESSION_MODE` has three meanings:
+
+- `off`: bypass regime-session observations and scope filtering.
+- `shadow`: persist and expose hypothetical blocks, but evaluate the full
+  subscription universe. `blocked_assets` means would-block, not an operational
+  block.
+- `enforce`: restrict evaluation to allowed assets and route each plugin only
+  to its active market-family assets.
+
+Family activation uses hysteresis: ON at `0.35`, OFF at `0.25` by default. The
+families are `trend`, `mean_reversion`, and `reversal`. The orchestrator always
+materializes features for the full subscription universe; enforcement happens
+at plugin invocation.
+
+Canonical asset names must remain intact. Native symbols such as `ANKRUSDT` are
+normalized to `ANKR`; bare names such as `MARSCOIN` must not be truncated.
+
+## Live Strategy Set
+
+The production allowlist currently contains 11 plugins:
+
+| Strategy | Cadence | Family | Route |
+| --- | --- | --- | --- |
+| `failed-break-v3` | 5m | reversal | Bybit Hyro |
+| `bb-rsi-meanrev-v1` | 5m | mean_reversion | Bybit Hyro |
+| `williams-fractal-scalp-v1` | 1m | trend | Bybit Hyro |
+| `ema9-adx-stochrsi-state-v1` | 1m | trend | Bybit Hyro |
+| `dual-zone-follower-v2` | 5m | trend | Bybit Fundamo |
+| `dual-zone-short-follower-v2` | 5m | trend | Bybit Fundamo |
+| `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit Fundamo |
+| `gold-trend-ema-bb-stoch-v1` | 5m | trend | Bybit Fundamo |
+| `mtf-exhaustion-reversal-v1` | 5m | reversal | Bybit Fundamo |
+| `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Bybit Fundamo |
+| `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Bybit Fundamo |
+
+Compact Hyro strategies are policy-limited to `BTC`, `ETH`, `PAXG`, and `QQQ`.
+The seven Fundamo strategies route to `bybit/fundamo`. Propr fan-out is
+independent and enabled only by its shared-bus switch.
+
+Production strategies use the repository's tested in-house EMA, RSI, ATR, ADX,
+StochRSI, and Bollinger implementations. A TA library cannot replace them
+without numerical parity tests and an explicit strategy-version change.
+
+## Admission And Delivery
+
+Every plugin candidate is first captured in `raw_signals`. Deterministic hard
+admission then checks finite prices, freshness, expiry, trade geometry, reward
+to risk, ATR-bounded stop distance, required data, symbol-account policy, and
+structural-stop rules when enabled. Soft context scores rank candidates but
+cannot rescue a failed hard gate. Clash resolution is deterministic and
+unresolved opposing signals produce no intent.
+
+The analyst publishes only after admission and routing. The shared SQLite bus
+requires an explicit absolute `INTENT_BUS_DB` and target switches:
+
+- `INTENT_BUS_BYBIT_ENABLED=true` enables Bybit delivery.
+- `INTENT_BUS_PROPR_ENABLED=true` additionally enables Propr fan-out.
+- `INTENT_BUS_LEGACY_INBOX_ENABLED=false` keeps legacy JSON inbox writing off.
+
+The executor owns credentials, sizing, leverage, venue precision, orders,
+fills, protective stops, take-profit execution, and receipts. Analyst logs must
+not claim execution state. The legacy filesystem inbox is compatibility-only.
+
+## PM Sidecar
+
+The PM sidecar is a separate managed process and the sole LLM position manager.
+It reads executor 1m snapshots from paths under `BYBIT_EXECUTOR_DIR`, joins
+originating intent and market context, and writes durable decision files under
+the executor's `data/position-decisions` directory. `HOLD` is neutral. Action
+decisions are confidence-gated and valid for five minutes. The sidecar cannot
+change entry, stop, target, direction, sizing, or hard protections.
+
+Positions without an originating intent are `strategy_id=unmanaged`; they
+receive a durable neutral `HOLD` without an LLM call or an automated exit.
+
+## Operations
+
+Production services are managed by `oxmgr`. Do not start gateway, orchestrator,
+regime worker, rotation worker, or PM sidecar processes manually.
+
+```bash
+oxmgr list
+oxmgr logs research-analyst-ws --lines 40
+oxmgr logs research-analyst-symbol-rotation --lines 40
+oxmgr logs research-analyst-regime-session --lines 40
+oxmgr logs research-analyst-orchestrator --lines 40
+oxmgr logs research-analyst-pm-sidecar --lines 40
+```
+
+The core managed targets are:
+
+- `research-analyst-symbol-rotation`
+- `research-analyst-ws`
+- `research-analyst-regime-session`
+- `research-analyst-orchestrator`
+- `research-analyst-pm-sidecar`
+
+When a code change is explicitly approved for deployment, restart only the
+managed processes that import the changed code, then verify fresh cutoff logs,
+restart counts, data freshness, regime persistence, pipeline completion, and
+PM decisions. Never alter `.env`, databases, executor files, or production
+settings without an explicit command.
 
 ## Verification
 
-Run `python3 -m pytest -q` and `git diff --check` before committing. Production
-services are managed with `oxmgr`; do not start duplicate gateway, orchestrator,
-or PM sidecar processes manually.
+```bash
+python3 -m pytest -q
+python3 -m compileall -q src tests
+```
+
+Do not commit `.env`, API keys, webhooks, databases, or executor credentials.

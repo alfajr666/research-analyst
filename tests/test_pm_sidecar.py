@@ -5,6 +5,7 @@ import unittest
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import config
 import pm_sidecar
@@ -232,6 +233,50 @@ class PMSidecarTests(unittest.TestCase):
             self.assertEqual(data["exchange_id"], "bybit")
         finally:
             config.EXECUTOR_DECISION_DIR = prev
+
+    def test_write_decision_file_mechanical_stop_revision(self):
+        decision_dir = Path(self.directory.name) / "mechanical-decisions"
+        prev = getattr(config, "EXECUTOR_DECISION_DIR", "")
+        config.EXECUTOR_DECISION_DIR = str(decision_dir)
+        try:
+            pos = {"position_id": "P3", "symbol": "BTCUSDT",
+                   "exchange_id": "bybit", "account_id": "fundamo"}
+            cutoff = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+            observed = datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc)
+            self.assertTrue(pm_sidecar._write_decision_file(
+                pos, {"action": "update_stop", "stop_loss": 95.0,
+                      "confidence": 1.0, "controller": "mechanical_strategy",
+                      "reason": "atr revision"}, cutoff, observed))
+            data = json.loads(next(decision_dir.glob("*.json")).read_text())
+            self.assertEqual(data["action"], "UPDATE_STOP")
+            self.assertEqual(data["stop_loss"], 95.0)
+            self.assertEqual(data["controller"], "mechanical_strategy")
+        finally:
+            config.EXECUTOR_DECISION_DIR = prev
+
+    def test_mechanical_strategy_management_skips_llm(self):
+        config.PM_SIDECAR_ENABLED = True
+        config.EXECUTOR_DECISION_DIR = str(Path(self.directory.name) / "mechanical-run")
+        conn = config.get_db_connection(read_only=False, db_path=self.db)
+        try:
+            conn.execute(
+                "UPDATE positions_feed SET strategy_id='ema99-retest-adx-fundamo-v1', stop_loss=90 WHERE position_id='P1'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        mechanical = {
+            "action": "update_stop", "stop_loss": 95.0, "confidence": 1.0,
+            "controller": "mechanical_strategy", "reason": "atr revision",
+        }
+        with patch("pm_sidecar._mechanical_strategy_decision", return_value=mechanical), \
+             patch("pm_sidecar.call_pm_llm", side_effect=AssertionError("LLM must not run")):
+            result = pm_sidecar.run_once(
+                self.db, now=datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc)
+            )
+        self.assertEqual(result["advices"], 1)
+        payload = json.loads(next(Path(config.EXECUTOR_DECISION_DIR).glob("*.json")).read_text())
+        self.assertEqual(payload["action"], "UPDATE_STOP")
 
     def test_snapshot_source_and_decision_file(self):
         config.PM_SIDECAR_ENABLED = True

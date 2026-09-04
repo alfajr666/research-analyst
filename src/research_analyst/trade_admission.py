@@ -5,14 +5,18 @@ import math
 from datetime import datetime, timezone
 
 import config
+from structural_stop import validate_structural_stop
+from entry_policy import evaluate_entry_policy
 
 
 POLICY_VERSION = "symbol-account-policy-v1"
 COMPACT_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 FUNDAMO_STRATEGIES = frozenset((
+    "ema99-retest-adx-fundamo-v1",
     "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
+    "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
 ))
 COMPACT_STRATEGIES = frozenset(getattr(config, "COMPACT_STRATEGY_IDS", ()))
 
@@ -96,6 +100,16 @@ def _time(value):
     return (result if result.tzinfo else result.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
+def admit_structural_stop(candidate: dict, now: datetime | None = None) -> dict:
+    """Validate the producer stop against its declared structural reference."""
+    return validate_structural_stop(
+        candidate,
+        now=now,
+        max_reference_gap_pct=getattr(config, "STRUCTURAL_STOP_MAX_REFERENCE_GAP_PCT", None),
+        required=True,
+    )
+
+
 def admit(candidate: dict, now: datetime | None = None) -> dict:
     """Return an auditable hard-gate result; context is intentionally ignored."""
     symbol_policy = admit_symbol_account(candidate)
@@ -156,12 +170,25 @@ def admit(candidate: dict, now: datetime | None = None) -> dict:
     identity = candidate.get("candidate_id") or candidate.get("dedupe_key")
     if not isinstance(identity, str) or not identity.strip():
         reasons.append("event identity is invalid")
+    structural = {
+        "structural_stop_gate": "unavailable",
+        "structural_stop_reasons": ["structural stop admission disabled"],
+        "reference_id": None,
+        "reference_kind": None,
+        "reference_boundary": None,
+        "stop_buffer": None,
+    }
+    required_strategies = getattr(config, "STRUCTURAL_STOP_REQUIRED_STRATEGIES", frozenset())
+    if getattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", False) and candidate.get("strategy_id") in required_strategies:
+        structural = admit_structural_stop(candidate, now=now)
+        if structural["structural_stop_gate"] != "pass":
+            reasons.extend(f"structural stop: {reason}" for reason in structural["structural_stop_reasons"])
     atr_pct = float(atr14_4h) / entry if _number(atr14_4h) and _number(entry) and entry > 0 else None
     return {"hard_gate": "pass" if not reasons else "fail", "hard_gate_reasons": reasons,
             **symbol_policy,
             "rr": rr, "stop_distance_pct": distance, "selected_take_profit": target,
             "atr14_4h": atr14_4h, "stop_atr_multiple": distance / atr_pct if distance is not None and atr_pct else None,
-            "effective_min_stop_distance_pct": max(absolute_floor, atr_floor)}
+            "effective_min_stop_distance_pct": max(absolute_floor, atr_floor), **structural}
 
 
 def score(candidate: dict) -> dict:
@@ -183,10 +210,26 @@ def resolve(candidates: list[dict]) -> dict:
     eligible = []
     results = []
     for candidate in candidates:
+        entry_policy = candidate.get("entry_policy")
+        if not isinstance(entry_policy, dict):
+            entry_policy = evaluate_entry_policy(candidate)
+        policy_status = "shadow_would_block" if entry_policy["decision"] == "would_block" else entry_policy["decision"]
+        if entry_policy.get("enforced_block"):
+            results.append({
+                "candidate_id": candidate.get("candidate_id"),
+                "entry_policy_status": "blocked",
+                "entry_policy_reasons": entry_policy.get("reasons", []),
+                "hard_gate": "pass",
+                "hard_gate_reasons": [],
+                "score_status": "not_evaluated",
+            })
+            continue
         symbol_policy = admit_symbol_account(candidate)
         if symbol_policy["symbol_account_gate"] != "pass":
             results.append({
                 "candidate_id": candidate.get("candidate_id"),
+                "entry_policy_status": policy_status,
+                "entry_policy_reasons": entry_policy.get("reasons", []),
                 **symbol_policy,
                 "hard_gate": "fail",
                 "hard_gate_reasons": [f"symbol-account policy: {format_symbol_account_rejection(symbol_policy)}"],
@@ -194,8 +237,14 @@ def resolve(candidates: list[dict]) -> dict:
             })
             continue
         admission = admit(candidate)
-        scored = score(candidate)
-        result = {"candidate_id": candidate.get("candidate_id"), **admission, **scored}
+        scored = score(candidate) if admission["hard_gate"] == "pass" else {"score_status": "not_evaluated"}
+        result = {
+            "candidate_id": candidate.get("candidate_id"),
+            "entry_policy_status": policy_status,
+            "entry_policy_reasons": entry_policy.get("reasons", []),
+            **admission,
+            **scored,
+        }
         results.append(result)
         if admission["hard_gate"] == "pass":
             eligible.append((candidate, result))
@@ -214,7 +263,9 @@ def resolve(candidates: list[dict]) -> dict:
     selected_set = set(selected)
     for result in results:
         cid = result["candidate_id"]
-        if result["hard_gate"] != "pass":
+        if result.get("entry_policy_status") == "blocked":
+            result["status"] = "entry_policy_blocked"
+        elif result["hard_gate"] != "pass":
             result["status"] = "hard_gate_failed"
         elif cid in selected_set:
             result["status"] = "selected_for_executor"

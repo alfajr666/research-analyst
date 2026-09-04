@@ -116,6 +116,24 @@ def test_make_observation_id_deterministic():
     assert a != c
 
 
+def test_publish_base_triggers_excludes_future_bars(monkeypatch):
+    now = dt.datetime.now(dt.timezone.utc)
+    published = []
+    monkeypatch.setattr(
+        wsg,
+        "publish_evaluation_trigger",
+        lambda cutoff, interval="5m": published.append((cutoff, interval)),
+    )
+
+    wsg._publish_base_triggers([
+        {"interval": "5m", "source_end": now - dt.timedelta(seconds=1)},
+        {"interval": "5m", "source_end": now + dt.timedelta(minutes=5)},
+    ])
+
+    assert len(published) == 1
+    assert published[0][1] == "5m"
+
+
 def test_bar_record_to_row_shape():
     rec = {"native_symbol": "BTCUSDT", "asset": "BTC", "interval": "1m", "open": 1, "high": 2,
            "low": 0.5, "close": 1.5, "volume": 10, "source_start_ms": 1700000000000,

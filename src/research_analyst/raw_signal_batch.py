@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 import config
 from discord_transport import DiscordWebhookTransport
+from entry_policy import annotate_candidate, persist_observation
 
 def _utc(value):
     d = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -17,6 +18,7 @@ def window_start(value):
 def capture(event, db_path=None):
     """Best effort only: this function cannot affect alpha or intent delivery."""
     try:
+        event = event if "entry_policy" in event else annotate_candidate(event)
         observed = _utc(event["observed_at"])
         material = "|".join(str(event.get(k, "")) for k in (
             "strategy_id", "plugin_version", "asset", "direction", "observed_at",
@@ -32,6 +34,7 @@ def capture(event, db_path=None):
         conn.execute("""INSERT OR IGNORE INTO raw_signal_status_history
                       VALUES (?, ?, 'pending', 'pending', 'pending', 'not_eligible', NULL, ?)""",
                      (f"{raw_id}:captured", raw_id, datetime.now(timezone.utc).isoformat()))
+        persist_observation(conn, event)
         conn.commit(); conn.close()
         return raw_id
     except Exception as exc:

@@ -15,7 +15,8 @@ from typing import Any, Callable, Dict, List
 import config
 from alpha_outbox import write_event, dedupe_key
 from raw_signal_batch import capture, record_status
-from trade_admission import resolve
+from entry_policy import annotate_candidate
+from trade_admission import canonical_asset, resolve
 from strategy_v2_context import atr_last, completed_cycle_for, load_bars_for_interval
 from symbol_rotation import subscription_assets
 
@@ -24,10 +25,13 @@ PRICE_STRUCTURE_STRATEGY_IDS = getattr(config, "PRICE_STRUCTURE_STRATEGY_IDS", s
 MIXED_STRATEGY_IDS = getattr(config, "MIXED_STRATEGY_IDS", set())
 ADMISSION_STRATEGY_IDS = {"failed-break-v3", "bb-rsi-meanrev-v1",
                            "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
+                           "ema99-retest-adx-fundamo-v1",
                             "dual-zone-follower-v2", "dual-zone-short-follower-v2",
                             "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
                             "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1",
-                            "trend-wall-v1"}
+                              "trend-wall-v1", "ema9-adx-stochrsi-state-v1",
+                              "ema99-double-touch-stochrsi-state-v1",
+                              "ema7-26-cross-hammer-shooting-star-1h-adx-v1"}
 
 
 def _get_bar_purity(conn, asset: str, observed_at: Any, interval: str = "15m") -> Dict[str, Any]:
@@ -73,9 +77,13 @@ KNOWN_STRATEGIES = {
     "failed-break-v3",
     "williams-fractal-scalp-v1",
     "ema9-continuation-stochrsi-v1",
+    "ema99-retest-adx-fundamo-v1",
     "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
+    "ema9-adx-stochrsi-state-v1",
+    "ema99-double-touch-stochrsi-state-v1",
+    "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
 }
 
 @dataclass
@@ -86,6 +94,7 @@ class StrategyPlugin:
     optional_datasets: tuple[str, ...]
     run: Callable[[str, dict], List[dict]]  # (cutoff_id, snapshot) -> events
     cadence: str | None = None
+    market_family: str = "unknown"
 
 
 _REGISTRY: Dict[str, StrategyPlugin] = {}
@@ -105,6 +114,7 @@ def _load_builtin_plugins():
     from strategies.compact.failed_break_v3 import run_plugin as failed_break_run
     from strategies.compact.williams_fractal_scalp_v1 import run_plugin as williams_run
     from strategies.compact.ema9_continuation_stochrsi_v1 import run_plugin as ema9_run
+    from strategies.v2.ema99_retest_adx_fundamo_v1 import run_plugin as ema99_retest_run
     from strategies.v2.dual_zone_follower_v2 import run_plugin as dual_zone_run
     from strategies.v2.dual_zone_follower_v2 import run_short_plugin as dual_zone_short_run
     from strategies.v2.ema20_pullback_h4_trend_v1 import run_plugin as ema20_run
@@ -112,24 +122,31 @@ def _load_builtin_plugins():
     from strategies.v2.gold_trend_ema_bb_stoch_v1 import run_plugin as gold_run
     from strategies.v2.mtf_exhaustion_reversal_v1 import run_plugin as exhaustion_run
     from strategies.v2.trend_wall_v1 import run_plugin as wall_run
+    from strategies.v2.ema9_adx_stochrsi_state_v1 import run_plugin as ema9_adx_run
+    from strategies.v2.ema99_double_touch_stochrsi_state_v1 import run_plugin as ema99_double_touch_run
+    from strategies.v2.ema7_26_cross_hammer_shooting_star_v1 import run_plugin as ema7_26_hammer_run
 
-    register(StrategyPlugin("accumulation-base-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), acc_v2_run, "15m"))
-    register(StrategyPlugin("impulse-ignition-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), ign_v2_run, "15m"))
-    register(StrategyPlugin("continuation-breakout-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), cont_v2_run, "15m"))
-    register(StrategyPlugin("rsi-reclaim-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), rsi_reclaim_run, "15m"))
-    register(StrategyPlugin("liquidity-sweep-reversal-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), lsr_run, "15m"))
-    register(StrategyPlugin("bb-rsi-meanrev-v1", "v1", ("bars_5m",), (), bb_rsi_run, "5m"))
+    register(StrategyPlugin("accumulation-base-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), acc_v2_run, "15m", "mean_reversion"))
+    register(StrategyPlugin("impulse-ignition-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), ign_v2_run, "15m", "trend"))
+    register(StrategyPlugin("continuation-breakout-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), cont_v2_run, "15m", "trend"))
+    register(StrategyPlugin("rsi-reclaim-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), rsi_reclaim_run, "15m", "reversal"))
+    register(StrategyPlugin("liquidity-sweep-reversal-v1", "v1", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), lsr_run, "15m", "reversal"))
+    register(StrategyPlugin("bb-rsi-meanrev-v1", "v1", ("bars_5m",), (), bb_rsi_run, "5m", "mean_reversion"))
     # Primary execution bars gate invocation; each plugin loads its own HTF context.
-    register(StrategyPlugin("failed-break-v3", "v3", ("bars_5m",), (), failed_break_run, "5m"))
-    register(StrategyPlugin("williams-fractal-scalp-v1", "v1", ("bars_1m",), (), williams_run, "1m"))
-    register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v1", ("bars_1m",), (), ema9_run, "1m"))
-    register(StrategyPlugin("dual-zone-follower-v2", "v2", ("bars_5m",), (), dual_zone_run, "5m"))
-    register(StrategyPlugin("dual-zone-short-follower-v2", "v2", ("bars_5m",), (), dual_zone_short_run, "5m"))
-    register(StrategyPlugin("ema20-pullback-h4-trend-v1", "v1", ("bars_5m",), (), ema20_run, "5m"))
-    register(StrategyPlugin("ema-stack-15m-adx-stochrsi-5m-v1", "v1", ("bars_5m",), (), stack_run, "5m"))
-    register(StrategyPlugin("gold-trend-ema-bb-stoch-v1", "v1", ("bars_5m",), (), gold_run, "5m"))
-    register(StrategyPlugin("mtf-exhaustion-reversal-v1", "v1", ("bars_5m",), (), exhaustion_run, "5m"))
-    register(StrategyPlugin("trend-wall-v1", "v1", ("bars_5m",), (), wall_run, "5m"))
+    register(StrategyPlugin("failed-break-v3", "v3", ("bars_5m",), (), failed_break_run, "5m", "reversal"))
+    register(StrategyPlugin("williams-fractal-scalp-v1", "v1", ("bars_1m",), (), williams_run, "1m", "trend"))
+    register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v1", ("bars_1m",), (), ema9_run, "1m", "trend"))
+    register(StrategyPlugin("ema99-retest-adx-fundamo-v1", "v1", ("bars_5m",), (), ema99_retest_run, "5m", "trend"))
+    register(StrategyPlugin("dual-zone-follower-v2", "v2", ("bars_5m",), (), dual_zone_run, "5m", "trend"))
+    register(StrategyPlugin("dual-zone-short-follower-v2", "v2", ("bars_5m",), (), dual_zone_short_run, "5m", "trend"))
+    register(StrategyPlugin("ema20-pullback-h4-trend-v1", "v1", ("bars_5m",), (), ema20_run, "5m", "trend"))
+    register(StrategyPlugin("ema-stack-15m-adx-stochrsi-5m-v1", "v1", ("bars_5m",), (), stack_run, "5m", "trend"))
+    register(StrategyPlugin("gold-trend-ema-bb-stoch-v1", "v1", ("bars_5m",), (), gold_run, "5m", "trend"))
+    register(StrategyPlugin("mtf-exhaustion-reversal-v1", "v1", ("bars_5m",), (), exhaustion_run, "5m", "reversal"))
+    register(StrategyPlugin("trend-wall-v1", "v1", ("bars_5m",), (), wall_run, "5m", "trend"))
+    register(StrategyPlugin("ema9-adx-stochrsi-state-v1", "v1", ("bars_1m",), (), ema9_adx_run, "1m", "trend"))
+    register(StrategyPlugin("ema99-double-touch-stochrsi-state-v1", "v1", ("bars_1m",), (), ema99_double_touch_run, "5m", "trend"))
+    register(StrategyPlugin("ema7-26-cross-hammer-shooting-star-1h-adx-v1", "v1", ("bars_5m",), (), ema7_26_hammer_run, "5m", "reversal"))
 
 
 _load_builtin_plugins()
@@ -326,42 +343,55 @@ def _interval_cutoff_id(interval: str, cutoff: datetime) -> str:
 
 
 def _bars_available(market_db_path: str | Path, dataset: str, snapshot: dict) -> bool:
-    """Check that the market DB has this bar interval at the snapshot cutoff."""
+    """Check complete, valid coverage for at least one candidate asset."""
     interval = dataset.removeprefix("bars_")
-    cutoff_id = str(snapshot.get("cutoff_id", ""))
-    cutoff_text = cutoff_id.split(":", 1)[1] if ":" in cutoff_id else None
-    assets = list((snapshot.get("feature_snapshots") or {}).keys())
+    cutoff = snapshot.get("cutoff_at")
+    if isinstance(cutoff, str):
+        cutoff = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+    if cutoff is None:
+        cutoff_id = str(snapshot.get("cutoff_id", ""))
+        cutoff_text = cutoff_id.split(":", 1)[1] if ":" in cutoff_id else None
+        if cutoff_text:
+            cutoff = datetime.fromisoformat(cutoff_text.replace("Z", "+00:00"))
+    if cutoff is None:
+        return False
+    assets = [asset for _, asset in snapshot.get("subscription_symbols", [])]
     try:
         conn = config.get_db_connection(read_only=True, db_path=market_db_path)
     except Exception:
         return False
     try:
-        query = "SELECT 1 FROM source_observations WHERE interval = ?"
-        params: list[Any] = [interval]
-        if cutoff_text:
-            query += " AND source_end <= ?"
-            params.append(datetime.fromisoformat(cutoff_text.replace("Z", "+00:00")))
-        if assets:
-            placeholders = ",".join("?" for _ in assets)
-            query += f" AND asset IN ({placeholders})"
-            params.extend(assets)
-        query += " LIMIT 1"
         try:
-            return conn.execute(query, params).fetchone() is not None
+            if not assets:
+                assets = [row[0] for row in conn.execute(
+                    "SELECT DISTINCT asset FROM source_observations WHERE interval = ?",
+                    (interval,),
+                ).fetchall()]
+            from market_coverage import assess_db_coverage
+            return any(
+                assess_db_coverage(
+                    conn, asset=asset, interval=interval, cutoff=cutoff,
+                    expected_bars=1,
+                ).status == "covered"
+                for asset in sorted(set(assets))
+            )
         except Exception:
             return False
     finally:
         conn.close()
 
 
-def _data_freshness_seconds(market_db_path: str | Path, interval: str, cutoff: datetime) -> float | None:
+def _data_freshness_seconds(market_db_path: str | Path, interval: str, cutoff: datetime,
+                            asset: str | None = None) -> float | None:
     conn = config.get_db_connection(read_only=True, db_path=market_db_path)
     try:
         try:
-            row = conn.execute(
-                "SELECT MAX(source_end) FROM source_observations WHERE interval = ? AND source_end <= ?",
-                (interval, cutoff),
-            ).fetchone()
+            query = "SELECT MAX(source_end) FROM source_observations WHERE interval = ? AND source_end <= ?"
+            params: list[Any] = [interval, cutoff]
+            if asset:
+                query += " AND asset = ?"
+                params.append(asset)
+            row = conn.execute(query, params).fetchone()
         except Exception:
             return None
         if not row or row[0] is None:
@@ -433,20 +463,28 @@ def _build_snapshot(db_path: str | Path, cutoff_id: str, now: datetime | None,
             snapshot["feature_snapshots"].setdefault(asset, {})[fset] = json.loads(payload) if payload else {}
         try:
             zones = feat_conn.execute(
-                "SELECT asset, kind, direction, strength, source_evidence_ids, confidence_status FROM structure_zones WHERE cutoff_id = ?",
+                """SELECT zone_id, asset, kind, direction, strength, low, high, state,
+                          source_evidence_ids, confidence_status, created_at
+                     FROM structure_zones WHERE cutoff_id = ?""",
                 (cutoff_id,)
             ).fetchall()
             if zones:
                 snapshot["zones"] = []
                 for z in zones:
-                    kind = z[1]
-                    typ, tf = (kind.split("_", 1) + [""])[:2] if "_" in kind else (kind, "")
+                    kind = z[2]
+                    if kind.endswith(("_1h", "_4h")):
+                        typ, tf = kind.rsplit("_", 1)
+                    else:
+                        typ, tf = kind, ""
                     snapshot["zones"].append({
-                        "asset": z[0], "kind": kind, "type": typ, "timeframe": tf,
-                        "direction": z[2], "strength": z[3],
-                        "source_evidence_ids": json.loads(z[4] or "[]"),
-                        "confidence_status": z[5]
+                        "zone_id": z[0], "reference_id": z[0], "asset": z[1], "kind": kind,
+                        "type": typ, "timeframe": tf, "direction": z[3], "strength": z[4],
+                        "low": z[5], "high": z[6], "state": z[7],
+                        "source_evidence_ids": json.loads(z[8] or "[]"),
+                        "confidence_status": z[9], "created_at": z[10],
                     })
+                from structure_zones import get_active_zones_for_snapshot
+                snapshot["zones"] = get_active_zones_for_snapshot(snapshot["zones"], max_per=3)
         except Exception:
             pass
     finally:
@@ -472,19 +510,47 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     eval_interval = snapshot.get("eval_interval", "15m")
     cutoff = _cutoff_from_id(cutoff_id, now)
     snapshot["cutoff_at"] = cutoff
-    freshness = _data_freshness_seconds(snapshot["market_db_path"], eval_interval, cutoff)
     attempted_symbols, feed_metadata = subscription_assets(cutoff)
+    regime_scope = snapshot.get("regime_scope") or {}
+    if regime_scope.get("mode") == "enforce":
+        ready_assets = set(regime_scope.get("allowed_assets", []))
+        attempted_symbols = [asset for asset in attempted_symbols if asset in ready_assets]
+    warmup_metadata = {}
+    if getattr(config, "DEEP_WARMUP_GATE_ENABLED", False):
+        from warmup import ready_assets
+        market_conn = config.get_db_connection(read_only=True, db_path=snapshot["market_db_path"])
+        try:
+            attempted_symbols, warmup_metadata = ready_assets(market_conn, attempted_symbols, cutoff)
+        finally:
+            market_conn.close()
     snapshot["attempted_symbols"] = len(attempted_symbols)
+    snapshot["warmup"] = warmup_metadata
     snapshot["subscription_feed_id"] = feed_metadata.get("feed_id")
     snapshot["subscription_symbols"] = list(zip(
         config.expand_perp_symbols(attempted_symbols, "bybit"), attempted_symbols
     ))
+    results["_attempted_symbols"] = len(attempted_symbols)
     atr_cache = {}
+    freshness_cache: dict[str, float | None] = {}
 
     for p in plugins:
         try:
             if p.cadence is not None and p.cadence != eval_interval:
                 results[p.id] = {"skipped": f"cadence {p.cadence}"}
+                continue
+            plugin_symbols = list(attempted_symbols)
+            if regime_scope.get("mode") == "enforce":
+                family = p.market_family
+                if family not in {"trend", "mean_reversion", "reversal"}:
+                    results[p.id] = {"skipped": "unknown strategy family"}
+                    continue
+                family_assets = set(regime_scope.get("family_assets", {}).get(family, []))
+                plugin_symbols = [asset for asset in plugin_symbols if asset in family_assets]
+            if regime_scope.get("mode") == "enforce" and not plugin_symbols:
+                results[p.id] = {"skipped": "regime session: family has no active assets"}
+                continue
+            if getattr(config, "DEEP_WARMUP_GATE_ENABLED", False) and not plugin_symbols:
+                results[p.id] = {"skipped": "deep warmup: no ready assets"}
                 continue
             # Test isolation hook: make a specific plugin raise so we verify other
             # plugins still complete (keyed by id so it works for any plugin).
@@ -502,13 +568,19 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
             if missing:
                 results[p.id] = {"skipped": f"missing required datasets: {','.join(missing)}"}
                 continue
-            events = p.run(cutoff_id, snapshot) or []
+            plugin_snapshot = dict(snapshot)
+            plugin_snapshot["attempted_symbols"] = len(plugin_symbols)
+            plugin_snapshot["subscription_symbols"] = list(zip(
+                config.expand_perp_symbols(plugin_symbols, "bybit"), plugin_symbols
+            ))
+            events = p.run(cutoff_id, plugin_snapshot) or []
             for ev in events:
                 ev["eval_interval"] = eval_interval
                 ev.setdefault("plugin_version", p.version)
                 ev.setdefault("input_snapshot_id", cutoff_id)
                 ev.setdefault("source_evidence_ids", [])
                 ev.setdefault("confidence_status", "uncalibrated")
+                ev.setdefault("market_family", p.market_family)
                 # Plugin evidence is part of the replay contract. Generic
                 # materialized features must never replace it.
                 ev.setdefault("feature_snapshot", {})
@@ -525,8 +597,13 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                     ev.setdefault("data_purity", "unknown")
                     ev.setdefault("price_source", "unknown")
                 ev.setdefault("candidate_id", dedupe_key(ev))
-                ev["data_freshness_seconds"] = freshness
+                ev.update(annotate_candidate(ev))
                 asset = ev["asset"]
+                if asset not in freshness_cache:
+                    freshness_cache[asset] = _data_freshness_seconds(
+                        snapshot["market_db_path"], eval_interval, cutoff, asset=canonical_asset(asset),
+                    )
+                ev["data_freshness_seconds"] = freshness_cache[asset]
                 if asset not in atr_cache:
                     atr_cache[asset] = _atr14_4h(snapshot["market_db_path"], asset, cutoff)
                 ev["atr14_4h"] = ev.get("atr14_4h") or atr_cache[asset]
@@ -567,7 +644,8 @@ def invoke_plugins_for_intervals(db_path: str | Path, now: datetime | None = Non
                                   require_finalized: bool = True,
                                   eval_intervals: list[str] | None = None,
                                   market_db_path: str | Path | None = None,
-                                  cutoff_at: datetime | None = None) -> Dict[str, Dict[str, object]]:
+                                  cutoff_at: datetime | None = None,
+                                  regime_scope: dict | None = None) -> Dict[str, Dict[str, object]]:
     """Run enabled plugins on every eval interval (1m/5m/15m by default).
     Each interval gets its own finalized cutoff_run and its own snapshot carrying
     `eval_interval`, so plugins evaluate on the correct bars. HTF (1h/4h) is NOT
@@ -582,5 +660,7 @@ def invoke_plugins_for_intervals(db_path: str | Path, now: datetime | None = Non
         _ensure_cutoff_run_finalized(db_path, cutoff_id, iv, cutoff)
         snapshot = _build_snapshot(db_path, cutoff_id, now, market_db_path)
         snapshot["eval_interval"] = iv
+        if regime_scope is not None:
+            snapshot["regime_scope"] = regime_scope
         out[iv] = _run_plugins_for_cutoff(db_path, cutoff_id, now, require_finalized, snapshot=snapshot, market_db_path=market_db_path)
     return out

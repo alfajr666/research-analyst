@@ -1,4 +1,5 @@
 import json
+import hashlib
 import time
 import sys
 import os
@@ -30,6 +31,24 @@ def _get_or_create_cutoff_run(cutoff_at: datetime, interval: str = "5m") -> str:
         )
         conn.commit()
         return cutoff_id
+    finally:
+        conn.close()
+
+
+def _source_observation_ids(cutoff_at: datetime, interval: str = "5m") -> list[str]:
+    """Return the immutable market observations supporting one cutoff."""
+    conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
+    try:
+        rows = conn.execute(
+            """SELECT observation_id
+                 FROM source_observations
+                WHERE interval = ? AND source_end = ?
+                ORDER BY source_end, observation_id""",
+            (interval, cutoff_at),
+        ).fetchall()
+        return [str(row[0]) for row in rows if row[0]]
+    except Exception:
+        return []
     finally:
         conn.close()
 
@@ -374,18 +393,21 @@ def check_and_alert_confluences(conn):
             print(f"  Error checking alert for {underlying}: {e}")
 
 def _summarize_interval_results(results, symbols, feed_metadata):
+    attempted_symbols = results.get("_attempted_symbols", len(symbols))
     strategy_summary = {
         strategy_id: {
             "status": "completed" if isinstance(result, dict) and "emitted" in result else "skipped" if isinstance(result, dict) and "skipped" in result else "failed" if isinstance(result, dict) and "failed" in result else "unknown",
             "emitted": result.get("emitted", 0) if isinstance(result, dict) else 0,
-            "attempted_symbols": len(symbols) if isinstance(result, dict) and "emitted" in result else 0,
+            "attempted_symbols": attempted_symbols if isinstance(result, dict) and "emitted" in result else 0,
             "feed_id": feed_metadata.get("feed_id") if isinstance(result, dict) else None,
             "detail": result.get("skipped") or result.get("failed") if isinstance(result, dict) else None,
         }
         for strategy_id, result in results.items()
+        if not strategy_id.startswith("_")
     }
     return {
         "strategies": strategy_summary,
+        "symbols_evaluated": attempted_symbols,
         "strategy_evaluations": sum(
             item.get("attempted_symbols", 0) for item in strategy_summary.values()
         ),
@@ -402,8 +424,8 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
     # The gateway owns all market-database writes and schema initialization.
     # The orchestrator only initializes/updates its analyst database.
     config.init_analyst_db()
-
     _maybe_prune_analyst_db()
+
     print("Market pruning is owned by ws_gateway; analyst retention ran in this process.")
 
     # Cutoff + plugins (data platform v2 path). Legacy direct evaluators cleaned up post cutover.
@@ -416,12 +438,38 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         conn = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
         try:
             conn.execute(
-                "UPDATE cutoff_runs SET status='finalized', finalized_at=? WHERE cutoff_id=?",
-                (datetime.now(timezone.utc), cutoff_id),
+                """UPDATE cutoff_runs
+                      SET status='finalized', finalized_at=?, source_observation_ids=?
+                    WHERE cutoff_id=?""",
+                (datetime.now(timezone.utc), json.dumps(_source_observation_ids(cutoff_at, primary_interval)), cutoff_id),
             )
             conn.commit()
         finally:
             conn.close()
+
+        from symbol_rotation import subscription_assets
+        from regime_session import wait_for_gate_scope
+        assets, feed_metadata = subscription_assets(cutoff_at)
+        # Regime observations are published on the completed 5m cadence. A
+        # 1m evaluation must consume the newest preceding 5m observation
+        # rather than requesting an impossible exact 1m regime cutoff.
+        regime_cutoff_at = completed_cycle_for(cutoff_at, "5m")
+        regime_scope = wait_for_gate_scope(
+            assets,
+            regime_cutoff_at,
+            str(feed_metadata.get("feed_id") or "unknown"),
+        )
+        # Regime enforcement scopes each plugin by family. Feature materialization
+        # still covers the full subscription universe so one inactive family does
+        # not remove an asset needed by another family.
+        evaluation_assets = list(assets)
+        print(
+            f"Regime-session gate mode={regime_scope['mode']} "
+            f"ready={len(regime_scope.get('allowed_assets', assets))} "
+            f"blocked={len(regime_scope['blocked_assets'])} "
+            f"missing={len(regime_scope['missing_assets'])} "
+            f"families={{{', '.join(f'{k}:{len(v)}' for k, v in regime_scope.get('family_assets', {}).items())}}}"
+        )
 
         # Materialize v2 features (per spec step 5): bars/TA implied, labeled approx VP, FVG/OB zones, unavailable
         try:
@@ -429,15 +477,13 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
             nowf = datetime.now(timezone.utc)
             # Load recent 15m bars from the market-owned source observations.
             market_conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
-            from symbol_rotation import subscription_assets
-            assets, _ = subscription_assets(cutoff_at)
             from strategy_v2_context import load_bars_for_interval
             bars_by_asset = {
                 asset: (
                     load_bars_for_interval(market_conn, asset, "1h", cutoff_at),
                     load_bars_for_interval(market_conn, asset, "4h", cutoff_at),
                 )
-                for asset in assets
+                for asset in evaluation_assets
             }
             market_conn.close()
 
@@ -459,13 +505,22 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
                         atr = compute_atr(df)
                         fvgs = detect_fvg(df, atr=atr, tf=tf) or []
                         obs = detect_order_blocks(df, atr=atr, tf=tf) or []
-                        for z in (fvgs + obs)[:6]:  # cap
+                        for z in (fvgs + obs):
                             kid = f"{z.get('type', 'zone')}_{tf}"
+                            low = z.get("low")
+                            high = z.get("high")
+                            created_at = z.get("created_at") or z.get("end") or nowf
+                            evidence = z.get("source_evidence_ids") or []
+                            identity = json.dumps(
+                                [cutoff_id, asset, kid, z.get("direction"), created_at, low, high],
+                                sort_keys=True, default=str,
+                            )
+                            zone_id = "zone-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
                             zone_rows.append((
-                                f"zone-{cutoff_id}-{asset}-{kid}-{int(time.time())}",
+                                zone_id,
                                 cutoff_id, asset, kid, z.get("direction"), z.get("gap") or 0.0,
-                                z.get("low"), z.get("high"), z.get("state", "active"),
-                                json.dumps([]), "uncalibrated", nowf
+                                low, high, z.get("state", "active"),
+                                json.dumps(evidence), "uncalibrated", created_at
                             ))
                     except Exception:
                         pass
@@ -478,16 +533,19 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, zr)
                 # also surface summary in feature_snapshots (distinct approx label per spec)
-                feat_conn.execute("""
-                    INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
-                    VALUES (?, ?, ?, 'fvg_ob_zones', 'v1', ?, ?)
-                """, (f"feat-{cutoff_id}-zones", cutoff_id, assets[0] if assets else "SOL", nowf, json.dumps({"zones": len(zone_rows)})))
+                for asset in assets:
+                    asset_zone_count = sum(1 for row in zone_rows if row[2] == asset)
+                    feat_conn.execute("""
+                        INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
+                        VALUES (?, ?, ?, 'fvg_ob_zones', 'v1', ?, ?)
+                    """, (f"feat-{cutoff_id}-zones-{asset}", cutoff_id, asset, nowf, json.dumps({"zones": asset_zone_count})))
 
             # Distinct approximate VP derived from candles.
-            feat_conn.execute("""
-                INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
-                VALUES (?, ?, ?, 'coinalyze_candle_distributed_volume_profile_v1', 'v1', ?, ?)
-            """, (f"feat-{cutoff_id}-vp", cutoff_id, assets[0] if assets else "SOL", nowf, json.dumps({"poc": 100.2, "note": "approximate from candles, not native VP"})))
+            for asset in assets:
+                feat_conn.execute("""
+                    INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
+                    VALUES (?, ?, ?, 'coinalyze_candle_distributed_volume_profile_v1', 'v1', ?, ?)
+                """, (f"feat-{cutoff_id}-vp-{asset}", cutoff_id, asset, nowf, json.dumps({"poc": 100.2, "note": "approximate from candles, not native VP"})))
 
             feat_conn.commit()
             feat_conn.close()
@@ -503,9 +561,9 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
             market_db_path=config.MARKET_DB_PATH,
             eval_intervals=eval_intervals,
             cutoff_at=cutoff_at,
+            regime_scope=regime_scope,
         )
-        from symbol_rotation import subscription_assets
-        symbols, feed_metadata = subscription_assets(cutoff_at)
+        symbols = assets
         strategies = list(config.STRATEGY_ENABLED_IDS)
         per_interval = {}
         for interval, results in pres.items():
@@ -515,16 +573,17 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         LAST_EVALUATION_OBSERVABILITY.update({
             "strategies_enabled": len(strategies),
             "symbols": symbols,
-            "symbols_evaluated": len(symbols),
+            "symbols_evaluated": max((item["symbols_evaluated"] for item in per_interval.values()), default=0),
             "strategy_evaluations": actual_evaluations,
             "feed_id": feed_metadata.get("feed_id"),
             "fallback_reason": feed_metadata.get("fallback_reason"),
+            "regime_session": regime_scope,
             "signals_emitted": sum(v.get("emitted", 0) for interval in per_interval.values() for v in interval["strategies"].values()),
             "by_interval": per_interval,
         })
         print(f"Evaluation observability: {json.dumps(LAST_EVALUATION_OBSERVABILITY, sort_keys=True)}")
         for iv, ivres in pres.items():
-            print(f"Plugins [{iv}] for {cutoff_id}: { {k: v.get('emitted', v) for k,v in ivres.items()} }")
+            print(f"Plugins [{iv}] for {cutoff_id}: { {k: v.get('emitted', v) for k,v in ivres.items() if not k.startswith('_')} }")
 
         # Phase 9: rotation feed (disabled by default; also needs WS_SYMBOL_SOURCE=rotated|both).
         print("Legacy rotation feed disabled in live orchestrator.")

@@ -11,6 +11,8 @@ class StrategyPluginRegistryTests(unittest.TestCase):
     def setUp(self):
         self.prev_enabled = getattr(config, "STRATEGY_ENABLED_IDS", ())
         self.prev_active = getattr(config, "STRATEGY_ACTIVE_IDS", ())
+        self.prev_warmup = config.DEEP_WARMUP_GATE_ENABLED
+        config.DEEP_WARMUP_GATE_ENABLED = False
         self.directory = tempfile.TemporaryDirectory()
         self.db = Path(self.directory.name) / "m.db"
         self.prev_db_path = config.MARKET_DB_PATH
@@ -20,9 +22,26 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         config.init_market_db(self.db)
         config.init_analyst_db(self.db)
 
+    def test_portfolio_swap_retires_three_and_enables_three(self):
+        retired = {
+            "ema9-continuation-stochrsi-v1",
+            "trend-wall-v1",
+            "ema-stack-15m-adx-stochrsi-5m-v1",
+        }
+        enabled = {
+            "ema9-adx-stochrsi-state-v1",
+            "ema99-double-touch-stochrsi-state-v1",
+            "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
+        }
+        self.assertTrue(retired.isdisjoint(config.STRATEGY_ENABLED_IDS))
+        self.assertTrue(enabled.issubset(config.STRATEGY_ENABLED_IDS))
+        self.assertIn("ema9-adx-stochrsi-state-v1", config.COMPACT_STRATEGY_IDS)
+        self.assertTrue(enabled - {"ema9-adx-stochrsi-state-v1"} <= config.FUNDAMO_STRATEGY_IDS)
+
     def tearDown(self):
         config.STRATEGY_ENABLED_IDS = self.prev_enabled
         config.STRATEGY_ACTIVE_IDS = self.prev_active
+        config.DEEP_WARMUP_GATE_ENABLED = self.prev_warmup
         config.MARKET_DB_PATH = self.prev_db_path
         config.ANALYST_DB_PATH = self.prev_analyst_db_path
         self.directory.cleanup()
@@ -85,6 +104,39 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             invoke_plugins_for_cutoff(self.db, "running-cut", require_finalized=True)
         self.assertIn("finalized", str(ctx.exception))
 
+    def test_cutoff_snapshot_preserves_complete_zone_reference(self):
+        from strategy_plugins import _build_snapshot
+
+        conn = config.get_db_connection(db_path=self.db)
+        conn.execute(
+            """INSERT INTO structure_zones
+               (zone_id, cutoff_id, asset, kind, direction, strength, low, high,
+                state, source_evidence_ids, confidence_status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "zone-1", "4h:2026-08-17T12:00:00Z", "BTC", "fvg_4h", "bullish",
+                2.0, 95.0, 96.0, "active", '["bar-1"]', "confirmed",
+                "2026-08-17T08:00:00+00:00",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        snapshot = _build_snapshot(
+            self.db,
+            "4h:2026-08-17T12:00:00Z",
+            datetime(2026, 8, 17, 12, 5, tzinfo=timezone.utc),
+            self.db,
+        )
+
+        assert snapshot["zones"] == [{
+            "zone_id": "zone-1", "reference_id": "zone-1", "asset": "BTC",
+            "kind": "fvg_4h", "type": "fvg", "timeframe": "4h",
+            "direction": "bullish", "strength": 2.0, "low": 95.0, "high": 96.0,
+            "state": "active", "source_evidence_ids": ["bar-1"],
+            "confidence_status": "confirmed", "created_at": "2026-08-17T08:00:00+00:00",
+        }]
+
     def test_live_compact_seam_admits_once_and_selects_one_intent(self):
         import strategy_plugins
 
@@ -115,8 +167,9 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             )""")
             conn.execute("INSERT INTO source_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          ("obs", "test", "test", "BTCUSDT", "BTC", "perp", "5m",
-                          "2026-08-17 12:00:00", "2026-08-17 12:05:00",
-                          "2026-08-17 12:06:00", None, "{}"))
+                         "2026-08-17 12:10:00", "2026-08-17 12:15:00",
+                         "2026-08-17 12:16:00", None,
+                         '{"open": 100, "high": 101, "low": 99, "close": 100}'))
             conn.commit(); conn.close()
             strategy_plugins.write_event = lambda ev: (writes.append(ev) or (True, self.db / "x"))
             result = strategy_plugins._run_plugins_for_cutoff(
@@ -143,8 +196,9 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         )""")
         conn.execute("INSERT INTO source_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      ("obs", "test", "test", "BTCUSDT", "BTC", "perp", "5m",
-                      "2026-08-17 12:00:00", "2026-08-17 12:05:00",
-                      "2026-08-17 12:06:00", None, "{}"))
+                      "2026-08-17 12:10:00", "2026-08-17 12:15:00",
+                      "2026-08-17 12:16:00", None,
+                      '{"open": 100, "high": 101, "low": 99, "close": 100}'))
         conn.commit(); conn.close()
 
         old_registry = strategy_plugins._REGISTRY.copy()
@@ -172,6 +226,40 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)
             config.STRATEGY_ENABLED_IDS = old_enabled
             config.STRATEGY_ACTIVE_IDS = old_active
+
+    def test_deep_warmup_gate_blocks_cold_plugin_scope(self):
+        import strategy_plugins
+
+        old_registry = strategy_plugins._REGISTRY.copy()
+        old_enabled = config.STRATEGY_ENABLED_IDS
+        old_active = config.STRATEGY_ACTIVE_IDS
+        old_static = config.STATIC_SYMBOLS_OVERRIDE
+        old_rotation = config.SYMBOL_ROTATION_ENABLED
+        old_warmup = config.DEEP_WARMUP_GATE_ENABLED
+        calls = []
+        try:
+            strategy_plugins._REGISTRY["failed-break-v3"] = strategy_plugins.StrategyPlugin(
+                "failed-break-v3", "test", ("bars_5m",), (), lambda *_: calls.append(True) or []
+            )
+            config.STRATEGY_ENABLED_IDS = ("failed-break-v3",)
+            config.STRATEGY_ACTIVE_IDS = ("failed-break-v3",)
+            config.STATIC_SYMBOLS_OVERRIDE = "BTC"
+            config.SYMBOL_ROTATION_ENABLED = False
+            config.DEEP_WARMUP_GATE_ENABLED = True
+            result = strategy_plugins._run_plugins_for_cutoff(
+                self.db, "5m:2026-08-17T12:05:00Z", None, False,
+                snapshot={"eval_interval": "5m", "feature_snapshots": {},
+                          "market_db_path": str(self.db)},
+            )
+            assert result["failed-break-v3"] == {"skipped": "deep warmup: no ready assets"}
+            assert calls == []
+        finally:
+            strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)
+            config.STRATEGY_ENABLED_IDS = old_enabled
+            config.STRATEGY_ACTIVE_IDS = old_active
+            config.STATIC_SYMBOLS_OVERRIDE = old_static
+            config.SYMBOL_ROTATION_ENABLED = old_rotation
+            config.DEEP_WARMUP_GATE_ENABLED = old_warmup
 
 
 if __name__ == "__main__":

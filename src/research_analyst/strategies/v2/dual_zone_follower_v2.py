@@ -1,7 +1,13 @@
 """Point-in-time enhanced dual-zone follower, emitting both directions."""
 from datetime import timedelta, timezone
 import config
-from strategy_v2_context import cutoff_from_id, ema_last, evaluation_symbols, has_active_event, load_bars_for_interval
+from strategy_v2_context import (
+    cutoff_from_id,
+    ema_last,
+    evaluation_symbols,
+    has_active_event,
+    load_bars_for_interval,
+)
 
 def _dmi_adx(bars, length, smoothing):
     if bars.height < length * 2 + smoothing + 1: return None

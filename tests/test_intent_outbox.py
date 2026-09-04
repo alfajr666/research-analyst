@@ -96,6 +96,28 @@ class IntentBuildTests(unittest.TestCase):
         finally:
             config.INTENT_ROUTING = {}
 
+    def test_new_portfolio_strategies_route_to_the_agreed_accounts(self):
+        for strategy in ("ema9-adx-stochrsi-state-v1",):
+            intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="fundamo")
+            self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "hyro"))
+        for strategy in (
+            "ema99-double-touch-stochrsi-state-v1",
+            "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
+        ):
+            intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="hyro")
+            self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "fundamo"))
+
+    def test_swapped_strategy_families_are_routed_to_their_accounts(self):
+        for strategy in ("ema9-adx-stochrsi-state-v1",):
+            intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="fundamo")
+            self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "hyro"))
+        for strategy in (
+            "ema99-double-touch-stochrsi-state-v1",
+            "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
+        ):
+            intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="hyro")
+            self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "fundamo"))
+
     def test_symbol_helper(self):
         self.assertEqual(to_ccxt_perp_symbol("eth"), "ETH/USDT:USDT")
 

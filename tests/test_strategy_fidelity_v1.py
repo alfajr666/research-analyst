@@ -59,13 +59,21 @@ def test_wilder_indicators_have_declared_warmup_and_zero_stoch_denominator():
 
 def test_all_registered_strategies_have_explicit_cadence_and_new_ids_are_registered():
     assert all(plugin.cadence in {"1m", "5m", "15m"} for plugin in _REGISTRY.values())
-    for strategy_id in ("gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1"):
+    for strategy_id in (
+        "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
+        "ema99-double-touch-stochrsi-state-v1",
+        "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
+    ):
         assert strategy_id in _REGISTRY
         assert _REGISTRY[strategy_id].cadence == "5m"
 
 
 def test_new_fundamo_routes_are_account_agnostic_in_candidate_and_fixed_downstream():
-    for strategy_id in ("gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1"):
+    for strategy_id in (
+        "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
+        "ema99-double-touch-stochrsi-state-v1",
+        "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
+    ):
         event = {
             "strategy_id": strategy_id, "asset": "BTC", "direction": "long",
             "observed_at": "2099-01-01T00:00:00Z", "entry_price": 100.0,

@@ -26,6 +26,7 @@ from uuid import NAMESPACE_URL, uuid5
 import config
 
 FUNDAMO_STRATEGY_IDS = frozenset((
+    "ema99-retest-adx-fundamo-v1",
     "dual-zone-follower-v2",
     "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1",
@@ -33,6 +34,8 @@ FUNDAMO_STRATEGY_IDS = frozenset((
     "gold-trend-ema-bb-stoch-v1",
     "mtf-exhaustion-reversal-v1",
     "trend-wall-v1",
+    "ema99-double-touch-stochrsi-state-v1",
+    "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
 ))
 from trade_admission import derive_2r_target, resolved_account
 

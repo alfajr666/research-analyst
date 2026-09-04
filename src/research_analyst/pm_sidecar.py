@@ -123,14 +123,14 @@ def _load_open_positions(conn) -> List[Dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT position_id, symbol, asset, side, entry, size, opened_at,
-               strategy_id, current_pnl, status
+               strategy_id, current_pnl, stop_loss, status
         FROM positions_feed
         WHERE status = 'open'
         ORDER BY asset, position_id
         """
     ).fetchall()
     cols = ["position_id", "symbol", "asset", "side", "entry", "size",
-            "opened_at", "strategy_id", "current_pnl", "status"]
+            "opened_at", "strategy_id", "current_pnl", "stop_loss", "status"]
     out = [dict(zip(cols, r)) for r in rows]
     # Carry the default profile so the decision writer knows where to deliver.
     for p in out:
@@ -188,6 +188,7 @@ def _load_open_positions_from_snapshots(snapshot_dir, now: Optional[datetime] = 
                 "asset": asset,
                 "side": p.get("side"),
                 "entry": p.get("entry_price"),
+                "stop_loss": p.get("stop_loss"),
                 "size": p.get("quantity"),
                 "opened_at": p.get("updated_at"),
                 "strategy_id": original.get("strategy_id") or (original.get("metadata") or {}).get("strategy_id") or UNMANAGED_STRATEGY_ID,
@@ -215,10 +216,15 @@ def _get_active_intent(conn, strategy_id: str, asset: str) -> Optional[Dict[str,
             return None
         ev = json.loads(row[0]) if row[0] else {}
         return {
+            "candidate_id": ev.get("candidate_id"),
             "direction": ev.get("direction"),
+            "entry_price": ev.get("entry_price") or (ev.get("entry_condition") or {}).get("price"),
             "invalidation_price": ev.get("invalidation_price"),
-            "targets": ev.get("targets") or ev.get("structure", {}).get("targets"),
+            "targets": ev.get("targets") or (ev.get("structure") or {}).get("targets"),
             "entry_condition": ev.get("entry_condition"),
+            "atr14_4h": ev.get("atr14_4h"),
+            "structural_reference": ev.get("structural_reference"),
+            "metadata": ev.get("metadata") or {},
         }
     except Exception:
         return None
@@ -434,7 +440,7 @@ def _write_decision_file(pos: Dict[str, Any], decision: Dict[str, Any],
     decision_dir = Path(decision_dir)
     decision_dir.mkdir(parents=True, exist_ok=True)
     action_up = str(decision.get("action", "hold")).upper()
-    if action_up not in ("HOLD", "EXIT", "REDUCE", "NEAR_TP"):
+    if action_up not in ("HOLD", "EXIT", "REDUCE", "NEAR_TP", "UPDATE_STOP"):
         action_up = "HOLD"
     fraction = None
     if action_up == "REDUCE":
@@ -453,14 +459,15 @@ def _write_decision_file(pos: Dict[str, Any], decision: Dict[str, Any],
         "position_id": pos.get("position_id") or "",
         "symbol": pos.get("symbol"),
         "action": action_up,
-        "decision_scope": "NEAR_TP" if action_up == "NEAR_TP" else "PM",
+        "decision_scope": "NEAR_TP" if action_up == "NEAR_TP" else ("MECHANICAL" if action_up == "UPDATE_STOP" else "PM"),
         "confidence": decision.get("confidence"),
         "confidence_threshold": float(getattr(config, "PM_ACTION_CONFIDENCE", 0.70)),
         "reduce_fraction": fraction,
         "issued_at": observed_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "valid_until": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "reason": decision.get("reason", ""),
-        "controller": "llm_sidecar",
+        "controller": decision.get("controller") or "llm_sidecar",
+        "stop_loss": decision.get("stop_loss"),
     }
     dest = decision_dir / f"{decision_id}.json"
     try:
@@ -474,6 +481,41 @@ def _write_decision_file(pos: Dict[str, Any], decision: Dict[str, Any],
         except (UnboundLocalError, FileNotFoundError):
             pass
         return False
+
+
+def _mechanical_strategy_decision(pos: Dict[str, Any], intent: Optional[Dict[str, Any]],
+                                  market_conn, cutoff: datetime) -> Optional[Dict[str, Any]]:
+    """Evaluate deterministic strategy management without consulting the LLM."""
+    if pos.get("strategy_id") != getattr(config, "EMA99_RETEST_STRATEGY_ID", ""):
+        return None
+    from strategies.v2.ema99_retest_adx_fundamo_v1 import evaluate_exit, evaluate_stop_revision
+
+    bars = load_bars_for_interval(market_conn, pos["asset"], "5m", cutoff)
+    exit_signal = evaluate_exit(bars, side=pos["side"], cutoff=cutoff)
+    if exit_signal:
+        return {
+            "action": "exit", "confidence": 1.0, "controller": "mechanical_strategy",
+            "reason": exit_signal["rule_name"], "metadata": {"signal": exit_signal},
+        }
+    metadata = intent.get("metadata") if intent else {}
+    trigger = metadata.get("trigger_extreme") or (metadata.get("feature_snapshot") or {}).get("trigger_extreme")
+    if trigger is None:
+        return None
+    revision = evaluate_stop_revision(
+        bars, side=pos["side"], trigger_extreme=float(trigger), cutoff=cutoff,
+    )
+    if not revision:
+        return None
+    current = pos.get("stop_loss")
+    if current is not None:
+        favorable = revision["stop_loss"] > float(current) if pos["side"] == "long" else revision["stop_loss"] < float(current)
+        if not favorable:
+            return None
+    return {
+        "action": "update_stop", "stop_loss": revision["stop_loss"], "confidence": 1.0,
+        "controller": "mechanical_strategy", "reason": revision["rule_name"],
+        "metadata": {"signal": revision},
+    }
 
 
 def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -528,6 +570,13 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
                         written += 1
                 continue
             intent = _get_active_intent(conn, pos["strategy_id"], asset)
+            mechanical = _mechanical_strategy_decision(pos, intent, market_conn, cutoff)
+            if mechanical is not None:
+                if _emit_advice(conn, pos, mechanical, None, None, cutoff, now):
+                    advices += 1
+                    if _write_decision_file(pos, mechanical, cutoff, now):
+                        written += 1
+                continue
             htf_bias, _ = _htf_bias(market_conn, asset, cutoff)
             ta = _ta_5m(market_conn, asset, cutoff)
             swings = _swings(market_conn, asset, cutoff)
