@@ -45,6 +45,33 @@ Derived 15m, 1h, and 4h bars are local resamples of completed 5m observations;
 they are not a CoinAnalyze live-ingestion dependency. The gateway may perform a
 small REST warm backfill at startup, but the live stream is Bybit WS.
 
+### Database maintenance
+
+The gateway and orchestrator run periodic retention through
+`src/research_analyst/db_maintenance.py`. The gateway prunes market-owned rows
+on its single writer connection; the orchestrator prunes analyst-owned rows on
+its own connection. Recomputable snapshots and terminal audit records may be
+removed, while active, pending, running, and retryable work is retained. SQLite
+`VACUUM` is throttled independently so compaction cannot run on every cycle.
+
+`data/binance_oi.db` is a separate DuckDB database owned by the
+`binance-scanner-oi` project. It is intentionally not opened or pruned by these
+services; adding a second writer here would violate the database ownership
+contract.
+
+### Technical-analysis indicators
+
+Production strategies use the repository's tested in-house indicator helpers.
+This preserves the established warmup, seed, null, flat-market, and
+standard-deviation conventions across backtests and live evaluation.
+
+The [Yvictor/polars_ta_extension](https://github.com/Yvictor/polars_ta_extension)
+project was assessed but is not a drop-in production dependency. It wraps
+TA-Lib through a compiled Rust/Polars plugin, targets an older Polars/Rust
+stack, and its available ARM64 wheel failed to import in the current runtime.
+Any future adoption requires an isolated build and numerical parity tests for
+every existing strategy indicator before promotion.
+
 Closed WebSocket bars may use the source-end encoding `14:44:59.999` for the
 `14:45` boundary. The resampler normalizes this representation before exact
 bucket matching; otherwise derived 4h buckets disappear and the hard admission

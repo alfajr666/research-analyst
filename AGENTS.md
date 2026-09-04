@@ -1,6 +1,6 @@
 # Agent Notes
 
-**Last reviewed:** 2026-09-01
+**Last reviewed:** 2026-09-04
 
 ## Runtime Contract
 
@@ -20,6 +20,20 @@
 - Health freshness queries must exclude open/future bars with `source_end <= now`.
 - The scorer ranks candidates that pass all hard gates; it is not another gate.
 - Never point both services at one database or run duplicate database writers.
+- The gateway and orchestrator run periodic retention through
+  `src/research_analyst/db_maintenance.py`. Market cleanup runs on the gateway
+  writer connection; analyst cleanup runs on the orchestrator-owned connection.
+- Retention may remove recomputable snapshots and terminal audit rows, but must
+  retain active, pending, running, and retryable work. SQLite `VACUUM` is
+  throttled separately from row deletion and must never run from a second
+  writer process.
+- `data/binance_oi.db` is a DuckDB file owned by the separate
+  `binance-scanner-oi` project. Do not open, prune, or schedule maintenance for
+  it from this repository; its owner must perform its own retention.
+- Production strategies use the repository's tested in-house EMA, RSI, ATR,
+  ADX, StochRSI, and Bollinger implementations. Do not replace them with a TA
+  library without numerical parity tests and an explicit strategy-version
+  change.
 
 - The shared SQLite bus at `/home/ubuntu/shared/intent-bus/intent_bus.sqlite3`
   is the authoritative executor handoff. Publish only after admission and

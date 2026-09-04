@@ -8,6 +8,7 @@ from uuid import uuid4
 from datetime import datetime, timezone, timedelta
 import config
 from alpha_outbox import OUTBOX_DIR
+from db_maintenance import prune_analyst_db, vacuum_sqlite
 
 def _get_or_create_cutoff_run(cutoff_at: datetime, interval: str = "5m") -> str:
     cutoff_id = f"{interval}:{cutoff_at.isoformat().replace('+00:00', 'Z')}"
@@ -35,6 +36,37 @@ def _get_or_create_cutoff_run(cutoff_at: datetime, interval: str = "5m") -> str:
 STARTUP_TIME = time.time()
 LAST_EVALUATION_OBSERVABILITY = {}
 DAEMON_MODE = False
+_LAST_ANALYST_MAINTENANCE = 0.0
+_LAST_ANALYST_VACUUM = 0.0
+
+
+def _maybe_prune_analyst_db() -> None:
+    """Prune analyst snapshots and aged terminal ledgers periodically."""
+    global _LAST_ANALYST_MAINTENANCE, _LAST_ANALYST_VACUUM
+    if not getattr(config, "DB_MAINTENANCE_ENABLED", True):
+        return
+    current = time.monotonic()
+    interval = max(60, int(getattr(config, "DB_MAINTENANCE_INTERVAL_SECONDS", 3600)))
+    if current - _LAST_ANALYST_MAINTENANCE < interval:
+        return
+    _LAST_ANALYST_MAINTENANCE = current
+    connection = None
+    try:
+        connection = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
+        result = prune_analyst_db(connection)
+        deleted = sum(result.values())
+        vacuum_interval = max(
+            interval, int(getattr(config, "DB_MAINTENANCE_VACUUM_INTERVAL_SECONDS", 86400))
+        )
+        if deleted and current - _LAST_ANALYST_VACUUM >= vacuum_interval:
+            vacuum_sqlite(connection)
+            _LAST_ANALYST_VACUUM = current
+        print(f"Analyst database maintenance: {result}", flush=True)
+    except Exception as exc:
+        print(f"Analyst database maintenance failed: {exc}", file=sys.stderr, flush=True)
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _parse_timestamp(value):
@@ -371,7 +403,8 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
     # The orchestrator only initializes/updates its analyst database.
     config.init_analyst_db()
 
-    print("Market pruning disabled in orchestrator; market DB ownership belongs to ws_gateway.")
+    _maybe_prune_analyst_db()
+    print("Market pruning is owned by ws_gateway; analyst retention ran in this process.")
 
     # Cutoff + plugins (data platform v2 path). Legacy direct evaluators cleaned up post cutover.
     try:

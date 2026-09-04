@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import json
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ import polars as pl
 
 import config
 from strategy_v2_context import load_bars_for_interval, resample_ohlcv
+from db_maintenance import prune_market_db, vacuum_sqlite
 from evaluation_trigger import publish as publish_evaluation_trigger
 
 
@@ -44,6 +46,8 @@ RESAMPLE_LOOKBACK_MIN = int(os.getenv("WS_RESAMPLE_LOOKBACK_MIN", "1440"))  # 24
 # Streamed base timeframes -> exchange-specific tokens.
 STREAMED_TFS = [t.strip() for t in os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").split(",") if t.strip()]
 WS_MESSAGE_TIMEOUT_SECONDS = 90
+_LAST_MARKET_MAINTENANCE = 0.0
+_LAST_MARKET_VACUUM = 0.0
 WS_STALE_SECONDS = int(os.getenv("WS_STALE_SECONDS", "180"))
 _STARTED_MONOTONIC = time.monotonic()
 _HEALTH = {
@@ -588,6 +592,30 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
     return written
 
 
+def _maybe_prune_market(conn, now: datetime) -> None:
+    """Run market retention on the gateway's single writer connection."""
+    global _LAST_MARKET_MAINTENANCE, _LAST_MARKET_VACUUM
+    if not getattr(config, "DB_MAINTENANCE_ENABLED", True):
+        return
+    current = time.monotonic()
+    interval = max(60, int(getattr(config, "DB_MAINTENANCE_INTERVAL_SECONDS", 3600)))
+    if current - _LAST_MARKET_MAINTENANCE < interval:
+        return
+    _LAST_MARKET_MAINTENANCE = current
+    try:
+        result = prune_market_db(conn, now)
+        deleted = sum(result.values())
+        vacuum_interval = max(
+            interval, int(getattr(config, "DB_MAINTENANCE_VACUUM_INTERVAL_SECONDS", 86400))
+        )
+        if deleted and current - _LAST_MARKET_VACUUM >= vacuum_interval:
+            vacuum_sqlite(conn)
+            _LAST_MARKET_VACUUM = current
+        print(f"Market database maintenance: {result}", flush=True)
+    except Exception as exc:
+        print(f"Market database maintenance failed: {exc}", file=sys.stderr, flush=True)
+
+
 async def writer_task(queue: asyncio.Queue, bases: List[str], ws_source: str) -> None:
     conn = config.get_db_connection(db_path=config.MARKET_DB_PATH)
     batch: List[Dict[str, Any]] = []
@@ -609,6 +637,7 @@ async def writer_task(queue: asyncio.Queue, bases: List[str], ws_source: str) ->
                 if time.monotonic() - last_resample >= 60:
                     resample_and_persist(conn, bases, datetime.now(timezone.utc), ws_source)
                     last_resample = time.monotonic()
+                _maybe_prune_market(conn, datetime.now(timezone.utc))
     finally:
         if batch:
             _executemany_rows(conn, batch)
