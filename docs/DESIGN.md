@@ -166,8 +166,8 @@ Mapping (internal α-event → executor intent):
 Geometry is validated before delivery (`validate_geometry`): LONG ⇒
 `stop_loss < entry_price < take_profit`, SHORT ⇒ `take_profit < entry_price <
 stop_loss`; limit intents additionally require minimum `INTENT_MIN_RR` (2.0 by
-default) and SL distance between `INTENT_MIN_STOP_DISTANCE_PCT` (0.1%) and
-`INTENT_MAX_STOP_DISTANCE_PCT` (5%). Invalid events are skipped (the advisory event
+default) and SL distance must meet `INTENT_MIN_STOP_DISTANCE_PCT` (0.1%);
+structural HTF-zone admission must also pass with a 0.5-3.0 ATR buffer. Invalid events are skipped (the advisory event
 still emits). The intent envelope is written atomically to `INTENT_INBOX` by
 `delivery_id`, idempotent on replay.
 

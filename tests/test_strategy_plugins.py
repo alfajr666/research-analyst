@@ -151,6 +151,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         old_registry = strategy_plugins._REGISTRY.copy()
         old_enabled = config.STRATEGY_ENABLED_IDS
         old_active = config.STRATEGY_ACTIVE_IDS
+        old_structural = config.STRUCTURAL_STOP_ADMISSION_ENABLED
         writes = []
         try:
             strategy_plugins._REGISTRY.update({sid: strategy_plugins.StrategyPlugin(
@@ -158,6 +159,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
                     [event(sid, 3 if sid == ids[0] else 1)]) for sid in ids})
             config.STRATEGY_ENABLED_IDS = ids
             config.STRATEGY_ACTIVE_IDS = ids
+            config.STRUCTURAL_STOP_ADMISSION_ENABLED = False
             conn = config.get_db_connection(db_path=self.db)
             conn.execute("""CREATE TABLE source_observations (
                 observation_id VARCHAR, source VARCHAR, venue VARCHAR,
@@ -183,6 +185,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)
             config.STRATEGY_ENABLED_IDS = old_enabled
             config.STRATEGY_ACTIVE_IDS = old_active
+            config.STRUCTURAL_STOP_ADMISSION_ENABLED = old_structural
 
     def test_companion_bars_are_checked_in_market_db(self):
         import strategy_plugins

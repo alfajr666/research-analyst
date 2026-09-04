@@ -28,6 +28,24 @@ def dedupe_key(event: dict) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def _is_complete_candidate(event: dict) -> bool:
+    entry = event.get("entry_price")
+    if entry is None:
+        entry = (event.get("entry_condition") or {}).get("price")
+    stop = event.get("invalidation_price", event.get("stop_loss"))
+    target = (event.get("targets") or [None])[0] if event.get("targets") else event.get("take_profit")
+    if target is None:
+        from trade_admission import derive_2r_target
+        target = derive_2r_target(event.get("direction"), entry, stop)
+    return (
+        entry is not None
+        and stop is not None
+        and target is not None
+        and bool(event.get("valid_until"))
+        and event.get("data_freshness_seconds") is not None
+    )
+
+
 def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]:
     """Atomically append an event, returning whether it was newly written.
 
@@ -69,11 +87,11 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         if target is not None:
             admission_event["take_profit"] = target
             admission_event["targets"] = [target]
-    admission = event.get("_admission_result") or admit(admission_event)
-    complete_candidate = (admission_event.get("entry_price") is not None or
-                          (admission_event.get("entry_condition") or {}).get("price") is not None) and \
-        admission_event.get("invalidation_price", admission_event.get("stop_loss")) is not None and \
-        bool(admission_event.get("targets") or admission_event.get("take_profit")) and bool(event.get("valid_until"))
+    admission = admit(
+        admission_event,
+        structural_context=admission_event.get("structural_context"),
+    )
+    complete_candidate = _is_complete_candidate(event)
     if raw_id and complete_candidate:
         record_status(raw_id, hard_gate_status=admission["hard_gate"],
                       reason="; ".join(admission["hard_gate_reasons"]))
@@ -134,11 +152,14 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         except FileExistsError:
             try:
                 existing = json.loads(destination.read_text(encoding="utf-8"))
-                _maybe_deliver_intent(existing)
+                _maybe_deliver_intent(
+                    existing,
+                    complete_candidate=_is_complete_candidate(existing),
+                )
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 print(f"duplicate alpha outbox event unreadable: {exc}")
             return False, destination
-        _maybe_deliver_intent(payload)
+        _maybe_deliver_intent(payload, admission=admission, complete_candidate=complete_candidate)
         if raw_id:
             record_status(raw_id, executor_intent_status="written")
         return True, destination
@@ -149,7 +170,12 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
             pass
 
 
-def _maybe_deliver_intent(payload: dict) -> None:
+def _maybe_deliver_intent(
+    payload: dict,
+    *,
+    admission: dict | None = None,
+    complete_candidate: bool = True,
+) -> None:
     """Best-effort: emit an executor TradeIntent envelope for a newly written event.
 
     Gated by INTENT_DELIVERY_ENABLED; geometry-invalid events are skipped (the
@@ -157,8 +183,19 @@ def _maybe_deliver_intent(payload: dict) -> None:
     """
     if not getattr(config, "INTENT_DELIVERY_ENABLED", False):
         return
+    if not complete_candidate:
+        return
     try:
         from intent_outbox import build_executor_intent, validate_geometry, write_intent
+        if admission is None:
+            from trade_admission import admit
+            admission = admit(
+                payload,
+                structural_context=payload.get("structural_context"),
+            )
+        if admission.get("hard_gate") != "pass":
+            print(f"intent skipped (admission): {admission.get('hard_gate_reasons')}")
+            return
         intent = build_executor_intent(payload)
         ok, reason = validate_geometry(intent)
         if not ok:

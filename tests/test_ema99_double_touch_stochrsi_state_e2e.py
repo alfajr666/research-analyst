@@ -57,6 +57,17 @@ class Ema99DoubleTouchE2ETests(unittest.TestCase):
         event["atr14_4h"] = 1.0
         event["data_freshness_seconds"] = 1.0
         observed = datetime.fromisoformat(event["observed_at"])
+        boundary = event["entry_price"] - 1.0
+        event["structural_context"] = {
+            "cutoff": observed,
+            "zones": [{
+                "zone_id": "zone-ema99", "type": "order_block", "timeframe": "4h",
+                "direction": "bullish", "low": boundary, "high": boundary,
+                "state": "active", "created_at": observed - timedelta(hours=4),
+                "coverage_status": "covered", "source_evidence_ids": ["bar-1"],
+            }],
+            "atr_by_timeframe": {"4h": 1.0},
+        }
         self.assertEqual(admit(event, now=observed + timedelta(minutes=1))["hard_gate"], "pass")
         intent = build_executor_intent(event)
         self.assertAlmostEqual(intent["take_profit"], event["entry_price"] + 2 * (event["entry_price"] - event["invalidation_price"]))

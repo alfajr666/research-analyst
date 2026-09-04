@@ -58,6 +58,17 @@ class Ema9AdxStochRsiStateE2ETests(unittest.TestCase):
         event["atr14_4h"] = 1.0
         event["data_freshness_seconds"] = 1.0
         observed = datetime.fromisoformat(event["observed_at"])
+        boundary = event["entry_price"] - 1.0
+        event["structural_context"] = {
+            "cutoff": observed,
+            "zones": [{
+                "zone_id": "zone-ema9", "type": "order_block", "timeframe": "4h",
+                "direction": "bullish", "low": boundary, "high": boundary,
+                "state": "active", "created_at": observed - timedelta(hours=4),
+                "coverage_status": "covered", "source_evidence_ids": ["bar-1"],
+            }],
+            "atr_by_timeframe": {"4h": 1.0},
+        }
         result = admit(event, now=observed + timedelta(minutes=1))
         self.assertEqual(result["hard_gate"], "pass")
         self.assertAlmostEqual(event["invalidation_price"], 97.5)

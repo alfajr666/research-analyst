@@ -196,7 +196,20 @@ class IntentDeliveryTests(unittest.TestCase):
 
     def test_write_event_delivers_intent_when_enabled(self):
         outbox = Path(self.dirname.name) / "alpha"
-        created, _ = write_event(_alpha_event(), outbox)
+        created, _ = write_event(_alpha_event(
+            valid_until="2099-01-01T00:05:00+00:00",
+            data_freshness_seconds=1.0,
+            structural_context={
+                "cutoff": "2026-08-28T12:00:00+00:00",
+                "zones": [{
+                    "zone_id": "zone-1", "type": "order_block", "timeframe": "4h",
+                    "direction": "bullish", "low": 97.0, "high": 98.0,
+                    "state": "active", "created_at": "2026-08-28T08:00:00+00:00",
+                    "coverage_status": "covered", "source_evidence_ids": ["bar-1"],
+                }],
+                "atr_by_timeframe": {"4h": 1.0},
+            },
+        ), outbox)
         self.assertTrue(created)
         intents = list(config.INTENT_INBOX.glob("*.json"))
         self.assertEqual(len(intents), 1)
@@ -209,6 +222,12 @@ class IntentDeliveryTests(unittest.TestCase):
         with alpha_file.open() as fh:
             alpha = json.load(fh)
         self.assertEqual(written["delivery_id"], alpha["alpha_id"])
+
+    def test_incomplete_advisory_event_cannot_deliver_intent(self):
+        outbox = Path(self.dirname.name) / "alpha-incomplete"
+        created, _ = write_event(_alpha_event(), outbox)
+        self.assertTrue(created)
+        self.assertEqual(list(config.INTENT_INBOX.glob("*.json")), [])
 
 
 if __name__ == "__main__":

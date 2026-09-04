@@ -33,6 +33,7 @@ completed trigger
        full-universe feature materialization
        strategy plugins
        raw_signals
+       admission-owned HTF zone context and per-symbol ATR
        hard admission
        deterministic clash resolution
        alpha ledger + publisher
@@ -185,12 +186,29 @@ that later fail. Hard admission checks:
 - ATR-bounded stop distance;
 - required strategy-local data;
 - symbol-account policy;
-- structural-stop rules when enabled.
+- admission-owned HTF structure and per-symbol ATR proximity.
+
+Structural admission reads completed direct regime-owned `1h`/`4h` bars only for
+assets that emitted candidates. It calculates one reusable Wilder ATR14 context
+per asset, cutoff, and timeframe, selects the newest eligible `4h` zone before
+falling back to `1h`, and evaluates both sides of the trade against that zone:
+
+- Long entry: `0.5-3.0 ATR` above the zone high; SL: `0.5-3.0 ATR` below the zone low.
+- Short entry: `0.5-3.0 ATR` below the zone low; SL: `0.5-3.0 ATR` above the zone high.
+
+Missing, stale, invalid, opposing, cross-asset, incomplete, or out-of-band
+structure fails closed before scoring. The strategy's proposed stop remains
+authoritative and is never changed. Admission records the selected zone,
+entry/SL buffers, ATR provenance, exact cutoff, and source bar IDs. The old
+global `INTENT_MAX_STOP_DISTANCE_PCT` cap is removed; the structural `3.0 ATR`
+maximum is the relevant proximity maximum.
 
 Soft context scores rank candidates but cannot rescue a failed hard gate.
 Opposing candidates are resolved deterministically; an unresolved clash emits
 no intent. Missing or stale data is rejected by admission, not disguised as a
 score.
+
+See `specs/structural-sl-admission-v2.md` for the normative contract.
 
 ## Intent Delivery
 

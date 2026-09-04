@@ -644,17 +644,14 @@ INTENT_VALIDITY_MINUTES = int(os.getenv("INTENT_VALIDITY_MINUTES", "5"))
 INTENT_MIN_RR = float(os.getenv("INTENT_MIN_RR", "2.0"))
 INTENT_MIN_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MIN_STOP_DISTANCE_PCT", "0.001"))
 INTENT_MIN_STOP_ATR_MULTIPLIER = float(os.getenv("INTENT_MIN_STOP_ATR_MULTIPLIER", "0.25"))
-INTENT_MAX_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MAX_STOP_DISTANCE_PCT", "0.05"))
 DATA_FRESHNESS_MAX_SECONDS = float(os.getenv("DATA_FRESHNESS_MAX_SECONDS", "600"))
 CLASH_MIN_SCORE_MARGIN = float(os.getenv("CLASH_MIN_SCORE_MARGIN", "2.0"))
 STRATEGY_PRIORITY = {}
-INTENT_MAX_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MAX_STOP_DISTANCE_PCT", "0.05"))
-STRUCTURAL_STOP_ADMISSION_ENABLED = os.getenv("STRUCTURAL_STOP_ADMISSION_ENABLED", "false").lower() in ("1", "true", "yes", "on")
-STRUCTURAL_STOP_REQUIRED_STRATEGIES = frozenset(
-    value.strip() for value in os.getenv("STRUCTURAL_STOP_REQUIRED_STRATEGIES", "").split(",") if value.strip()
-)
-_STRUCTURAL_STOP_GAP_RAW = os.getenv("STRUCTURAL_STOP_MAX_REFERENCE_GAP_PCT", "").strip()
-STRUCTURAL_STOP_MAX_REFERENCE_GAP_PCT = float(_STRUCTURAL_STOP_GAP_RAW) if _STRUCTURAL_STOP_GAP_RAW else None
+STRUCTURAL_STOP_ADMISSION_ENABLED = os.getenv("STRUCTURAL_STOP_ADMISSION_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+STRUCTURAL_STOP_MIN_ATR_MULTIPLE = float(os.getenv("STRUCTURAL_STOP_MIN_ATR_MULTIPLE", "0.5"))
+STRUCTURAL_STOP_MAX_ATR_MULTIPLE = float(os.getenv("STRUCTURAL_STOP_MAX_ATR_MULTIPLE", "3.0"))
+if STRUCTURAL_STOP_MIN_ATR_MULTIPLE < 0 or STRUCTURAL_STOP_MAX_ATR_MULTIPLE < STRUCTURAL_STOP_MIN_ATR_MULTIPLE:
+    raise ValueError("STRUCTURAL_STOP ATR multiples must be non-negative and ordered")
 # Per-strategy routing to executor profiles (exchange/account). JSON map keyed by
 # strategy_id; each value may override any of: exchange_id, account_id, source,
 # take_profit_mode, validity_minutes. Strategies not listed fall back to

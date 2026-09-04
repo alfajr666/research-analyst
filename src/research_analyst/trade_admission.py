@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timezone
 
 import config
-from structural_stop import validate_structural_stop
+from structural_stop import admit_selected_structural_stop
 from entry_policy import evaluate_entry_policy
 
 
@@ -100,18 +100,25 @@ def _time(value):
     return (result if result.tzinfo else result.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
-def admit_structural_stop(candidate: dict, now: datetime | None = None) -> dict:
-    """Validate the producer stop against its declared structural reference."""
-    return validate_structural_stop(
+def admit_structural_stop(
+    candidate: dict,
+    now: datetime | None = None,
+    structural_context: dict | None = None,
+) -> dict:
+    """Select and validate HTF structure for a candidate-owned stop."""
+    return admit_selected_structural_stop(
         candidate,
-        now=now,
-        max_reference_gap_pct=getattr(config, "STRUCTURAL_STOP_MAX_REFERENCE_GAP_PCT", None),
-        required=True,
+        structural_context,
+        cutoff=(structural_context or {}).get("cutoff") if structural_context else None,
     )
 
 
-def admit(candidate: dict, now: datetime | None = None) -> dict:
-    """Return an auditable hard-gate result; context is intentionally ignored."""
+def admit(
+    candidate: dict,
+    now: datetime | None = None,
+    structural_context: dict | None = None,
+) -> dict:
+    """Return an auditable hard-gate result, including structural admission."""
     symbol_policy = admit_symbol_account(candidate)
     reasons = []
     if symbol_policy["symbol_account_gate"] != "pass":
@@ -139,7 +146,8 @@ def admit(candidate: dict, now: datetime | None = None) -> dict:
         distance = risk / entry
         if rr < float(getattr(config, "INTENT_MIN_RR", 2.0)):
             reasons.append("reward/risk below minimum")
-        atr14_4h = candidate.get("atr14_4h")
+        context_atr = ((structural_context or candidate.get("structural_context") or {}).get("atr_by_timeframe") or {}).get("4h")
+        atr14_4h = context_atr if _number(context_atr) else candidate.get("atr14_4h")
         multiplier = float(getattr(config, "INTENT_MIN_STOP_ATR_MULTIPLIER", 0.25))
         absolute_floor = float(getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", .001))
         if not _number(atr14_4h) or atr14_4h <= 0:
@@ -149,8 +157,6 @@ def admit(candidate: dict, now: datetime | None = None) -> dict:
             atr_floor = float(atr14_4h) / entry * multiplier
         if distance < max(absolute_floor, atr_floor):
             reasons.append("stop distance below ATR-based minimum")
-        if distance > float(getattr(config, "INTENT_MAX_STOP_DISTANCE_PCT", .05)):
-            reasons.append("stop distance above maximum")
     else:
         rr = None
         distance = None
@@ -173,14 +179,13 @@ def admit(candidate: dict, now: datetime | None = None) -> dict:
     structural = {
         "structural_stop_gate": "unavailable",
         "structural_stop_reasons": ["structural stop admission disabled"],
-        "reference_id": None,
-        "reference_kind": None,
-        "reference_boundary": None,
-        "stop_buffer": None,
     }
-    required_strategies = getattr(config, "STRUCTURAL_STOP_REQUIRED_STRATEGIES", frozenset())
-    if getattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", False) and candidate.get("strategy_id") in required_strategies:
-        structural = admit_structural_stop(candidate, now=now)
+    if getattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", True):
+        structural = admit_structural_stop(
+            candidate,
+            now=now,
+            structural_context=structural_context or candidate.get("structural_context"),
+        )
         if structural["structural_stop_gate"] != "pass":
             reasons.extend(f"structural stop: {reason}" for reason in structural["structural_stop_reasons"])
     atr_pct = float(atr14_4h) / entry if _number(atr14_4h) and _number(entry) and entry > 0 else None
@@ -206,7 +211,12 @@ def score(candidate: dict) -> dict:
     return {"score": total, "components": components, "score_policy_version": "trade-admission-v1"}
 
 
-def resolve(candidates: list[dict]) -> dict:
+def resolve(
+    candidates: list[dict],
+    *,
+    structural_contexts: dict[str, dict] | None = None,
+    now: datetime | None = None,
+) -> dict:
     eligible = []
     results = []
     for candidate in candidates:
@@ -236,7 +246,9 @@ def resolve(candidates: list[dict]) -> dict:
                 "score_status": "not_evaluated",
             })
             continue
-        admission = admit(candidate)
+        asset = canonical_asset(candidate.get("asset"))
+        structural_context = (structural_contexts or {}).get(asset)
+        admission = admit(candidate, now=now, structural_context=structural_context)
         scored = score(candidate) if admission["hard_gate"] == "pass" else {"score_status": "not_evaluated"}
         result = {
             "candidate_id": candidate.get("candidate_id"),

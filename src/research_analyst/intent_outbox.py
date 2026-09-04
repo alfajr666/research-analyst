@@ -177,11 +177,8 @@ def validate_geometry(intent: dict) -> tuple[bool, str]:
         return False, f"reward/risk {rr:.2f} below minimum {min_rr:.2f}"
     stop_pct = risk / ep
     min_stop = float(getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", 0.001))
-    max_stop = float(getattr(config, "INTENT_MAX_STOP_DISTANCE_PCT", 0.05))
     if stop_pct < min_stop:
         return False, f"stop distance {stop_pct:.4%} below minimum {min_stop:.4%}"
-    if stop_pct > max_stop:
-        return False, f"stop distance {stop_pct:.4%} above maximum {max_stop:.4%}"
     return True, ""
 
 

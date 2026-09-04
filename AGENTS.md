@@ -31,6 +31,7 @@ completed evaluation trigger
        full-universe feature materialization
        strategy plugins
        raw candidate ledger
+       admission-owned HTF zone context and per-symbol ATR
        deterministic admission and clash resolution
        alpha ledger and publisher
        -> shared SQLite intent bus, when enabled
@@ -148,9 +149,24 @@ without numerical parity tests and an explicit strategy-version change.
 Every plugin candidate is first captured in `raw_signals`. Deterministic hard
 admission then checks finite prices, freshness, expiry, trade geometry, reward
 to risk, ATR-bounded stop distance, required data, symbol-account policy, and
-structural-stop rules when enabled. Soft context scores rank candidates but
-cannot rescue a failed hard gate. Clash resolution is deterministic and
+structural-stop rules. Before scoring, admission reads completed direct 1h/4h
+bars from regime-owned history only for assets that emitted candidates, builds
+one reusable context per asset/cutoff/timeframe, and selects the newest eligible
+4h zone before falling back to 1h. The selected zone's timeframe ATR14 is used
+for both proximity hard gates: long entry must be 0.5-3.0 ATR above zone high
+and its SL must be 0.5-3.0 ATR below zone low; shorts mirror those distances.
+Missing, stale, invalid, opposing, cross-asset, incomplete, or out-of-band
+structure fails closed. Structural failure occurs before scoring and cannot be
+rescued by a soft context score. Clash resolution is deterministic and
 unresolved opposing signals produce no intent.
+
+The proposed strategy stop remains authoritative and is never mutated. The
+admission result records the selected zone, entry/SL buffers, ATR method and
+period, exact cutoff, and source bar IDs for auditability. The global
+`INTENT_MAX_STOP_DISTANCE_PCT` cap is removed; the structural 3.0 ATR maximum
+is the maximum zone-to-entry and zone-to-SL distance policy.
+
+The normative contract is `specs/structural-sl-admission-v2.md`.
 
 The analyst publishes only after admission and routing. The shared SQLite bus
 requires an explicit absolute `INTENT_BUS_DB` and target switches:

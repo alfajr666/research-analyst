@@ -17,7 +17,8 @@ from alpha_outbox import write_event, dedupe_key
 from raw_signal_batch import capture, record_status
 from entry_policy import annotate_candidate
 from trade_admission import canonical_asset, resolve
-from strategy_v2_context import atr_last, completed_cycle_for, load_bars_for_interval
+from structural_stop import build_structural_contexts
+from strategy_v2_context import completed_cycle_for, load_bars_for_interval
 from symbol_rotation import subscription_assets
 
 # Per spec: re-export from config for modules that imported here before
@@ -406,14 +407,6 @@ def _data_freshness_seconds(market_db_path: str | Path, interval: str, cutoff: d
         conn.close()
 
 
-def _atr14_4h(market_db_path: str | Path, asset: str, cutoff: datetime) -> float | None:
-    conn = config.get_db_connection(read_only=True, db_path=market_db_path)
-    try:
-        return atr_last(load_bars_for_interval(conn, asset, "4h", cutoff), 14)
-    finally:
-        conn.close()
-
-
 def _cutoff_from_id(cutoff_id: str, fallback: datetime | None) -> datetime:
     text = cutoff_id.split(":", 1)[1] if ":" in cutoff_id else cutoff_id[cutoff_id.find("20"):]
     try:
@@ -530,7 +523,6 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         config.expand_perp_symbols(attempted_symbols, "bybit"), attempted_symbols
     ))
     results["_attempted_symbols"] = len(attempted_symbols)
-    atr_cache = {}
     freshness_cache: dict[str, float | None] = {}
 
     for p in plugins:
@@ -604,16 +596,18 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                         snapshot["market_db_path"], eval_interval, cutoff, asset=canonical_asset(asset),
                     )
                 ev["data_freshness_seconds"] = freshness_cache[asset]
-                if asset not in atr_cache:
-                    atr_cache[asset] = _atr14_4h(snapshot["market_db_path"], asset, cutoff)
-                ev["atr14_4h"] = ev.get("atr14_4h") or atr_cache[asset]
             results[p.id] = {"emitted": len(events), "events": events}
         except Exception as exc:
             results[p.id] = {"failed": str(exc)[:200]}
     candidates = [ev for sid, result in results.items() if sid in ADMISSION_STRATEGY_IDS
                   and isinstance(result, dict) for ev in result.get("events", [])]
     raw_ids = {ev.get("candidate_id"): capture(ev) for ev in candidates}
-    decision = resolve(candidates)
+    structural_contexts = build_structural_contexts(
+        candidates,
+        cutoff,
+        regime_db_path=config.REGIME_DB_PATH,
+    ) if getattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", True) else {}
+    decision = resolve(candidates, structural_contexts=structural_contexts, now=now)
     selected = set(decision["selected_candidate_ids"])
     by_id = {ev["candidate_id"]: ev for ev in candidates}
     for result in decision["results"]:
@@ -630,7 +624,17 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
             )
     for cid in selected:
         event = by_id[cid]
-        event["_admission_result"] = next(r for r in decision["results"] if r["candidate_id"] == cid)
+        admission_result = next(r for r in decision["results"] if r["candidate_id"] == cid)
+        event["_admission_result"] = admission_result
+        event["structural_context"] = structural_contexts.get(canonical_asset(event.get("asset")))
+        context = event["structural_context"] or {}
+        selected_zone = next(
+            (zone for zone in context.get("zones", [])
+             if zone.get("zone_id") == admission_result.get("selected_zone_id")),
+            None,
+        )
+        if selected_zone is not None:
+            event["structural_reference"] = dict(selected_zone)
         write_event(event)
     return results
 
