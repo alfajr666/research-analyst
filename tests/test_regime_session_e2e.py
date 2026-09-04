@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import config
-from regime_session import load_gate_scope, publish_regime_batch
+from regime_session import format_regime_batch_log, load_gate_scope, publish_regime_batch
 
 
 def test_batch_wires_direct_history_into_score_provenance(monkeypatch, tmp_path):
@@ -39,6 +39,15 @@ def test_batch_wires_direct_history_into_score_provenance(monkeypatch, tmp_path)
             int(start.timestamp() * 1000), str(close - 1), str(close + 1),
             str(close - 2), str(close), "1", "0",
         ])
+    one_hour_through = cutoff.replace(minute=0, second=0, microsecond=0)
+    direct_1h_rows = []
+    for index in range(96):
+        start = one_hour_through - timedelta(hours=96 - index)
+        close = 200.0 + index
+        direct_1h_rows.append([
+            int(start.timestamp() * 1000), str(close - 1), str(close + 1),
+            str(close - 2), str(close), "1", "0",
+        ])
     summary = publish_regime_batch(
         cutoff,
         assets=["SOL"],
@@ -46,6 +55,7 @@ def test_batch_wires_direct_history_into_score_provenance(monkeypatch, tmp_path)
         market_db_path=market_db,
         regime_db_path=regime_db,
         history_fetcher=lambda _asset, _start, _end: direct_rows,
+        history_1h_fetcher=lambda _asset, _start, _end: direct_1h_rows,
     )
 
     assert summary["allowed"] == ["SOL"]
@@ -58,8 +68,16 @@ def test_batch_wires_direct_history_into_score_provenance(monkeypatch, tmp_path)
     ).fetchone()[0]
     conn.close()
     assert row[0] == "ready"
-    assert len(json.loads(row[1])["regime_4h_bar_ids"]) == 84
+    references = json.loads(row[1])
+    assert len(references["regime_1h_bar_ids"]) == 72
+    assert len(references["regime_4h_bar_ids"]) == 84
     assert cache_count == 84
+    assert summary["asset_observations"]["SOL"]["history_1h"]["status"] == "ready"
+    log = json.loads(format_regime_batch_log(summary))
+    assert log["history_1h_ready"] == 1
+    assert log["history_4h_ready"] == 1
+    assert log["score_ready"] == 1
+    assert log["gate_allow"] == 1
 
 
 def test_enforced_regime_scope_filters_each_plugin_by_asset_family(monkeypatch, tmp_path):

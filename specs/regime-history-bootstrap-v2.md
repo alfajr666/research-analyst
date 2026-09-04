@@ -1,4 +1,4 @@
-# Regime History Bootstrap v1
+# Regime History Bootstrap v2
 
 ## Status
 
@@ -7,20 +7,20 @@ Locked design specification, agreed during the operator discussion on
 
 This specification defines the historical data contract for the regime-session
 module. It is deliberately separate from the live strategy market-data path.
-No implementation, production setting, or database has been changed by this
-specification.
+The regime worker owns direct 1h and 4h history; live strategy data is
+unchanged.
 
 ## 1. Decision
 
-The regime-session module uses a persistent, direct Bybit REST `4h` history
-cache for regime scoring. It does not wait for live 5m bars to accumulate the
-4h warmup requirement.
+The regime-session module uses persistent, direct Bybit REST `1h` and `4h`
+history caches for regime scoring. It does not wait for live 5m bars to
+accumulate higher-timeframe regime warmup requirements.
 
 ```text
 rotation feed
     |
-    +--> regime worker -> Bybit public REST 4h history
-    |                       -> regime.sqlite3 regime_4h_bars
+    +--> regime worker -> Bybit public REST 1h + 4h history
+    |                       -> regime.sqlite3 regime_1h_bars + regime_4h_bars
     |                       -> regime score and gate
     |
     +--> ws_gateway -> 1m/5m REST bootstrap
@@ -34,7 +34,8 @@ completed 5m observations and local 15m/1h/4h resampling.
 
 ## 2. Objectives
 
-- Make a newly rotated asset regime-ready without waiting 9.5 live days.
+- Make a newly rotated asset regime-ready without waiting for live
+  higher-timeframe bars to accumulate.
 - Keep live WebSocket subscriptions limited to the active rotation feed.
 - Avoid a second writer for `data/market.sqlite3`.
 - Keep the regime input small, durable, point-in-time, and auditable.
@@ -70,18 +71,37 @@ readiness requirement, providing a margin above that mathematical minimum. The
 implementation must enforce 57 at the regime boundary; the raw 43-bar formula
 must not be used to make rotation appear ready.
 
-### 3.2 Other regime inputs
+### 3.2 Direct 1h history
 
-Direct 4h history does not replace every regime input. The worker still uses:
+The regime worker fetches at least 4 calendar days of completed Bybit linear
+perpetual `1h` candles for every asset that enters the active feed and does not
+already have sufficient cache coverage. The logical retention target is at
+least 3 complete days, or 72 complete bars. The extra fetch day provides margin
+for UTC bucket boundaries, request timing, and incomplete candles.
 
-- completed 1h bars derived from the canonical 5m market observations;
+The cache must contain at least:
+
+```text
+57 complete 1h bars
+```
+
+This is the production readiness threshold for the in-house ADX14
+implementation. The direct 1h cache supplies `adx_1h`, previous 1h ADX
+readings, and all completed-1h RSI/divergence and reversal-gate inputs.
+
+### 3.3 Remaining regime inputs
+
+Direct higher-timeframe history does not replace every regime input. The worker
+still uses:
+
+- completed direct 1h bars from the regime cache;
 - completed 5m bars for recent and prior realized-volatility windows.
 
-The live evaluation bootstrap therefore remains responsible for enough 1m and
-5m history for active strategy paths. The current 96-hour bootstrap is enough
-for the 1h and volatility inputs, subject to completeness and freshness checks.
+The live evaluation bootstrap remains responsible for enough 1m and 5m history
+for active strategy paths. Direct 1h regime history does not replace or alter
+the strategy-facing 1h/4h views derived from the gateway's 5m data.
 
-### 3.3 Completed-bar rule
+### 3.4 Completed-bar rule
 
 The worker must discard the currently open 4h candle and any candle whose end
 timestamp is after the requested completed cutoff. A bar is eligible only when:
@@ -89,7 +109,7 @@ timestamp is after the requested completed cutoff. A bar is eligible only when:
 - its end timestamp is normalized to the canonical UTC boundary;
 - its OHLC values are finite and positive where applicable;
 - its end timestamp is at or before the score cutoff;
-- its interval is exactly 4h;
+- its interval is exactly the cache interval (`1h` or `4h`);
 - it is not duplicated for the same asset and end timestamp.
 
 Missing or gapped bars fail readiness for the affected asset. The worker must
@@ -100,20 +120,22 @@ not interpolate, fabricate, or silently compress a gap.
 `data/regime.sqlite3` remains owned and written by the managed
 `research-analyst-regime-session` worker.
 
-The worker may write the direct 4h cache and derived regime observations in
+The worker may write the direct 1h/4h caches and derived regime observations in
 that database. It must not write `data/market.sqlite3`. The orchestrator reads
 the regime database read-only. The gateway remains the sole writer of
 `data/market.sqlite3`.
 
-The regime worker uses only Bybit's public REST API for historical 4h bootstrap.
-This is not a second live market provider and is not a competing source for
-5m, 1m, or strategy evaluation bars.
+The regime worker uses only Bybit's public REST API for historical 1h and 4h
+bootstrap. This is not a second live market provider and is not a competing
+source for 5m, 1m, or strategy evaluation bars.
 
 ## 5. Storage Contract
 
-### 5.1 `regime_4h_bars`
+### 5.1 Direct-history bar tables
 
-One immutable raw direct-history row per asset, bar end, and source version.
+`regime_1h_bars` and `regime_4h_bars` each contain one immutable raw
+direct-history row per asset, bar end, and source version. Their schemas are
+identical except for the interval-specific table and bar version.
 
 ```text
 bar_id             TEXT PRIMARY KEY
@@ -137,9 +159,10 @@ UNIQUE(asset, bar_end, source, bar_version)
 The cache stores source provenance, not strategy candidates. It must be
 queryable by asset and completed cutoff without scanning unrelated assets.
 
-### 5.2 `regime_4h_backfill_jobs`
+### 5.2 Direct-history backfill jobs
 
-Backfill state is durable and per asset.
+`regime_1h_backfill_jobs` and `regime_4h_backfill_jobs` each track durable
+backfill state per asset.
 
 ```text
 asset              TEXT PRIMARY KEY
@@ -160,29 +183,34 @@ HTTP response without sufficient complete bars is not success.
 
 ### 5.3 Regime score provenance
 
-Each `regime_scores` row must identify the direct 4h bar IDs used for ADX and
-the canonical 5m-derived 1h/volatility source IDs. This makes mixed-input
-provenance explicit rather than implying that every input came from one table.
+Each `regime_scores` row must identify the direct 1h and 4h bar IDs used for
+ADX and reversal evidence, plus the canonical 5m source IDs used for
+realized-volatility inputs. This makes mixed-input provenance explicit rather
+than implying that every input came from one table.
 
 ## 6. Backfill Lifecycle
 
 ### 6.1 First entry or re-entry
 
 1. The rotation feed identifies the active asset and feed version.
-2. The regime worker creates or resumes its 4h backfill job.
-3. The worker requests 15 days of public Bybit 4h history.
-4. The worker normalizes, validates, and transactionally upserts the bars.
-5. The worker verifies at least 57 complete bars and no gaps in the required range.
-6. The worker marks the job `ready` and scores the next eligible cutoff.
+2. The regime worker creates or resumes its 1h and 4h backfill jobs.
+3. The worker requests 4 days of public Bybit 1h history and 15 days of public
+   Bybit 4h history.
+4. The worker normalizes, validates, and transactionally upserts both intervals.
+5. The worker verifies at least 57 complete bars and no gaps in each required
+   range.
+6. The worker marks each interval job `ready` independently and scores the next
+   eligible cutoff only when all required direct history and volatility inputs
+   are ready.
 
 If the job is not ready by the cutoff grace deadline, that asset receives a
 data-blocked regime decision. Other assets continue independently.
 
 ### 6.2 Refresh
 
-For an already-ready asset, normal 4h updates can be obtained from the same
-public REST path on the completed 4h cadence. A live 4h WebSocket topic is not
-required for correctness and is not part of this design.
+For an already-ready asset, normal 1h and 4h updates can be obtained from the
+same public REST path on their completed cadences. Live 1h and 4h WebSocket
+topics are not required for correctness and are not part of this design.
 
 The implementation may optimize refresh requests, but it must preserve the
 same completed-bar and source-version rules as the initial bootstrap.
@@ -197,7 +225,9 @@ The 5m bootstrap must remain sufficient for the enabled strategy cadences,
 The regime and gateway readiness states are separate:
 
 ```text
-regime_4h_ready       -> direct regime history is usable
+regime_1h_ready       -> direct 1h regime history is usable
+regime_4h_ready       -> direct 4h regime history is usable
+regime_history_ready  -> both direct regime histories are usable
 market_1m5m_ready     -> live evaluation history is usable
 websocket_live        -> latest observations are flowing
 ```
@@ -209,7 +239,7 @@ remain observable without suppressing evaluation.
 ## 7. Rotation Atomicity
 
 A feed change must not create a hidden race where the regime worker evaluates a
-new asset before its direct 4h cache exists.
+new asset before its direct 1h and 4h caches exist.
 
 The implementation must expose per-asset bootstrap status and use one of these
 equivalent coordination mechanisms:
@@ -225,9 +255,10 @@ readiness, not as an executor rejection.
 
 ## 8. Retention and Maintenance
 
-The regime worker owns pruning of `regime_4h_bars` and backfill job history on
-its writer connection.
+The regime worker owns pruning of `regime_1h_bars`, `regime_4h_bars`, and both
+backfill job tables on its writer connection.
 
+- Retain at least 3 complete days of 1h bars per asset.
 - Retain at least 14 complete days of 4h bars per asset.
 - Retain score and gate observations according to the separate regime audit
   retention setting.
@@ -235,20 +266,22 @@ its writer connection.
 - Delete old rows before any throttled compaction.
 - `VACUUM` must run only on the regime worker's writer connection.
 
-At 84 bars per asset for 14 days, a 92-asset cache is approximately 7,700 raw
-bars. Storage is intentionally negligible compared with the existing market
-database.
+At 72 1h bars and 84 4h bars per asset for 92 assets, the direct cache is
+approximately 14,400 raw bars. Storage is intentionally negligible compared
+with the existing market database.
 
 ## 9. Failure Semantics
 
-- HTTP failure: retry the asset job with bounded backoff.
+- HTTP failure: retry the affected interval job with bounded backoff.
 - Rate limit: honor the provider's retry signal and preserve the lease.
 - Malformed response: mark the attempt retryable and record a sanitized error.
-- Insufficient complete bars: `status=insufficient_data` for that asset.
+- Insufficient complete bars: keep the affected interval job `retryable` and
+  record coverage counts; the asset's regime score is `insufficient_data`.
 - Gap or duplicate: fail readiness; do not repair by interpolation.
 - Missing exact cutoff result: block that asset in `enforce` mode.
-- No fallback from direct 4h history to a second live provider.
-- No fallback from regime 4h history to a partial 5m-derived 4h score.
+- No fallback from direct 1h/4h history to a second live provider.
+- No fallback from regime 1h/4h history to partial 5m-derived higher-timeframe
+  scores.
 
 ## 10. Resource Budget
 
@@ -256,26 +289,29 @@ For 34 active assets and 92 approved assets:
 
 ```text
 Live WebSocket topics:          34 x (1m + 5m) = 68
-Regime 4h WebSocket topics:     0
+Regime 1h/4h WebSocket topics:  0
+Initial direct 1h rows:         92 x 72 ~= 6,600
 Initial direct 4h rows:         92 x 84 ~= 7,700
-Initial direct 4h requests:     approximately one per asset
+Initial direct history requests: approximately two per asset
 Regime DB writers:               1
 Market DB writers:               1
 ```
 
-The direct 4h cache avoids fetching thousands of 5m bars solely to manufacture
-the regime's higher-timeframe warmup. The live 1m/5m bootstrap remains bounded
-to active evaluation needs.
+The direct 1h/4h caches avoid fetching thousands of 5m bars solely to
+manufacture the regime's higher-timeframe warmup. The live 1m/5m bootstrap
+remains bounded to active evaluation needs.
 
 ## 11. Validation Requirements
 
 Before enabling enforcement with this cache:
 
-- verify 15-day requests exclude the open 4h candle;
+- verify 4-day 1h and 15-day 4h requests exclude open candles;
+- verify at least 57 complete 1h bars are available at every ready cutoff;
 - verify at least 57 complete 4h bars are available at every ready cutoff;
+- verify an interval-specific gap blocks only that asset and interval;
 - verify a 4h gap blocks only that asset;
-- verify repeated fetches are idempotent;
-- verify direct 4h values against 5m-resampled values over an overlap window;
+- verify repeated 1h and 4h fetches are idempotent;
+- verify direct 1h and 4h values against 5m-resampled values over overlap windows;
 - measure Bybit request latency and rate-limit behavior at 34-asset rotation;
 - verify a new rotation cannot race the readiness decision;
 - verify 1h and volatility inputs remain point-in-time and complete;
@@ -288,10 +324,10 @@ must be documented in the score version.
 
 ## 12. Explicit Non-Goals
 
-- No direct 4h WebSocket subscription.
-- No continuous 4h stream for the full approved universe.
-- No direct 4h history written by the gateway.
-- No direct 4h history used to silently replace strategy 4h context.
+- No direct 1h/4h WebSocket subscription.
+- No continuous 1h/4h stream for the full approved universe.
+- No direct 1h/4h history written by the gateway.
+- No direct 1h/4h history used to silently replace strategy 1h/4h context.
 - No reduction of the 57-bar ADX readiness requirement.
 - No global pause because one rotated asset is warming up.
 - No code or production configuration change implied by this document alone.

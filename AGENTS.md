@@ -21,7 +21,7 @@ Bybit public tickers
 
 data/market.sqlite3 + completed 5m cutoff
   -> regime-session worker
-       direct Bybit REST 4h regime history in regime.sqlite3
+       direct Bybit REST 1h + 4h regime history in regime.sqlite3
        per-asset regime score and session decision
        -> data/regime.sqlite3
 
@@ -66,24 +66,26 @@ not run from a second writer.
 ## Regime Session
 
 The regime worker runs once per completed 5m cutoff for the current subscription
-feed. It loads each asset's completed 5m observations for 1h and
-realized-volatility inputs, reads regime-exclusive direct 4h history from
-`regime.sqlite3`, computes ADX and regime inputs, and persists an immutable score
-and gate decision. Strategy-facing 4h bars remain the gateway's 5m-derived
+feed. It loads each asset's completed 5m observations for realized-volatility
+inputs, reads regime-exclusive direct 1h and 4h history from `regime.sqlite3`,
+computes ADX and regime inputs, and persists an immutable score and gate
+decision. Strategy-facing 1h/4h bars remain the gateway's 5m-derived
 market-data view.
 
 The score is a research ranking input. Data readiness is a hard admission
-condition. The in-house ADX implementation requires 57 complete 4h bars with
-the default length and smoothing of 14. During warmup, `status=insufficient_data`
-and `regime_score_insufficient_data` are expected and must fail closed. Do not
-lower the requirement or fabricate higher-timeframe data.
+condition. The in-house ADX implementation requires 57 complete 1h and 4h bars
+with the default length and smoothing of 14. During warmup,
+`status=insufficient_data` and `regime_score_insufficient_data` are expected and
+must fail closed. Do not lower the requirement or fabricate higher-timeframe
+data.
 
-The regime worker fetches 15 calendar days of completed Bybit linear-perpetual
-4h candles for a new or re-entering asset, retains at least 14 complete days,
-and stores them in `regime_4h_bars` in `regime.sqlite3`. It owns the durable
-`regime_4h_backfill_jobs` state, validates duplicates and gaps, and retries
-failed assets independently. Direct 4h history is regime-exclusive; strategy
-plugins continue to use the gateway's 5m-derived 4h view.
+The regime worker fetches 4 calendar days of completed Bybit linear-perpetual 1h
+candles and 15 calendar days of completed 4h candles for a new or re-entering
+asset, retaining at least 3 complete 1h days and 14 complete 4h days. It stores
+them in `regime_1h_bars` and `regime_4h_bars` in `regime.sqlite3`. It owns the
+durable interval-specific backfill job state, validates duplicates and gaps,
+and retries failed assets independently. Direct 1h/4h history is regime-
+exclusive; strategy plugins continue to use the gateway's 5m-derived views.
 
 `REGIME_SESSION_MODE` has three meanings:
 
@@ -106,7 +108,7 @@ the other families. The gate only controls family scope; it does not produce a
 trade, override admission, or affect executor protections.
 
 The direct-history and reversal contracts are specified in
-`specs/regime-history-bootstrap-v1.md` and
+`specs/regime-history-bootstrap-v2.md` and
 `specs/reversal-regime-gate-v1.md`. Score and gate persistence versions change
 when their provenance or routing semantics change. `REGIME_SESSION_MODE=shadow`
 is the default rollout mode; enforcement requires replay, lookahead, and

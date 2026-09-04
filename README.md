@@ -23,7 +23,7 @@ Bybit public tickers
 
 data/market.sqlite3 + completed 5m cutoff
   -> regime-session worker
-       direct Bybit REST 4h regime cache
+       direct Bybit REST 1h + 4h regime cache
        per-asset score + session decision
        -> data/regime.sqlite3
 
@@ -103,19 +103,20 @@ names are never truncated.
 
 The regime worker runs once per completed `5m` cutoff for the current
 subscription feed. For each asset it loads completed `5m` observations for
-`1h` and realized-volatility inputs, reads regime-exclusive direct `4h` history
+realized-volatility inputs, reads regime-exclusive direct `1h` and `4h` history
 from `data/regime.sqlite3`, computes in-house ADX and regime inputs, then
-persists an immutable score and gate decision. Strategy-facing `4h` bars remain
-the gateway's `5m`-derived market-data view.
+persists an immutable score and gate decision. Strategy-facing `1h`/`4h` bars
+remain the gateway's `5m`-derived market-data views.
 
 The default ADX length and smoothing are both 14. This implementation requires
-57 complete `4h` bars before the score is data-ready. During warmup, the score
-is `insufficient_data` and the reason is `regime_score_insufficient_data`.
-This is expected fail-closed behavior. Do not reduce the requirement or invent
-higher-timeframe bars. New or re-entering assets fetch 15 calendar days of
-completed direct Bybit `4h` history and retain at least 14 complete days. Gaps,
-duplicates, malformed candles, stale data, and missing exact-cutoff evidence
-block only the affected asset.
+57 complete `1h` and `4h` bars before the score is data-ready. During warmup,
+the score is `insufficient_data` and the reason is
+`regime_score_insufficient_data`. This is expected fail-closed behavior. Do not
+reduce the requirement or invent higher-timeframe bars. New or re-entering
+assets fetch 4 calendar days of completed direct Bybit `1h` history and 15
+calendar days of completed direct Bybit `4h` history, retaining at least 3
+complete 1h days and 14 complete 4h days. Gaps, duplicates, malformed candles,
+stale data, and missing exact-cutoff evidence block only the affected asset.
 
 `REGIME_SESSION_MODE` controls operational behavior:
 
@@ -124,6 +125,11 @@ block only the affected asset.
   the full subscription universe. `blocked_assets` means would-block.
 - `enforce` restricts evaluation to allowed assets and routes each plugin only
   to its active family assets.
+
+Each regime cycle emits compact JSON observability with separate 1h/4h history
+readiness, score readiness, gate allow/block counts, active-family counts, and
+diagnostics for blocked or insufficient assets. Diagnostics include covered and
+missing direct bars, market 5m coverage, missing score inputs, and gate reasons.
 
 Family activation uses hysteresis: ON at `0.35`, OFF at `0.25`. Families are
 `trend`, `mean_reversion`, and `reversal`. Feature materialization always covers
@@ -135,7 +141,7 @@ opposing ambiguous divergence fails closed. Reversal can coexist with trend or
 mean-reversion and only controls reversal-family scope, never trade geometry,
 admission, sizing, or executor protections.
 
-See `specs/regime-history-bootstrap-v1.md`,
+See `specs/regime-history-bootstrap-v2.md`,
 `specs/reversal-regime-gate-v1.md`, and
 `specs/regime-session-module-v1.md` for the normative contracts. The default
 rollout remains `REGIME_SESSION_MODE=shadow` until replay, lookahead,

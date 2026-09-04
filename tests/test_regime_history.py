@@ -3,16 +3,24 @@ from datetime import datetime, timezone
 from regime_history import (
     REGIME_4H_BAR_VERSION,
     ensure_asset_ready,
+    ensure_asset_1h_ready,
+    fetch_bybit_1h,
     init_regime_history_schema,
     load_regime_4h_bars,
+    load_regime_1h_bars,
 )
 
 
-def _rows(cutoff, *, gap_at=None):
-    through = cutoff.replace(hour=cutoff.hour - cutoff.hour % 4, minute=0, second=0, microsecond=0)
+def _rows(cutoff, *, gap_at=None, interval_hours=4, count=90):
+    through = cutoff.replace(
+        hour=cutoff.hour - cutoff.hour % interval_hours,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
     rows = []
-    for index in range(90):
-        start_ms = int((through.timestamp() - (90 - index) * 4 * 3600) * 1000)
+    for index in range(count):
+        start_ms = int((through.timestamp() - (count - index) * interval_hours * 3600) * 1000)
         if index == gap_at:
             continue
         close = 100.0 + index
@@ -67,6 +75,79 @@ def test_direct_history_gap_blocks_only_the_asset(tmp_path):
         "SELECT status, missing_bars FROM regime_4h_backfill_jobs WHERE asset = 'SOL'"
     ).fetchone()
     assert row == ("retryable", 1)
+
+
+def test_direct_1h_history_bootstrap_is_ready_and_loadable(tmp_path):
+    import config
+
+    db = tmp_path / "regime.sqlite3"
+    conn = config.get_db_connection(db_path=db)
+    init_regime_history_schema(conn)
+    cutoff = datetime(2026, 9, 4, 13, 40, tzinfo=timezone.utc)
+
+    result = ensure_asset_1h_ready(
+        conn,
+        "VELVET",
+        cutoff,
+        fetcher=lambda _asset, _start, _end: _rows(
+            cutoff, interval_hours=1, count=96
+        ),
+    )
+    bars = load_regime_1h_bars(conn, "VELVET", cutoff)
+
+    assert result["status"] == "ready"
+    assert result["covered_bars"] == 72
+    assert result["missing_bars"] == 0
+    assert bars.height == 72
+    assert bars["source"].unique().to_list() == ["bybit_rest"]
+    assert bars["bar_version"].unique().to_list() == ["bybit-rest-1h-v1"]
+
+
+def test_direct_1h_history_gap_is_retryable(tmp_path):
+    import config
+
+    db = tmp_path / "regime.sqlite3"
+    conn = config.get_db_connection(db_path=db)
+    init_regime_history_schema(conn)
+    cutoff = datetime(2026, 9, 4, 13, 40, tzinfo=timezone.utc)
+
+    result = ensure_asset_1h_ready(
+        conn,
+        "VELVET",
+        cutoff,
+        fetcher=lambda _asset, _start, _end: _rows(
+            cutoff, interval_hours=1, count=96, gap_at=40
+        ),
+    )
+
+    assert result["status"] == "retryable"
+    assert result["missing_bars"] == 1
+
+
+def test_direct_1h_fetch_uses_bybit_hourly_interval(monkeypatch):
+    import regime_history
+
+    requests = []
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"retCode": 0, "result": {"list": []}}
+
+    def get(_url, *, params, timeout):
+        requests.append((params, timeout))
+        return Response()
+
+    monkeypatch.setattr(regime_history.httpx, "get", get)
+
+    assert fetch_bybit_1h("VELVET", 1, 2) == []
+    assert requests[0][0]["symbol"] == "VELVETUSDT"
+    assert requests[0][0]["interval"] == "60"
 
 
 def test_duplicate_direct_candle_fails_readiness(tmp_path):

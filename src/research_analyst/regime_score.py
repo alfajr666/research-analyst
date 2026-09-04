@@ -171,28 +171,61 @@ def regime_score_for_asset(
     *,
     regime_conn: Any | None = None,
     history_fetcher: Any | None = None,
+    history_1h_fetcher: Any | None = None,
 ) -> dict[str, Any]:
-    """Score one asset from canonical live inputs and regime-owned 4h history."""
-    from strategy_v2_context import load_bars_for_interval, resample_ohlcv
-    from regime_history import ensure_asset_ready, load_regime_4h_bars
+    """Score one asset from market volatility and regime-owned 1h/4h history."""
+    from strategy_v2_context import load_bars_for_interval
+    from regime_history import (
+        ensure_asset_1h_ready,
+        ensure_asset_ready,
+        load_regime_1h_bars,
+        load_regime_4h_bars,
+    )
 
     bars_vol = load_bars_for_interval(conn, asset, "5m", cutoff)
-    bars_1h = resample_ohlcv(bars_vol, "1h")
     if regime_conn is None:
+        history_1h = {"status": "retryable", "reason": "regime_history_connection_missing"}
+        history_4h = {"status": "retryable", "reason": "regime_history_connection_missing"}
+        bars_1h = {}
         bars_4h = None
-        history = {"status": "retryable", "reason": "regime_history_connection_missing"}
     else:
-        history = ensure_asset_ready(regime_conn, asset, cutoff, fetcher=history_fetcher)
-        bars_4h = load_regime_4h_bars(regime_conn, asset, cutoff) if history["status"] == "ready" else None
+        history_1h = ensure_asset_1h_ready(
+            regime_conn, asset, cutoff, fetcher=history_1h_fetcher
+        )
+        history_4h = ensure_asset_ready(
+            regime_conn, asset, cutoff, fetcher=history_fetcher
+        )
+        bars_1h = (
+            load_regime_1h_bars(regime_conn, asset, cutoff)
+            if history_1h["status"] == "ready" else {}
+        )
+        bars_4h = (
+            load_regime_4h_bars(regime_conn, asset, cutoff)
+            if history_4h["status"] == "ready" else None
+        )
+    history = {
+        "status": "ready" if history_1h["status"] == history_4h["status"] == "ready" else "retryable",
+        "1h": history_1h,
+        "4h": history_4h,
+    }
+    if regime_conn is None:
+        history["reason"] = "regime_history_connection_missing"
     market_data = market_data_from_bars(bars_1h, bars_4h, bars_vol)
     result = regime_score(cutoff, market_data)
     result["asset"] = str(asset).upper()
     result["market_data"] = market_data
+    result["market_5m_bars"] = (
+        int(bars_vol.height) if hasattr(bars_vol, "height") else len(bars_vol or [])
+    )
     result["regime_history"] = history
     result.setdefault("components", {})["regime_history"] = history
     result["source_observation_ids"] = _source_observation_ids(bars_vol, bars_1h)
     result["source_references"] = {
-        "market_5m_1h_volatility_ids": _source_observation_ids(bars_vol, bars_1h),
+        "market_5m_volatility_ids": _source_observation_ids(bars_vol),
+        "regime_1h_bar_ids": (
+            [str(value) for value in bars_1h["bar_id"].to_list()]
+            if hasattr(bars_1h, "columns") and "bar_id" in bars_1h.columns else []
+        ),
         "regime_4h_bar_ids": (
             [str(value) for value in bars_4h["bar_id"].to_list()]
             if bars_4h is not None and "bar_id" in bars_4h.columns else []

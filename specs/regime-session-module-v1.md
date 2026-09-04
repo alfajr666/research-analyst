@@ -10,7 +10,7 @@ It replaces static assumptions such as "US is trend" or "Asia is
 mean-reversion" with a per-asset, point-in-time regime score.
 
 The direct regime-history bootstrap is specified in
-`specs/regime-history-bootstrap-v1.md`. The reversal-family activation gate is
+`specs/regime-history-bootstrap-v2.md`. The reversal-family activation gate is
 specified in `specs/reversal-regime-gate-v1.md`.
 
 Numeric defaults marked **research default** are implementation starting points.
@@ -109,22 +109,24 @@ No 1h or 4h WebSocket topics are added. The gateway remains the sole writer of
 `market.sqlite3` and derives 15m, 1h, and strategy-facing 4h bars locally from
 completed 5m observations using the canonical resampler.
 
-The regime-session module has a separate direct Bybit REST `4h` history cache,
-owned by the regime worker and stored in `regime.sqlite3`. That cache is not a
-live WebSocket topic and is not a replacement for strategy-facing 4h context.
+The regime-session module has separate direct Bybit REST `1h` and `4h` history
+caches, owned by the regime worker and stored in `regime.sqlite3`. These caches
+are not live WebSocket topics and are not replacements for strategy-facing 1h
+or 4h context.
 
 The regime module must not add exchange subscriptions, alter gateway sharding,
 or create a second market-database writer.
 
-### RSM-005: Direct 4h history is regime-exclusive
+### RSM-005: Direct higher-timeframe history is regime-exclusive
 
 The live strategy path uses the existing Bybit market observations. A separate
 live market provider is not required and must not be introduced.
 
 The regime worker may use Bybit public REST only for its exclusive historical
-`4h` cache, as specified in `specs/regime-history-bootstrap-v1.md`. It must not
-write `market.sqlite3`, provide 1m/5m strategy bars, or become a competing live
-writer. The gateway continues to own 1m/5m REST bootstrap and WebSocket data.
+`1h` and `4h` caches, as specified in `specs/regime-history-bootstrap-v2.md`. It
+must not write `market.sqlite3`, provide 1m/5m strategy bars, or become a
+competing live writer. The gateway continues to own 1m/5m REST bootstrap and
+WebSocket data.
 
 ### RSM-006: Separate regime observation storage
 
@@ -139,10 +141,10 @@ The evaluator reads it read-only. This keeps regime writes, indexes, and
 retention from contending with candidate, event, and delivery writes.
 
 The market database remains gateway-owned. The regime database is not a second
-general market ledger; it contains the regime-exclusive direct 4h cache plus
+general market ledger; it contains the regime-exclusive direct 1h/4h caches plus
 derived score and gate observations with source cutoff references. The direct
-cache schema and retention contract are defined in
-`specs/regime-history-bootstrap-v1.md`.
+cache schemas and retention contract are defined in
+`specs/regime-history-bootstrap-v2.md`.
 
 The existing `entry_policy_observations` table and `ENTRY_POLICY_MODE` setting
 are provisional shadow-policy scaffolding. Before v1 enforcement, their session
@@ -157,14 +159,14 @@ cutoff.
 
 For one asset it reads:
 
-- completed 1h bars;
+- completed direct 1h bars from the regime cache;
 - completed direct 4h bars from the regime cache;
 - completed 5m bars for realized volatility.
 
-The 1h and 5m views come from that asset's completed 5m market history. The 4h
-regime view comes from the direct Bybit REST cache. Strategy-facing 4h views
-remain local 5m resamples. The worker must not independently reload and
-resample the same asset once for every strategy.
+The 1h and 4h regime views come from the direct Bybit REST caches. The 5m view
+is retained for realized volatility. Strategy-facing 1h/4h views remain local
+5m resamples and are not changed by this regime-only cache. The worker must
+not independently reload and resample the same asset once for every strategy.
 
 The implementation should use one per-cutoff asset cache and reuse the frames
 for all regime calculations. It must not run inside each strategy plugin.
@@ -172,15 +174,15 @@ for all regime calculations. It must not run inside each strategy plugin.
 ### RSM-008: Warmup is per asset
 
 An asset is not regime-ready until it has enough completed data for all required
-inputs. The production readiness requirement is 57 complete direct 4h bars for
-the current 14-period ADX and 14-period smoothing defaults. This is about 9.5
-days of 4h history.
+inputs. The production readiness requirement is 57 complete direct bars for
+both the 1h and 4h ADX inputs, using the current 14-period ADX and 14-period
+smoothing defaults.
 
-The regime worker fetches 15 calendar days of direct 4h history, retaining at
-least 14 complete days after boundary trimming. The gateway separately
-backfills the recent 1m/5m strategy history for newly added rotated assets.
-That bootstrap is approximately 96 hours by default and must satisfy the
-enabled strategy and 1h/volatility data requirements.
+The regime worker fetches 4 calendar days of direct 1h history and 15 calendar
+days of direct 4h history, retaining at least 3 complete 1h days and 14
+complete 4h days after boundary trimming. The gateway separately backfills the
+recent 1m/5m strategy history for newly added rotated assets. That bootstrap
+remains independent of regime readiness.
 
 Insufficient warmup blocks that asset only. It does not fabricate an unknown
 score and does not fall back to BTC, a global timestamp, another asset, or a
@@ -208,10 +210,10 @@ consumer must not renormalize them silently.
 ### 3.1 Required market inputs
 
 All inputs are for the same canonical asset and the same point-in-time cutoff.
-The `adx_4h` values are computed from the regime-exclusive direct 4h cache. The
-1h and realized-volatility values remain derived from canonical completed 5m
-market observations. Mixed provenance is intentional and must be recorded in
-the observation source references.
+The `adx_1h` and `adx_4h` values are computed from the regime-exclusive direct
+1h and 4h caches. Realized-volatility values remain derived from canonical
+completed 5m market observations. Mixed provenance is intentional and must be
+recorded in the observation source references.
 
 ```text
 adx_1h
@@ -458,12 +460,12 @@ activation-policy version used for that cutoff. The evaluator accepts a gate
 result only when asset, cutoff, rotation feed ID, and gate version match. A
 stale result is equivalent to missing data and blocks that asset.
 
-### 5.3 Direct 4h regime history
+### 5.3 Direct 1h/4h regime history
 
-The regime worker also owns the `regime_4h_bars` and
-`regime_4h_backfill_jobs` tables defined in
-`specs/regime-history-bootstrap-v1.md`. These tables contain only direct Bybit
-REST 4h history used by regime scoring. They are not a replacement for the
+The regime worker also owns the `regime_1h_bars`, `regime_1h_backfill_jobs`,
+`regime_4h_bars`, and `regime_4h_backfill_jobs` tables defined in
+`specs/regime-history-bootstrap-v2.md`. These tables contain only direct Bybit
+REST 1h/4h history used by regime scoring. They are not a replacement for the
 gateway's market observations and are not consumed by strategy plugins.
 
 ## 6. Runtime Ownership and Scheduling
@@ -475,8 +477,8 @@ gateway
   -> publishes completed cutoff trigger
 
 regime-session worker
-  -> reads market.sqlite3 read-only for completed 5m/1h/volatility inputs
-  -> backfills and reads direct 4h history in regime.sqlite3
+  -> reads market.sqlite3 read-only for completed 5m volatility inputs
+  -> backfills and reads direct 1h/4h history in regime.sqlite3
   -> scores active rotated/permanent assets
   -> writes regime.sqlite3
 
@@ -490,7 +492,7 @@ orchestrator
 
 The regime worker is a separately managed process. It must not be started
 manually alongside production services and must not own `market.sqlite3`. Its
-direct 4h REST writes are limited to the regime-owned cache.
+direct 1h/4h REST writes are limited to the regime-owned cache.
 
 The orchestrator must use a bounded wait for the exact cutoff. If the regime
 worker has not published a matching result before the grace period expires, the
@@ -500,16 +502,33 @@ The worker should compute one score batch per completed 5m cutoff, not once per
 strategy. 1m and 15m evaluation paths, if enabled, consume the newest preceding
 valid 5m regime observation and may not use a future observation.
 
+### 6.1 Operational observability
+
+Each completed batch must emit compact, machine-readable observability with:
+
+- cutoff and rotation feed ID;
+- regime session mode and asset count;
+- ready/retryable counts for direct 1h and 4h history;
+- score-ready and score-insufficient counts;
+- gate allow/block counts and active-family counts;
+- per-asset diagnostics for blocked or insufficient assets, including history
+  coverage, market 5m coverage, missing score inputs, and gate reasons.
+
+Shadow-mode `evaluated` or `assets` counts must not be labeled as history
+`ready` counts. A blocked asset's direct-history state and score state must be
+distinguishable in the log.
+
 ## 7. Resource Budget and Safety
 
 For the expected 34 active assets:
 
 ```text
-WebSocket topics remain:       34 x (1m + 5m) = 68
+WebSocket topics remain:        34 x (1m + 5m) = 68
 Direct 1h/4h topics added:      0
 Regime score batches per 5m:    1
 Market database writers:        1, the gateway
 Regime database writers:        1, the regime worker
+Direct 1h cache:                4 days fetched, 3 days retained
 Direct 4h cache:                15 days fetched, 14 days retained
 ```
 
@@ -574,7 +593,7 @@ Before enabling `enforce`, produce an out-of-sample report grouped by:
 
 Required checks:
 
-- every active rotated asset has sufficient 4h warmup;
+- every active rotated asset has sufficient 1h and 4h warmup;
 - no future bars enter score inputs;
 - session labels do not imply regime labels;
 - blocked assets produce zero strategy evaluations;
@@ -585,10 +604,10 @@ Required checks:
 - no additional WebSocket topics are created;
 - the evaluator's cutoff latency and CPU remain within baseline tolerance;
 - score distributions are stable across multiple rotation periods.
-- direct 4h history has no future, duplicate, or gapped bars;
-- direct 4h and 5m-resampled 4h values have a documented parity result;
-- newly rotated assets do not enter enforcement before direct 4h readiness;
-- live 1m/5m bootstrap remains separate from regime 4h readiness.
+- direct 1h and 4h history have no future, duplicate, or gapped bars;
+- direct 1h and 4h values have documented parity diagnostics against 5m resamples;
+- newly rotated assets do not enter enforcement before direct 1h/4h readiness;
+- live 1m/5m bootstrap remains separate from regime 1h/4h readiness.
 
 The score is not approved for live sizing until candidate-level outcome data is
 populated and the score has been evaluated out of sample. Realized executor PnL
@@ -610,7 +629,7 @@ then switch to `off` after checking the service health and cutoff audit.
 
 ## 11. Explicit Non-Goals
 
-- No direct 1h/4h WebSocket subscriptions; direct 4h REST history is allowed
+- No direct 1h/4h WebSocket subscriptions; direct 1h/4h REST history is allowed
   only for the regime-exclusive cache.
 - No BTC/SPX correlation provider.
 - No second live market-data writer.

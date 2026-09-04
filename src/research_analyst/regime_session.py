@@ -15,8 +15,8 @@ from regime_score import regime_score_for_asset
 from regime_history import init_regime_history_schema
 
 
-GATE_VERSION = "regime-session-gate-v2"
-SCORE_VERSION = "regime-score-v2"
+GATE_VERSION = "regime-session-gate-v3"
+SCORE_VERSION = "regime-score-v3"
 FAMILY_ACTIVATION_VERSION = "family-activation-v2"
 _FAMILY_WEIGHT_KEYS = {
     "trend": "trend_weight",
@@ -307,6 +307,7 @@ def publish_regime_batch(
     market_db_path: str | Path | None = None,
     regime_db_path: str | Path | None = None,
     history_fetcher: Any | None = None,
+    history_1h_fetcher: Any | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Score and persist one rotation snapshot without writing market data."""
@@ -330,6 +331,7 @@ def publish_regime_batch(
         "blocked": [],
         "family_assets": {family: [] for family in _FAMILY_WEIGHT_KEYS},
         "bootstrap": {},
+        "asset_observations": {},
     }
     try:
         for asset in assets:
@@ -340,6 +342,7 @@ def publish_regime_batch(
                     cutoff,
                     regime_conn=regime_conn,
                     history_fetcher=history_fetcher,
+                    history_1h_fetcher=history_1h_fetcher,
                 )
             except Exception as exc:
                 score = {
@@ -359,6 +362,32 @@ def publish_regime_batch(
             summary["bootstrap"][asset] = score.get(
                 "regime_history", {"status": "unknown"}
             )
+            history = score.get("regime_history", {})
+            history_1h = history.get("1h", {}) if isinstance(history, dict) else {}
+            history_4h = history.get("4h", {}) if isinstance(history, dict) else {}
+            components = score.get("components", {})
+            summary["asset_observations"][asset] = {
+                "history_1h": {
+                    "status": history_1h.get("status", "unknown"),
+                    "covered_bars": history_1h.get("covered_bars"),
+                    "missing_bars": history_1h.get("missing_bars"),
+                    "last_error": history_1h.get("last_error"),
+                    "next_retry_at": history_1h.get("next_retry_at"),
+                },
+                "history_4h": {
+                    "status": history_4h.get("status", "unknown"),
+                    "covered_bars": history_4h.get("covered_bars"),
+                    "missing_bars": history_4h.get("missing_bars"),
+                    "last_error": history_4h.get("last_error"),
+                    "next_retry_at": history_4h.get("next_retry_at"),
+                },
+                "market_5m_bars": score.get("market_5m_bars"),
+                "score_status": score.get("status", "unknown"),
+                "missing_inputs": components.get("missing_inputs", []),
+                "decision": gate["decision"],
+                "gate_reasons": gate["reasons"],
+                "active_families": gate["active_families"],
+            }
             summary["blocked" if gate["decision"] == "block" else "allowed"].append(asset)
             if gate["decision"] == "allow":
                 for family in gate["active_families"]:
@@ -368,6 +397,51 @@ def publish_regime_batch(
         market_conn.close()
         regime_conn.close()
     return summary
+
+
+def format_regime_batch_log(summary: dict[str, Any]) -> str:
+    """Format a compact operational summary without hiding per-asset reasons."""
+    observations = summary.get("asset_observations", {})
+    history_1h_ready = sum(
+        value.get("history_1h", {}).get("status") == "ready"
+        for value in observations.values()
+    )
+    history_4h_ready = sum(
+        value.get("history_4h", {}).get("status") == "ready"
+        for value in observations.values()
+    )
+    score_ready = sum(value.get("score_status") == "ok" for value in observations.values())
+    diagnostics = {}
+    for asset, value in observations.items():
+        if value.get("decision") == "block" or value.get("score_status") != "ok":
+            diagnostics[asset] = {
+                "1h": value.get("history_1h"),
+                "4h": value.get("history_4h"),
+                "market_5m_bars": value.get("market_5m_bars"),
+                "score": value.get("score_status"),
+                "missing_inputs": value.get("missing_inputs", []),
+                "decision": value.get("decision"),
+                "reasons": value.get("gate_reasons", []),
+                "families": value.get("active_families", []),
+            }
+    return json.dumps({
+        "cutoff_at": summary["cutoff_at"],
+        "feed_id": summary["feed_id"],
+        "mode": config.REGIME_SESSION_MODE,
+        "assets": len(observations),
+        "history_1h_ready": history_1h_ready,
+        "history_1h_retryable": len(observations) - history_1h_ready,
+        "history_4h_ready": history_4h_ready,
+        "history_4h_retryable": len(observations) - history_4h_ready,
+        "score_ready": score_ready,
+        "score_insufficient": len(observations) - score_ready,
+        "gate_allow": len(summary["allowed"]),
+        "gate_block": len(summary["blocked"]),
+        "family_assets": {
+            family: len(assets) for family, assets in summary["family_assets"].items()
+        },
+        "diagnostics": diagnostics,
+    }, sort_keys=True, default=str)
 
 
 def load_gate_scope(
@@ -509,14 +583,14 @@ def main() -> None:
 
     if args.once or args.cutoff:
         cutoff = _utc(args.cutoff) if args.cutoff else completed_cycle_for(datetime.now(timezone.utc), "5m")
-        print(publish_regime_batch(cutoff))
+        print(format_regime_batch_log(publish_regime_batch(cutoff)))
         return
 
     last_cutoff = None
     while True:
         cutoff = completed_cycle_for(datetime.now(timezone.utc), "5m")
         if cutoff != last_cutoff:
-            print(publish_regime_batch(cutoff), flush=True)
+            print(format_regime_batch_log(publish_regime_batch(cutoff)), flush=True)
             last_cutoff = cutoff
         time.sleep(1.0)
 

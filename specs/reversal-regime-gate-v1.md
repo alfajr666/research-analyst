@@ -52,9 +52,10 @@ whether reversal-family plugins receive the asset.
 
 The working timeframe is completed `1h` bars.
 
-The 4h direct regime cache supplies the long-history context and readiness. The
-1h series supplies reversal timing. Recent volatility continues to use the
-canonical completed 5m series.
+The direct 4h regime cache supplies the long-history context and readiness. The
+direct 1h regime cache supplies reversal timing. Recent volatility continues
+to use the canonical completed 5m series. This regime-only 1h source does not
+change strategy-facing 1h data.
 
 ### 3.2 RSI
 
@@ -248,8 +249,8 @@ right-hand bars of an unconfirmed pivot before their cutoff.
 
 - Missing 1h bars: reversal inactive for the asset; record `missing_1h_data`.
 - Missing RSI or ADX inputs: reversal inactive; record the exact missing input.
-- Insufficient direct 4h regime history: asset-level regime block remains in
-  force under `enforce`.
+- Insufficient direct 1h or 4h regime history: asset-level regime block remains
+  in force under `enforce`.
 - No regular divergence: reversal inactive, with trend/range unaffected.
 - ADX never recently exceeded 25: reversal inactive.
 - ADX slope is zero or positive: reversal inactive.
@@ -321,5 +322,5 @@ enforcement without changing existing positions or executor behavior.
 - No reversal-specific sizing or confidence override.
 - No automatic suppression of trend or mean-reversion.
 - No session-to-reversal mapping.
-- No direct 4h WebSocket subscription.
+- No direct 1h/4h WebSocket subscription.
 - No TA-library replacement for in-house RSI or ADX.

@@ -157,12 +157,22 @@ def test_rotated_asset_adapter_loads_each_timeframe_for_the_requested_asset(monk
             int(start.timestamp() * 1000), str(close - 1), str(close + 1),
             str(close - 2), str(close), "1", "0",
         ])
+    one_hour_through = cutoff.replace(minute=0, second=0, microsecond=0)
+    direct_1h_rows = []
+    for index in range(96):
+        start = one_hour_through - timedelta(hours=96 - index)
+        close = 200.0 + index
+        direct_1h_rows.append([
+            int(start.timestamp() * 1000), str(close - 1), str(close + 1),
+            str(close - 2), str(close), "1", "0",
+        ])
     ensure_asset_ready(
         regime_conn, "SOL", cutoff,
         fetcher=lambda _asset, _start, _end: direct_rows,
     )
     result = regime_score_for_asset(
         object(), "SOL", cutoff, regime_conn=regime_conn,
+        history_1h_fetcher=lambda _asset, _start, _end: direct_1h_rows,
     )
     regime_conn.close()
 

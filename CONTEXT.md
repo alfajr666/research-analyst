@@ -29,8 +29,8 @@
   evaluation begins.
 - **Regime observation**: the immutable, point-in-time score and gate result for
   one asset and one completed cutoff.
-- **Regime history cache**: regime-owned direct Bybit REST `4h` history retained
-  long enough to satisfy the regime scorer without waiting for live 5m
+- **Regime history cache**: regime-owned direct Bybit REST `1h` and `4h` history
+  retained long enough to satisfy the regime scorer without waiting for live 5m
   accumulation; it is not the strategy market-data ledger.
 - **Reversal activation gate**: the independent reversal-family unlock requiring
   confirmed regular RSI divergence, recent trend ADX, and negative ADX decay;

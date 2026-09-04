@@ -1,10 +1,9 @@
-"""Regime-owned direct Bybit 4h history and per-asset readiness."""
+"""Regime-owned direct Bybit 1h/4h history and per-asset readiness."""
 
 from __future__ import annotations
 
 import hashlib
 import math
-import time
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable
@@ -14,6 +13,13 @@ import httpx
 import config
 
 
+REGIME_1H_SOURCE = "bybit_rest"
+REGIME_1H_BAR_VERSION = "bybit-rest-1h-v1"
+REGIME_1H_INTERVAL_MS = 60 * 60 * 1000
+REGIME_1H_FETCH_DAYS = int(getattr(config, "REGIME_1H_FETCH_DAYS", 4))
+REGIME_1H_RETAIN_DAYS = int(getattr(config, "REGIME_1H_RETAIN_DAYS", 3))
+REGIME_1H_READINESS_BARS = int(getattr(config, "REGIME_1H_READINESS_BARS", 57))
+REGIME_1H_REQUEST_LIMIT = 200
 REGIME_4H_SOURCE = "bybit_rest"
 REGIME_4H_BAR_VERSION = "bybit-rest-4h-v1"
 REGIME_4H_INTERVAL_MS = 4 * 60 * 60 * 1000
@@ -36,24 +42,32 @@ def _utc(value: Any) -> datetime:
 
 
 def completed_4h_end(value: Any) -> datetime:
+    return _completed_end(value, 4)
+
+
+def completed_1h_end(value: Any) -> datetime:
+    return _completed_end(value, 1)
+
+
+def _completed_end(value: Any, interval_hours: int) -> datetime:
     timestamp = _utc(value)
-    return timestamp.replace(
-        hour=timestamp.hour - timestamp.hour % 4,
+    return timestamp.replace(hour=timestamp.hour - timestamp.hour % interval_hours,
         minute=0,
         second=0,
         microsecond=0,
     )
 
 
-def _bar_id(asset: str, bar_end: datetime) -> str:
-    identity = f"{asset.upper()}|{bar_end.isoformat()}|{REGIME_4H_SOURCE}|{REGIME_4H_BAR_VERSION}"
+def _bar_id(asset: str, bar_end: datetime, bar_version: str) -> str:
+    identity = f"{asset.upper()}|{bar_end.isoformat()}|{REGIME_1H_SOURCE}|{bar_version}"
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
 def init_regime_history_schema(conn: Any) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS regime_4h_bars (
+    for interval in ("1h", "4h"):
+        conn.execute(
+            f"""
+        CREATE TABLE IF NOT EXISTS regime_{interval}_bars (
             bar_id TEXT PRIMARY KEY,
             asset TEXT NOT NULL,
             bar_end TEXT NOT NULL,
@@ -71,11 +85,11 @@ def init_regime_history_schema(conn: Any) -> None:
             bar_version TEXT NOT NULL,
             UNIQUE(asset, bar_end, source, bar_version)
         )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS regime_4h_backfill_jobs (
+            """
+        )
+        conn.execute(
+            f"""
+        CREATE TABLE IF NOT EXISTS regime_{interval}_backfill_jobs (
             asset TEXT PRIMARY KEY,
             status TEXT NOT NULL,
             required_from TEXT NOT NULL,
@@ -88,10 +102,16 @@ def init_regime_history_schema(conn: Any) -> None:
             last_error TEXT,
             updated_at TEXT NOT NULL
         )
-        """
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_regime_4h_bars_asset_end ON regime_4h_bars (asset, bar_end)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_regime_4h_jobs_status ON regime_4h_backfill_jobs (status, next_retry_at)")
+            """
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_regime_{interval}_bars_asset_end "
+            f"ON regime_{interval}_bars (asset, bar_end)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_regime_{interval}_jobs_status "
+            f"ON regime_{interval}_backfill_jobs (status, next_retry_at)"
+        )
 
 
 def _finite_positive(value: Any) -> bool:
@@ -101,31 +121,38 @@ def _finite_positive(value: Any) -> bool:
         return False
 
 
-def _normalize_row(asset: str, row: Any, retrieved_at: datetime) -> dict[str, Any]:
+def _normalize_row(
+    asset: str,
+    row: Any,
+    retrieved_at: datetime,
+    *,
+    interval_ms: int,
+    bar_version: str,
+) -> dict[str, Any]:
     if isinstance(row, dict):
         start_ms = row.get("start_ms", row.get("timestamp"))
         values = [start_ms, row.get("open"), row.get("high"), row.get("low"), row.get("close"), row.get("volume")]
     elif isinstance(row, (list, tuple)) and len(row) >= 6:
         values = list(row[:6])
     else:
-        raise RegimeHistoryError("malformed 4h candle")
+        raise RegimeHistoryError("malformed direct candle")
     try:
         start_ms = int(float(values[0]))
         start = datetime.fromtimestamp(start_ms / 1000, timezone.utc)
-        end = start + timedelta(milliseconds=REGIME_4H_INTERVAL_MS)
+        end = start + timedelta(milliseconds=interval_ms)
         prices = [float(value) for value in values[1:5]]
         volume = float(values[5]) if values[5] is not None else None
     except (TypeError, ValueError, OverflowError) as exc:
-        raise RegimeHistoryError("malformed 4h candle values") from exc
+        raise RegimeHistoryError("malformed direct candle values") from exc
     if not all(_finite_positive(value) for value in prices):
-        raise RegimeHistoryError("non-positive 4h candle price")
+        raise RegimeHistoryError("non-positive direct candle price")
     if prices[1] < max(prices[0], prices[3]) or prices[2] > min(prices[0], prices[3]) or prices[2] > prices[1]:
-        raise RegimeHistoryError("invalid 4h candle range")
+        raise RegimeHistoryError("invalid direct candle range")
     if volume is not None and (not math.isfinite(volume) or volume < 0):
-        raise RegimeHistoryError("invalid 4h candle volume")
+        raise RegimeHistoryError("invalid direct candle volume")
     canonical_asset = str(asset).upper()
     return {
-        "bar_id": _bar_id(canonical_asset, end),
+        "bar_id": _bar_id(canonical_asset, end, bar_version),
         "asset": canonical_asset,
         "bar_end": end.isoformat(),
         "source": REGIME_4H_SOURCE,
@@ -139,11 +166,11 @@ def _normalize_row(asset: str, row: Any, retrieved_at: datetime) -> dict[str, An
         "source_end": end.isoformat(),
         "request_id": None,
         "retrieved_at": retrieved_at.isoformat(),
-        "bar_version": REGIME_4H_BAR_VERSION,
+        "bar_version": bar_version,
     }
 
 
-def fetch_bybit_4h(asset: str, start_ms: int, end_ms: int) -> list[Any]:
+def _fetch_bybit(asset: str, start_ms: int, end_ms: int, interval: str) -> list[Any]:
     """Fetch public completed-window candles without writing market.sqlite3."""
     symbol = f"{str(asset).upper()}USDT"
     for attempt in range(3):
@@ -153,12 +180,14 @@ def fetch_bybit_4h(asset: str, start_ms: int, end_ms: int) -> list[Any]:
                 params={
                     "category": "linear",
                     "symbol": symbol,
-                    "interval": "240",
+                    "interval": interval,
                     "start": start_ms,
                     "end": end_ms - 1,
-                    "limit": REGIME_4H_REQUEST_LIMIT,
+                    "limit": REGIME_1H_REQUEST_LIMIT if interval == "60" else REGIME_4H_REQUEST_LIMIT,
                 },
-                timeout=float(getattr(config, "REGIME_4H_REQUEST_TIMEOUT_SECONDS", 20)),
+                timeout=float(getattr(
+                    config, f"REGIME_{'1H' if interval == '60' else '4H'}_REQUEST_TIMEOUT_SECONDS", 20
+                )),
             )
             if response.status_code == 429:
                 retry_after = float(response.headers.get("retry-after", "5"))
@@ -182,70 +211,105 @@ def fetch_bybit_4h(asset: str, start_ms: int, end_ms: int) -> list[Any]:
     raise RegimeHistoryError("request_failed")
 
 
-def _required_window(cutoff: Any) -> tuple[datetime, datetime, datetime]:
-    through = completed_4h_end(cutoff)
-    required_from = through - timedelta(days=REGIME_4H_RETAIN_DAYS)
-    fetch_from = through - timedelta(days=REGIME_4H_FETCH_DAYS)
+def fetch_bybit_1h(asset: str, start_ms: int, end_ms: int) -> list[Any]:
+    return _fetch_bybit(asset, start_ms, end_ms, "60")
+
+
+def fetch_bybit_4h(asset: str, start_ms: int, end_ms: int) -> list[Any]:
+    return _fetch_bybit(asset, start_ms, end_ms, "240")
+
+
+def _history_config(interval: str) -> tuple[str, str, int, int, int, int]:
+    if interval == "1h":
+        return (
+            "regime_1h_bars", "regime_1h_backfill_jobs", REGIME_1H_INTERVAL_MS,
+            REGIME_1H_FETCH_DAYS, REGIME_1H_RETAIN_DAYS, REGIME_1H_READINESS_BARS,
+        )
+    return (
+        "regime_4h_bars", "regime_4h_backfill_jobs", REGIME_4H_INTERVAL_MS,
+        REGIME_4H_FETCH_DAYS, REGIME_4H_RETAIN_DAYS, REGIME_4H_READINESS_BARS,
+    )
+
+
+def _required_window(cutoff: Any, interval: str = "4h") -> tuple[datetime, datetime, datetime]:
+    through = completed_1h_end(cutoff) if interval == "1h" else completed_4h_end(cutoff)
+    _, _, _, fetch_days, retain_days, _ = _history_config(interval)
+    required_from = through - timedelta(days=retain_days)
+    fetch_from = through - timedelta(days=fetch_days)
     return fetch_from, required_from, through
 
 
-def _coverage(conn: Any, asset: str, required_from: datetime, through: datetime) -> dict[str, Any]:
+def _coverage(
+    conn: Any,
+    asset: str,
+    required_from: datetime,
+    through: datetime,
+    interval: str,
+) -> dict[str, Any]:
+    table, _, interval_ms, _, retain_days, readiness_bars = _history_config(interval)
+    version = REGIME_1H_BAR_VERSION if interval == "1h" else REGIME_4H_BAR_VERSION
     rows = conn.execute(
-        """
-        SELECT bar_end FROM regime_4h_bars
+        f"""
+        SELECT bar_end FROM {table}
          WHERE asset = ? AND source = ? AND bar_version = ?
            AND source_end > ? AND source_end <= ?
          ORDER BY source_end
         """,
-        (str(asset).upper(), REGIME_4H_SOURCE, REGIME_4H_BAR_VERSION,
+        (str(asset).upper(), REGIME_1H_SOURCE, version,
          required_from.isoformat(), through.isoformat()),
     ).fetchall()
     ends = {_utc(row[0]) for row in rows}
     expected = {
-        required_from + timedelta(milliseconds=REGIME_4H_INTERVAL_MS * index)
-        for index in range(1, REGIME_4H_RETAIN_DAYS * 6 + 1)
+        required_from + timedelta(milliseconds=interval_ms * index)
+        for index in range(1, retain_days * (24 if interval == "1h" else 6) + 1)
     }
     missing = sorted(expected - ends)
     return {
         "covered_bars": len(ends),
         "missing_bars": len(missing),
-        "ready": len(ends) >= REGIME_4H_READINESS_BARS and not missing,
+        "ready": len(ends) >= readiness_bars and not missing,
     }
 
 
-def prune_regime_history(conn: Any, asset: str, through: Any) -> int:
-    """Retain the complete 4h window needed by the active regime scorer."""
-    cutoff = _utc(through) - timedelta(days=REGIME_4H_RETAIN_DAYS)
+def _prune_regime_history(conn: Any, asset: str, through: Any, interval: str) -> int:
+    """Retain the complete interval window needed by the regime scorer."""
+    table, _, _, _, retain_days, _ = _history_config(interval)
+    version = REGIME_1H_BAR_VERSION if interval == "1h" else REGIME_4H_BAR_VERSION
+    cutoff = _utc(through) - timedelta(days=retain_days)
     cursor = conn.execute(
-        """
-        DELETE FROM regime_4h_bars
+        f"""
+        DELETE FROM {table}
          WHERE asset = ? AND source = ? AND bar_version = ? AND source_end <= ?
         """,
-        (str(asset).upper(), REGIME_4H_SOURCE, REGIME_4H_BAR_VERSION, cutoff.isoformat()),
+        (str(asset).upper(), REGIME_1H_SOURCE, version, cutoff.isoformat()),
     )
     return int(cursor.rowcount or 0)
 
 
-def ensure_asset_ready(
+def _ensure_asset_ready(
     conn: Any,
     asset: str,
     cutoff: Any,
     *,
+    interval: str,
     fetcher: Callable[[str, int, int], Iterable[Any]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Backfill and assess one asset without affecting other assets."""
+    """Backfill and assess one asset and interval without affecting others."""
     init_regime_history_schema(conn)
     asset = str(asset).upper()
-    fetch_from, required_from, through = _required_window(cutoff)
+    table, jobs_table, _, _, _, _ = _history_config(interval)
+    version = REGIME_1H_BAR_VERSION if interval == "1h" else REGIME_4H_BAR_VERSION
+    interval_ms = REGIME_1H_INTERVAL_MS if interval == "1h" else REGIME_4H_INTERVAL_MS
+    fetch_from, required_from, through = _required_window(cutoff, interval)
     current = _utc(now or datetime.now(timezone.utc))
-    coverage = _coverage(conn, asset, required_from, through)
+    coverage = _coverage(conn, asset, required_from, through, interval)
     if coverage["ready"]:
-        prune_regime_history(conn, asset, through)
-        coverage = _coverage(conn, asset, required_from, through)
+        _prune_regime_history(conn, asset, through, interval)
+        coverage = _coverage(conn, asset, required_from, through, interval)
         conn.execute(
-            """
-            INSERT INTO regime_4h_backfill_jobs
+            f"""
+            INSERT INTO {jobs_table}
                 (asset, status, required_from, required_through, covered_bars, missing_bars,
                  attempts, lease_until, next_retry_at, last_error, updated_at)
             VALUES (?, 'ready', ?, ?, ?, ?, 0, NULL, NULL, NULL, ?)
@@ -262,19 +326,25 @@ def ensure_asset_ready(
         return {"asset": asset, "status": "ready", **coverage}
 
     row = conn.execute(
-        "SELECT status, lease_until, attempts FROM regime_4h_backfill_jobs WHERE asset = ?",
+        f"SELECT status, lease_until, attempts FROM {jobs_table} WHERE asset = ?",
         (asset,),
     ).fetchone()
     if row and row[0] == "running" and row[1]:
         try:
             if _utc(row[1]) > current:
-                return {"asset": asset, "status": "retryable", **coverage, "reason": "lease_active"}
+                return {
+                    "asset": asset,
+                    "status": "retryable",
+                    **coverage,
+                    "reason": "lease_active",
+                    "next_retry_at": row[1],
+                }
         except (TypeError, ValueError, OverflowError):
             pass
     attempts = int(row[2]) + 1 if row else 1
     conn.execute(
-        """
-        INSERT INTO regime_4h_backfill_jobs
+        f"""
+        INSERT INTO {jobs_table}
             (asset, status, required_from, required_through, covered_bars, missing_bars,
              attempts, lease_until, next_retry_at, last_error, updated_at)
         VALUES (?, 'running', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
@@ -289,22 +359,25 @@ def ensure_asset_ready(
     )
     conn.commit()
     try:
-        raw_rows = list((fetcher or fetch_bybit_4h)(
+        default_fetcher = fetch_bybit_1h if interval == "1h" else fetch_bybit_4h
+        raw_rows = list((fetcher or default_fetcher)(
             asset, int(fetch_from.timestamp() * 1000), int(through.timestamp() * 1000)
         ))
         retrieved_at = _utc(now or datetime.now(timezone.utc))
         normalized = {}
         for row in raw_rows:
-            item = _normalize_row(asset, row, retrieved_at)
+            item = _normalize_row(
+                asset, row, retrieved_at, interval_ms=interval_ms, bar_version=version
+            )
             end = _utc(item["bar_end"])
             if fetch_from < end <= through:
                 if end in normalized:
-                    raise RegimeHistoryError("duplicate_4h_bar")
+                    raise RegimeHistoryError(f"duplicate_{interval}_bar")
                 normalized[end] = item
         for item in normalized.values():
             conn.execute(
-                """
-                INSERT OR IGNORE INTO regime_4h_bars
+                f"""
+                INSERT OR IGNORE INTO {table}
                     (bar_id, asset, bar_end, source, venue, open, high, low, close, volume,
                      source_start, source_end, request_id, retrieved_at, bar_version)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -315,15 +388,15 @@ def ensure_asset_ready(
                     "bar_version",
                 )),
             )
-        coverage = _coverage(conn, asset, required_from, through)
+        coverage = _coverage(conn, asset, required_from, through, interval)
         status = "ready" if coverage["ready"] else "retryable"
-        last_error = None if coverage["ready"] else "incomplete_or_gapped_4h_history"
+        last_error = None if coverage["ready"] else f"incomplete_or_gapped_{interval}_history"
         if status == "ready":
-            prune_regime_history(conn, asset, through)
-            coverage = _coverage(conn, asset, required_from, through)
+            _prune_regime_history(conn, asset, through, interval)
+            coverage = _coverage(conn, asset, required_from, through, interval)
         conn.execute(
-            """
-            UPDATE regime_4h_backfill_jobs
+            f"""
+            UPDATE {jobs_table}
                SET status=?, covered_bars=?, missing_bars=?, lease_until=NULL,
                    next_retry_at=?, last_error=?, updated_at=?
              WHERE asset=?
@@ -333,11 +406,17 @@ def ensure_asset_ready(
              last_error, current.isoformat(), asset),
         )
         conn.commit()
-        return {"asset": asset, "status": status, **coverage}
+        return {
+            "asset": asset,
+            "status": status,
+            **coverage,
+            "last_error": last_error,
+            "next_retry_at": None if status == "ready" else (current + timedelta(minutes=5)).isoformat(),
+        }
     except Exception as exc:
         conn.execute(
-            """
-            UPDATE regime_4h_backfill_jobs
+            f"""
+            UPDATE {jobs_table}
                SET status='retryable', lease_until=NULL, next_retry_at=?,
                    last_error=?, updated_at=?
              WHERE asset=?
@@ -345,22 +424,53 @@ def ensure_asset_ready(
             ((current + timedelta(minutes=5)).isoformat(), type(exc).__name__, current.isoformat(), asset),
         )
         conn.commit()
-        return {"asset": asset, "status": "retryable", **coverage, "error": type(exc).__name__}
+        return {
+            "asset": asset,
+            "status": "retryable",
+            **coverage,
+            "last_error": type(exc).__name__,
+            "next_retry_at": (current + timedelta(minutes=5)).isoformat(),
+            "error": type(exc).__name__,
+        }
 
 
-def load_regime_4h_bars(conn: Any, asset: str, cutoff: Any, limit: int = 84):
+def ensure_asset_ready(
+    conn: Any,
+    asset: str,
+    cutoff: Any,
+    *,
+    fetcher: Callable[[str, int, int], Iterable[Any]] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    return _ensure_asset_ready(conn, asset, cutoff, interval="4h", fetcher=fetcher, now=now)
+
+
+def ensure_asset_1h_ready(
+    conn: Any,
+    asset: str,
+    cutoff: Any,
+    *,
+    fetcher: Callable[[str, int, int], Iterable[Any]] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    return _ensure_asset_ready(conn, asset, cutoff, interval="1h", fetcher=fetcher, now=now)
+
+
+def _load_regime_bars(conn: Any, asset: str, cutoff: Any, interval: str, limit: int):
     """Load completed direct bars with stable provenance for regime scoring."""
     import polars as pl
 
+    table, _, _, _, _, _ = _history_config(interval)
+    version = REGIME_1H_BAR_VERSION if interval == "1h" else REGIME_4H_BAR_VERSION
     cutoff = _utc(cutoff)
     rows = conn.execute(
-        """
+        f"""
         SELECT bar_id, bar_end, open, high, low, close, volume, source, bar_version
-          FROM regime_4h_bars
+          FROM {table}
          WHERE asset = ? AND source_end <= ? AND source = ? AND bar_version = ?
          ORDER BY source_end DESC LIMIT ?
         """,
-        (str(asset).upper(), cutoff.isoformat(), REGIME_4H_SOURCE, REGIME_4H_BAR_VERSION, limit),
+        (str(asset).upper(), cutoff.isoformat(), REGIME_1H_SOURCE, version, limit),
     ).fetchall()
     rows.reverse()
     return pl.DataFrame({
@@ -375,3 +485,11 @@ def load_regime_4h_bars(conn: Any, asset: str, cutoff: Any, limit: int = 84):
         "bar_version": [row[8] for row in rows],
         "source_observation_ids": [[row[0]] for row in rows],
     })
+
+
+def load_regime_1h_bars(conn: Any, asset: str, cutoff: Any, limit: int = 72):
+    return _load_regime_bars(conn, asset, cutoff, "1h", limit)
+
+
+def load_regime_4h_bars(conn: Any, asset: str, cutoff: Any, limit: int = 84):
+    return _load_regime_bars(conn, asset, cutoff, "4h", limit)
