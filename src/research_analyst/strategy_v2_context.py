@@ -60,7 +60,9 @@ def completed_cycle_for(now: datetime | None, interval: str) -> datetime:
 def cutoff_from_id(cutoff_id: str, fallback: datetime | None = None) -> datetime:
     """Parse an evaluator cutoff ID or explicit cutoff without using wall time."""
     text = str(cutoff_id or "")
-    if ":" in text:
+    if text[:4].isdigit():
+        pass
+    elif ":" in text:
         text = text.split(":", 1)[1]
     elif "20" in text:
         text = text[text.find("20"):]

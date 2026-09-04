@@ -411,7 +411,9 @@ def _data_freshness_seconds(market_db_path: str | Path, interval: str, cutoff: d
 
 
 def _cutoff_from_id(cutoff_id: str, fallback: datetime | None) -> datetime:
-    text = cutoff_id.split(":", 1)[1] if ":" in cutoff_id else cutoff_id[cutoff_id.find("20"):]
+    text = cutoff_id
+    if not text[:4].isdigit():
+        text = text.split(":", 1)[1] if ":" in text else text[text.find("20"):]
     try:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:

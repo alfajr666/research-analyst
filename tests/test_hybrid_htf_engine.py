@@ -7,7 +7,7 @@ import sys
 
 import config
 from regime_history import init_regime_history_schema
-from strategy_v2_context import hybrid_htf_context, load_bars_for_interval
+from strategy_v2_context import cutoff_from_id, hybrid_htf_context, load_bars_for_interval
 
 
 UTC = timezone.utc
@@ -33,6 +33,11 @@ def test_config_rejects_unvalidated_enforcement():
     )
     assert result.returncode != 0
     assert "HYBRID_HTF_PARITY_VALIDATED" in result.stderr
+
+
+def test_cutoff_parser_preserves_explicit_iso_datetime():
+    cutoff = datetime(2026, 9, 4, 21, 44, tzinfo=UTC)
+    assert cutoff_from_id(str(cutoff), datetime(2026, 9, 4, tzinfo=UTC)) == cutoff
 
 
 def _insert_direct_bars(conn, asset, interval, through, count):
