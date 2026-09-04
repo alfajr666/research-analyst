@@ -12,11 +12,12 @@ from typing import Any, Iterable
 import config
 from entry_policy import session_context
 from regime_score import regime_score_for_asset
+from regime_history import init_regime_history_schema
 
 
-GATE_VERSION = "regime-session-gate-v1"
-SCORE_VERSION = "regime-score-v1"
-FAMILY_ACTIVATION_VERSION = "family-activation-v1"
+GATE_VERSION = "regime-session-gate-v2"
+SCORE_VERSION = "regime-score-v2"
+FAMILY_ACTIVATION_VERSION = "family-activation-v2"
 _FAMILY_WEIGHT_KEYS = {
     "trend": "trend_weight",
     "mean_reversion": "mean_reversion_weight",
@@ -77,6 +78,7 @@ def init_regime_db(db_path: str | Path | None = None) -> Path:
                 reasons_json TEXT NOT NULL,
                 family_activation_json TEXT NOT NULL,
                 score_observation_id TEXT,
+                reversal_evidence_json TEXT NOT NULL DEFAULT '{}',
                 recorded_at TEXT NOT NULL,
                 UNIQUE(asset, cutoff_at, rotation_feed_id, gate_version)
             )
@@ -89,8 +91,19 @@ def init_regime_db(db_path: str | Path | None = None) -> Path:
                 "ALTER TABLE regime_gate_decisions "
                 "ADD COLUMN family_activation_json TEXT NOT NULL DEFAULT '{}'"
             )
+        if "reversal_evidence_json" not in columns:
+            conn.execute(
+                "ALTER TABLE regime_gate_decisions "
+                "ADD COLUMN reversal_evidence_json TEXT NOT NULL DEFAULT '{}'"
+            )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_regime_scores_cutoff ON regime_scores (cutoff_at, asset)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_regime_gate_cutoff ON regime_gate_decisions (cutoff_at, asset)")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(regime_scores)")}
+        if "source_references_json" not in columns:
+            conn.execute(
+                "ALTER TABLE regime_scores ADD COLUMN source_references_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        init_regime_history_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -98,18 +111,34 @@ def init_regime_db(db_path: str | Path | None = None) -> Path:
 
 
 def _family_activation(
-    score: dict[str, Any], previous_score: dict[str, Any] | None = None
+    score: dict[str, Any],
+    previous_score: dict[str, Any] | None = None,
+    previous_activation: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     on_threshold = float(getattr(config, "REGIME_SESSION_FAMILY_ON_THRESHOLD", 0.35))
     off_threshold = float(getattr(config, "REGIME_SESSION_FAMILY_OFF_THRESHOLD", 0.25))
     activation = {}
     for family, weight_key in _FAMILY_WEIGHT_KEYS.items():
+        if family == "reversal" and isinstance(score.get("reversal_gate"), dict):
+            gate = score["reversal_gate"]
+            activation[family] = {
+                "active": bool(gate.get("active")),
+                "weight": 1.0 if gate.get("active") else 0.0,
+                "previous_weight": None,
+                "reason": "reversal_gate_active" if gate.get("active") else "reversal_gate_blocked",
+                "direction": gate.get("direction", "none"),
+                "divergence_type": gate.get("divergence_type", "none"),
+                "pivot_ids": gate.get("pivot_ids", []),
+                "evidence": gate,
+            }
+            continue
         weight = float(score.get(weight_key) or 0.0)
         previous_weight = float((previous_score or {}).get(weight_key) or 0.0)
+        was_active = bool((previous_activation or {}).get(family, {}).get("active"))
         if weight >= on_threshold:
             active = True
             reason = "on_threshold"
-        elif previous_weight >= on_threshold and weight >= off_threshold:
+        elif (was_active or (previous_activation is None and previous_weight >= on_threshold)) and weight >= off_threshold:
             active = True
             reason = "hysteresis_hold"
         else:
@@ -130,6 +159,7 @@ def gate_decision(
     score: dict[str, Any],
     feed_id: str,
     previous_score: dict[str, Any] | None = None,
+    previous_activation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the deterministic pre-evaluation decision for one asset."""
     session = session_context(cutoff)
@@ -140,7 +170,7 @@ def gate_decision(
         reasons.append("session_context_unavailable")
     if session["session_phase"] == "cooldown":
         reasons.append("session_open_cooldown")
-    family_activation = _family_activation(score, previous_score)
+    family_activation = _family_activation(score, previous_score, previous_activation)
     return {
         "asset": str(asset).upper(),
         "cutoff_at": _timestamp(cutoff),
@@ -164,6 +194,7 @@ def gate_decision(
             "threshold_off": float(getattr(config, "REGIME_SESSION_FAMILY_OFF_THRESHOLD", 0.25)),
             "families": family_activation,
         },
+        "reversal_evidence": score.get("reversal_gate", {}),
     }
 
 
@@ -186,8 +217,8 @@ def _insert_observation(
             observation_id, asset, cutoff_at, rotation_feed_id, score_version,
             status, trend_weight, mean_reversion_weight, reversal_weight,
             confidence, inputs_json, components_json, source_observation_ids,
-            recorded_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_references_json, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             observation_id,
@@ -203,6 +234,7 @@ def _insert_observation(
             json.dumps(market_data, sort_keys=True, default=str),
             json.dumps(score.get("components", {}), sort_keys=True, default=str),
             json.dumps(score.get("source_observation_ids", []), sort_keys=True),
+            json.dumps(score.get("source_references", {}), sort_keys=True, default=str),
             recorded_at,
         ),
     )
@@ -211,8 +243,8 @@ def _insert_observation(
         INSERT OR IGNORE INTO regime_gate_decisions (
             decision_id, asset, cutoff_at, rotation_feed_id, gate_version,
             decision, session_name, session_phase, reasons_json,
-            family_activation_json, score_observation_id, recorded_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            family_activation_json, score_observation_id, reversal_evidence_json, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             decision_id,
@@ -226,6 +258,7 @@ def _insert_observation(
             json.dumps(gate["reasons"], sort_keys=True),
             json.dumps(gate["family_activation"], sort_keys=True),
             observation_id,
+            json.dumps(gate.get("reversal_evidence", {}), sort_keys=True, default=str),
             recorded_at,
         ),
     )
@@ -247,6 +280,25 @@ def _previous_score(conn: Any, asset: str, cutoff: Any) -> dict[str, Any] | None
     return dict(zip(_FAMILY_WEIGHT_KEYS.values(), row))
 
 
+def _previous_activation(conn: Any, asset: str, cutoff: Any) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT family_activation_json
+          FROM regime_gate_decisions
+         WHERE asset = ? AND cutoff_at < ? AND gate_version = ?
+         ORDER BY cutoff_at DESC
+         LIMIT 1
+        """,
+        (str(asset).upper(), _timestamp(cutoff), GATE_VERSION),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(row[0] or "{}").get("families", {})
+    except (TypeError, ValueError):
+        return None
+
+
 def publish_regime_batch(
     cutoff: Any,
     *,
@@ -254,6 +306,7 @@ def publish_regime_batch(
     feed_id: str | None = None,
     market_db_path: str | Path | None = None,
     regime_db_path: str | Path | None = None,
+    history_fetcher: Any | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Score and persist one rotation snapshot without writing market data."""
@@ -276,11 +329,18 @@ def publish_regime_batch(
         "allowed": [],
         "blocked": [],
         "family_assets": {family: [] for family in _FAMILY_WEIGHT_KEYS},
+        "bootstrap": {},
     }
     try:
         for asset in assets:
             try:
-                score = regime_score_for_asset(market_conn, asset, cutoff)
+                score = regime_score_for_asset(
+                    market_conn,
+                    asset,
+                    cutoff,
+                    regime_conn=regime_conn,
+                    history_fetcher=history_fetcher,
+                )
             except Exception as exc:
                 score = {
                     "status": "insufficient_data",
@@ -293,8 +353,12 @@ def publish_regime_batch(
                 score,
                 feed_id,
                 previous_score=_previous_score(regime_conn, asset, cutoff),
+                previous_activation=_previous_activation(regime_conn, asset, cutoff),
             )
             _insert_observation(regime_conn, asset, cutoff, feed_id, score, gate, recorded_at)
+            summary["bootstrap"][asset] = score.get(
+                "regime_history", {"status": "unknown"}
+            )
             summary["blocked" if gate["decision"] == "block" else "allowed"].append(asset)
             if gate["decision"] == "allow":
                 for family in gate["active_families"]:
@@ -344,8 +408,8 @@ def load_gate_scope(
             row = conn.execute(
                 """
                 SELECT g.decision, g.session_name, g.session_phase, g.reasons_json,
-                       g.family_activation_json,
-                       s.trend_weight, s.mean_reversion_weight, s.reversal_weight
+                        g.family_activation_json, g.reversal_evidence_json,
+                        s.trend_weight, s.mean_reversion_weight, s.reversal_weight
                   FROM regime_gate_decisions AS g
                   LEFT JOIN regime_scores AS s
                     ON s.observation_id = g.score_observation_id
@@ -360,13 +424,15 @@ def load_gate_scope(
             reasons = json.loads(row[3] or "[]")
             family_activation = json.loads(row[4] or "{}")
             if not family_activation.get("families"):
-                score = dict(zip(_FAMILY_WEIGHT_KEYS.values(), row[5:8]))
+                score = dict(zip(_FAMILY_WEIGHT_KEYS.values(), row[6:9]))
                 family_activation = {
                     "version": FAMILY_ACTIVATION_VERSION,
                     "threshold_on": float(getattr(config, "REGIME_SESSION_FAMILY_ON_THRESHOLD", 0.35)),
                     "threshold_off": float(getattr(config, "REGIME_SESSION_FAMILY_OFF_THRESHOLD", 0.25)),
                     "families": _family_activation(
-                        score, _previous_score(conn, asset, cutoff)
+                        score,
+                        _previous_score(conn, asset, cutoff),
+                        _previous_activation(conn, asset, cutoff),
                     ),
                 }
             active_families = (
@@ -381,9 +447,10 @@ def load_gate_scope(
                 "reasons": reasons,
                 "family_weights": {
                     family: float(weight or 0.0)
-                    for family, weight in zip(_FAMILY_WEIGHT_KEYS, row[5:8])
+                    for family, weight in zip(_FAMILY_WEIGHT_KEYS, row[6:9])
                 },
                 "family_activation": family_activation,
+                "reversal_evidence": json.loads(row[5] or "{}"),
                 "active_families": active_families,
             }
             if row[0] == "block":

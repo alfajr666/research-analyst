@@ -30,12 +30,14 @@ canonical bases (e.g. `BTC`); `config.expand_perp_symbols(base, venue)` maps the
 | `WS_BYBIT_ENABLED` | `true` | Primary public source (Bybit V5). |
 | `WS_BINANCE_ENABLED` | `false` | Opt-in, off by default. |
 | `WS_SYMBOL_SOURCE` | `static` | `static` \| `rotated` \| `both`; static from `symbols/static_universe.json`. |
-| `WS_STREAM_TIMEFRAMES` | `1m,5m` | 1m + 5m kline + markPrice streamed; 15m/1h/4h resampled from 5m locally. |
+| `WS_STREAM_TIMEFRAMES` | `1m,5m` | 1m + 5m kline + markPrice streamed; strategy-facing 15m/1h/4h resampled from 5m locally. |
 | `WS_MARKPRICE_ENABLED` | `true` | markPrice @1s for live state / funding context. |
 
-Streaming 1m + 5m kline + markPrice matches the "higher TF is resampled" rule (15m/1h/4h
-are derived from the 5m base) while keeping 1m/5m available as direct eval feeds, and keeps
-stream counts low (see capacity below).
+Streaming 1m + 5m kline + markPrice matches the strategy-facing "higher TF is
+resampled" rule (15m/1h/4h are derived from the 5m base) while keeping 1m/5m
+available as direct eval feeds, and keeps stream counts low (see capacity
+below). The regime worker's direct REST 4h cache is separate and does not add a
+WebSocket topic.
 
 ## Capacity (no exhaustion risk)
 
@@ -62,7 +64,7 @@ ws_gateway.py
     - stamp source = 'bybit_ws' | 'binance_ws'
     - stamp data_purity (preserve evaluator gates; failover keeps purity tag)
 ResampleWorker (separate tick loop)
-    - on each 5m close: aggregate -> 15m -> 1h -> 4h (1m and 5m are streamed, not derived)
+    - on each 5m close: aggregate -> 15m -> 1h -> 4h for strategy-facing market data (1m and 5m are streamed, not derived)
     - writes derived bars into source_observations with derived provenance
 ```
 

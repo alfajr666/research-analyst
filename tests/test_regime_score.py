@@ -107,7 +107,23 @@ def test_market_data_adapter_uses_one_asset_and_no_cross_asset_proxy():
     assert "btc_spx_correlation" not in data
 
 
-def test_rotated_asset_adapter_loads_each_timeframe_for_the_requested_asset(monkeypatch):
+def test_score_without_regime_history_connection_fails_closed(monkeypatch):
+    cutoff = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(
+        "strategy_v2_context.load_bars_for_interval",
+        lambda *_args: pl.DataFrame(),
+    )
+    result = regime_score_for_asset(object(), "ETH", cutoff)
+
+    assert result["status"] == "insufficient_data"
+    assert result["regime_history"]["reason"] == "regime_history_connection_missing"
+
+
+def test_rotated_asset_adapter_loads_each_timeframe_for_the_requested_asset(monkeypatch, tmp_path):
+    import config
+    from regime_history import ensure_asset_ready, init_regime_history_schema
+
     calls = []
     cutoff = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 
@@ -130,9 +146,25 @@ def test_rotated_asset_adapter_loads_each_timeframe_for_the_requested_asset(monk
     # module import at the seam verifies rotation is handled per asset.
     import strategy_v2_context
     monkeypatch.setattr(strategy_v2_context, "load_bars_for_interval", loader)
-    result = regime_score_for_asset(
-        object(), "SOL", cutoff
+    regime_conn = config.get_db_connection(db_path=tmp_path / "regime.sqlite3")
+    init_regime_history_schema(regime_conn)
+    through = cutoff.replace(hour=cutoff.hour - cutoff.hour % 4, minute=0, second=0, microsecond=0)
+    direct_rows = []
+    for index in range(90):
+        start = through - timedelta(hours=(90 - index) * 4)
+        close = 100.0 + index
+        direct_rows.append([
+            int(start.timestamp() * 1000), str(close - 1), str(close + 1),
+            str(close - 2), str(close), "1", "0",
+        ])
+    ensure_asset_ready(
+        regime_conn, "SOL", cutoff,
+        fetcher=lambda _asset, _start, _end: direct_rows,
     )
+    result = regime_score_for_asset(
+        object(), "SOL", cutoff, regime_conn=regime_conn,
+    )
+    regime_conn.close()
 
     assert calls == [("SOL", "5m")]
     assert result["asset"] == "SOL"

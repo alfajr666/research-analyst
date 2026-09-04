@@ -1,7 +1,65 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import config
 from regime_session import load_gate_scope, publish_regime_batch
+
+
+def test_batch_wires_direct_history_into_score_provenance(monkeypatch, tmp_path):
+    import polars as pl
+    import strategy_v2_context
+
+    market_db = tmp_path / "market.sqlite3"
+    regime_db = tmp_path / "regime.sqlite3"
+    config.init_market_db(market_db)
+    cutoff = datetime(2026, 9, 4, 13, 40, tzinfo=timezone.utc)
+    rows = []
+    for index in range(2200):
+        timestamp = cutoff - timedelta(minutes=5 * (2200 - index))
+        close = 100.0 + index
+        rows.append({
+            "timestamp": timestamp,
+            "open": close - 1,
+            "high": close + 1,
+            "low": close - 2,
+            "close": close,
+            "volume": 1.0,
+        })
+    monkeypatch.setattr(
+        strategy_v2_context,
+        "load_bars_for_interval",
+        lambda _conn, _asset, _interval, _cutoff: pl.DataFrame(rows),
+    )
+    through = cutoff.replace(hour=cutoff.hour - cutoff.hour % 4, minute=0, second=0, microsecond=0)
+    direct_rows = []
+    for index in range(90):
+        start = through - timedelta(hours=(90 - index) * 4)
+        close = 100.0 + index
+        direct_rows.append([
+            int(start.timestamp() * 1000), str(close - 1), str(close + 1),
+            str(close - 2), str(close), "1", "0",
+        ])
+    summary = publish_regime_batch(
+        cutoff,
+        assets=["SOL"],
+        feed_id="feed-1",
+        market_db_path=market_db,
+        regime_db_path=regime_db,
+        history_fetcher=lambda _asset, _start, _end: direct_rows,
+    )
+
+    assert summary["allowed"] == ["SOL"]
+    conn = config.get_db_connection(read_only=True, db_path=regime_db)
+    row = conn.execute(
+        "SELECT status, source_references_json FROM regime_scores WHERE asset = 'SOL'"
+    ).fetchone()
+    cache_count = conn.execute(
+        "SELECT COUNT(*) FROM regime_4h_bars WHERE asset = 'SOL'"
+    ).fetchone()[0]
+    conn.close()
+    assert row[0] == "ready"
+    assert len(json.loads(row[1])["regime_4h_bar_ids"]) == 84
+    assert cache_count == 84
 
 
 def test_enforced_regime_scope_filters_each_plugin_by_asset_family(monkeypatch, tmp_path):
@@ -42,7 +100,7 @@ def test_enforced_regime_scope_filters_each_plugin_by_asset_family(monkeypatch, 
     market_conn.close()
     monkeypatch.setattr(
         "regime_session.regime_score_for_asset",
-        lambda _conn, asset, _cutoff: {
+        lambda _conn, asset, _cutoff, **_kwargs: {
             "status": "ok",
             "trend_weight": 0.8 if asset == "SOL" else 0.1,
             "mean_reversion_weight": 0.1 if asset == "SOL" else 0.8,

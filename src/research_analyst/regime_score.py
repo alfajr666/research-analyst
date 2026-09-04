@@ -9,7 +9,7 @@ from typing import Any
 import config
 
 
-REGIME_SCORE_VERSION = "regime-score-v1"
+REGIME_SCORE_VERSION = "regime-score-v2"
 _REQUIRED_INPUTS = (
     "adx_1h", "adx_4h", "realized_vol_recent", "realized_vol_prior",
 )
@@ -164,18 +164,48 @@ def market_data_from_bars(bars_1h: Any, bars_4h: Any, bars_vol: Any) -> dict[str
     }
 
 
-def regime_score_for_asset(conn: Any, asset: str, cutoff: Any) -> dict[str, Any]:
-    """Score a rotated asset using only that asset's completed market bars."""
+def regime_score_for_asset(
+    conn: Any,
+    asset: str,
+    cutoff: Any,
+    *,
+    regime_conn: Any | None = None,
+    history_fetcher: Any | None = None,
+) -> dict[str, Any]:
+    """Score one asset from canonical live inputs and regime-owned 4h history."""
     from strategy_v2_context import load_bars_for_interval, resample_ohlcv
+    from regime_history import ensure_asset_ready, load_regime_4h_bars
 
     bars_vol = load_bars_for_interval(conn, asset, "5m", cutoff)
     bars_1h = resample_ohlcv(bars_vol, "1h")
-    bars_4h = resample_ohlcv(bars_vol, "4h")
+    if regime_conn is None:
+        bars_4h = None
+        history = {"status": "retryable", "reason": "regime_history_connection_missing"}
+    else:
+        history = ensure_asset_ready(regime_conn, asset, cutoff, fetcher=history_fetcher)
+        bars_4h = load_regime_4h_bars(regime_conn, asset, cutoff) if history["status"] == "ready" else None
     market_data = market_data_from_bars(bars_1h, bars_4h, bars_vol)
     result = regime_score(cutoff, market_data)
     result["asset"] = str(asset).upper()
     result["market_data"] = market_data
-    result["source_observation_ids"] = _source_observation_ids(bars_vol)
+    result["regime_history"] = history
+    result.setdefault("components", {})["regime_history"] = history
+    result["source_observation_ids"] = _source_observation_ids(bars_vol, bars_1h)
+    result["source_references"] = {
+        "market_5m_1h_volatility_ids": _source_observation_ids(bars_vol, bars_1h),
+        "regime_4h_bar_ids": (
+            [str(value) for value in bars_4h["bar_id"].to_list()]
+            if bars_4h is not None and "bar_id" in bars_4h.columns else []
+        ),
+    }
+    from reversal_gate import reversal_gate
+
+    adx_values = _adx_series(
+        bars_1h,
+        int(getattr(config, "REGIME_SCORE_ADX_LENGTH", 14)),
+        int(getattr(config, "REGIME_SCORE_ADX_SMOOTHING", 14)),
+    )
+    result["reversal_gate"] = reversal_gate(asset, cutoff, bars_1h, adx_values)
     return result
 
 

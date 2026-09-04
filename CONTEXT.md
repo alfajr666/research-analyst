@@ -29,6 +29,15 @@
   evaluation begins.
 - **Regime observation**: the immutable, point-in-time score and gate result for
   one asset and one completed cutoff.
+- **Regime history cache**: regime-owned direct Bybit REST `4h` history retained
+  long enough to satisfy the regime scorer without waiting for live 5m
+  accumulation; it is not the strategy market-data ledger.
+- **Reversal activation gate**: the independent reversal-family unlock requiring
+  confirmed regular RSI divergence, recent trend ADX, and negative ADX decay;
+  it is not a trade trigger and does not deactivate other families.
+- **Bootstrap readiness**: the per-asset state proving that regime `4h` history,
+  live-evaluation `1m`/`5m` history, and any required live stream prerequisites
+  are complete before enforced evaluation.
 - **Structural reference**: a confirmed, point-in-time market feature that a
   candidate declares as the level whose violation invalidates its setup, such
   as a swing or a selected imbalance zone.

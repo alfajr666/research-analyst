@@ -23,6 +23,7 @@ Bybit public tickers
 
 data/market.sqlite3 + completed 5m cutoff
   -> regime-session worker
+       direct Bybit REST 4h regime cache
        per-asset score + session decision
        -> data/regime.sqlite3
 
@@ -79,8 +80,11 @@ second writer.
 ## Market Data
 
 Bybit is the production public source. The gateway streams completed `1m` and
-`5m` bars and locally derives `15m`, `1h`, and `4h` bars from completed `5m`
-observations. The derived bars are not a separate live-ingestion dependency.
+`5m` bars and locally derives strategy-facing `15m`, `1h`, and `4h` bars from
+completed `5m` observations. The derived bars are not a separate
+live-ingestion dependency. The regime worker separately reads completed direct
+Bybit REST `4h` candles into `data/regime.sqlite3`; it does not add a WebSocket
+topic or replace the strategy-facing 4h view.
 
 Closed bars may arrive with an end timestamp one millisecond before the
 boundary, such as `14:44:59.999` for the `14:45` bar. The resampler normalizes
@@ -98,15 +102,20 @@ names are never truncated.
 ## Regime Session
 
 The regime worker runs once per completed `5m` cutoff for the current
-subscription feed. For each asset it loads completed `5m` observations, derives
-`1h` and `4h` bars, computes in-house ADX and realized-volatility inputs, then
-persists an immutable score and gate decision.
+subscription feed. For each asset it loads completed `5m` observations for
+`1h` and realized-volatility inputs, reads regime-exclusive direct `4h` history
+from `data/regime.sqlite3`, computes in-house ADX and regime inputs, then
+persists an immutable score and gate decision. Strategy-facing `4h` bars remain
+the gateway's `5m`-derived market-data view.
 
 The default ADX length and smoothing are both 14. This implementation requires
 57 complete `4h` bars before the score is data-ready. During warmup, the score
 is `insufficient_data` and the reason is `regime_score_insufficient_data`.
 This is expected fail-closed behavior. Do not reduce the requirement or invent
-higher-timeframe bars.
+higher-timeframe bars. New or re-entering assets fetch 15 calendar days of
+completed direct Bybit `4h` history and retain at least 14 complete days. Gaps,
+duplicates, malformed candles, stale data, and missing exact-cutoff evidence
+block only the affected asset.
 
 `REGIME_SESSION_MODE` controls operational behavior:
 
@@ -119,7 +128,18 @@ higher-timeframe bars.
 Family activation uses hysteresis: ON at `0.35`, OFF at `0.25`. Families are
 `trend`, `mean_reversion`, and `reversal`. Feature materialization always covers
 the full subscription universe; family filtering occurs only at plugin
-invocation under enforcement.
+invocation under enforcement. Reversal activation is independent: it requires
+regular RSI14 divergence on confirmed 5-bar `1h` fractals, recent `1h` ADX14 at
+or above 25, and a negative OLS ADX slope over the latest 5 readings. Hidden or
+opposing ambiguous divergence fails closed. Reversal can coexist with trend or
+mean-reversion and only controls reversal-family scope, never trade geometry,
+admission, sizing, or executor protections.
+
+See `specs/regime-history-bootstrap-v1.md`,
+`specs/reversal-regime-gate-v1.md`, and
+`specs/regime-session-module-v1.md` for the normative contracts. The default
+rollout remains `REGIME_SESSION_MODE=shadow` until replay, lookahead,
+coexistence, and candidate-admission validation are complete.
 
 ## Live Strategy Set
 

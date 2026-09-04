@@ -70,12 +70,51 @@ def test_family_activation_holds_between_hysteresis_thresholds():
     assert result["family_activation"]["families"]["trend"]["reason"] == "hysteresis_hold"
 
 
+def test_hysteresis_uses_prior_active_state_not_only_prior_weight():
+    result = gate_decision(
+        "SOL",
+        "2026-09-04T13:40:00Z",
+        {**_score(), "trend_weight": 0.28, "mean_reversion_weight": 0.1},
+        "feed-1",
+        previous_score={"trend_weight": 0.30, "mean_reversion_weight": 0.1, "reversal_weight": 0.0},
+        previous_activation={
+            "trend": {"active": True},
+            "mean_reversion": {"active": False},
+            "reversal": {"active": False},
+        },
+    )
+
+    assert result["active_families"] == ["trend"]
+
+
+def test_reversal_gate_activates_alongside_other_families():
+    result = gate_decision(
+        "SOL",
+        "2026-09-04T13:40:00Z",
+        {
+            **_score(),
+            "trend_weight": 0.8,
+            "mean_reversion_weight": 0.8,
+            "reversal_gate": {
+                "active": True,
+                "direction": "short",
+                "divergence_type": "regular_bearish",
+                "pivot_ids": ["a", "b"],
+            },
+        },
+        "feed-1",
+    )
+
+    assert result["active_families"] == ["trend", "mean_reversion", "reversal"]
+    assert result["family_activation"]["families"]["reversal"]["direction"] == "short"
+
+
 def test_publish_and_load_gate_scope_require_exact_feed_and_cutoff(monkeypatch, tmp_path):
     market_db = Path(tmp_path) / "market.sqlite3"
     regime_db = Path(tmp_path) / "regime.sqlite3"
     config.init_market_db(market_db)
 
-    def score(_conn, asset, _cutoff):
+    def score(_conn, asset, _cutoff, **_kwargs):
         return _score("insufficient_data" if asset == "SOL" else "ok")
 
     monkeypatch.setattr("regime_session.regime_score_for_asset", score)
@@ -108,7 +147,7 @@ def test_scope_activates_families_per_asset(monkeypatch, tmp_path):
     regime_db = Path(tmp_path) / "regime.sqlite3"
     config.init_market_db(market_db)
 
-    def score(_conn, asset, _cutoff):
+    def score(_conn, asset, _cutoff, **_kwargs):
         if asset == "SOL":
             return {**_score(), "trend_weight": 0.8, "mean_reversion_weight": 0.1}
         return {**_score(), "trend_weight": 0.1, "mean_reversion_weight": 0.8}
