@@ -66,6 +66,19 @@ def validate_event(event: dict) -> None:
         raise ValueError("dedupe_key does not match event identity")
 
 
+def normalize_event(event: dict) -> dict:
+    """Repair the legacy admission-only target field before validation."""
+    if event.get("targets"):
+        return event
+    admission = event.get("_admission_result") or {}
+    target = event.get("take_profit", admission.get("selected_take_profit"))
+    if target is None:
+        return event
+    normalized = dict(event)
+    normalized["targets"] = [target]
+    return normalized
+
+
 def format_signal(event: dict) -> str:
     return format_alpha_signal(event, markdown=False)
 
@@ -284,7 +297,7 @@ class SignalPublisher:
             expired_outbox_paths = []
             for path in sorted(self.outbox_dir.glob("*.json")):
                 try:
-                    event = json.loads(path.read_text(encoding="utf-8"))
+                    event = normalize_event(json.loads(path.read_text(encoding="utf-8")))
                     validate_event(event)
                 except (OSError, ValueError, json.JSONDecodeError) as error:
                     print(f"Invalid alpha outbox event {path.name}: {error}", file=sys.stderr)

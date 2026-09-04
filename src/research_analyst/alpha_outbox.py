@@ -54,18 +54,21 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     # the configured validity. New strategy candidates must provide it explicitly.
     if not event.get("valid_until"):
         admission_event["valid_until"] = datetime.now(timezone.utc) + timedelta(minutes=1)
-    if not (admission_event.get("targets") or admission_event.get("take_profit")):
-        from trade_admission import derive_2r_target
-        entry = admission_event.get("entry_price")
-        if entry is None:
-            entry = (admission_event.get("entry_condition") or {}).get("price")
-        target = derive_2r_target(
-            admission_event.get("direction"),
-            entry,
-            admission_event.get("invalidation_price", admission_event.get("stop_loss")),
-        )
+    if not admission_event.get("targets"):
+        target = admission_event.get("take_profit")
+        if target is None:
+            from trade_admission import derive_2r_target
+            entry = admission_event.get("entry_price")
+            if entry is None:
+                entry = (admission_event.get("entry_condition") or {}).get("price")
+            target = derive_2r_target(
+                admission_event.get("direction"),
+                entry,
+                admission_event.get("invalidation_price", admission_event.get("stop_loss")),
+            )
         if target is not None:
             admission_event["take_profit"] = target
+            admission_event["targets"] = [target]
     admission = event.get("_admission_result") or admit(admission_event)
     complete_candidate = (admission_event.get("entry_price") is not None or
                           (admission_event.get("entry_condition") or {}).get("price") is not None) and \
@@ -112,6 +115,10 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     outbox_dir.mkdir(parents=True, exist_ok=True)
     destination = outbox_dir / f"{key}.json"
     payload = dict(event)
+    if not payload.get("targets") and admission_event.get("targets"):
+        payload["targets"] = admission_event["targets"]
+    if not payload.get("valid_until") and admission_event.get("valid_until"):
+        payload["valid_until"] = admission_event["valid_until"]
     payload["alpha_id"] = str(uuid5(NAMESPACE_URL, key))
     payload["dedupe_key"] = key
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str) + "\n"

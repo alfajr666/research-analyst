@@ -230,6 +230,11 @@ oxmgr logs research-analyst-orchestrator --lines 40
 oxmgr logs research-analyst-pm-sidecar --lines 40
 ```
 
+`research-analyst-regime-session` is health-checked by
+`scripts/regime_session_healthcheck.py`, which verifies the worker process and
+the recency and shape of its latest completed cycle. The tracked oxmgr
+definition is `ops/oxfile.toml`.
+
 For a deployment of explicitly approved code, restart only services importing
 the changed modules. Verify fresh cutoff logs, restart counts, market freshness,
 regime persistence, pipeline completion, publisher state, and PM decisions.

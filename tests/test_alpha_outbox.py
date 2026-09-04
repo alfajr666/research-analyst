@@ -5,6 +5,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from alpha_outbox import dedupe_key, write_event
+from signal_publisher import validate_event
 
 
 def _event():
@@ -15,6 +16,25 @@ def _event():
         "direction": "long",
         "observed_at": "2026-08-16T10:15:00+00:00",
     }
+
+
+def _complete_event_without_targets():
+    event = _event()
+    event.update({
+        "plugin_version": "v1",
+        "setup_class": "impulse_ignition",
+        "phase": "triggered",
+        "observed_at": "2026-08-16T10:15:00+00:00",
+        "valid_until": "2026-08-16T10:20:00+00:00",
+        "horizon_minutes": 5,
+        "confidence": 0.5,
+        "confidence_status": "uncalibrated",
+        "entry_condition": {"type": "market", "price": 100.0},
+        "entry_price": 100.0,
+        "invalidation_price": 99.0,
+        "feature_snapshot": {},
+    })
+    return event
 
 
 class AlphaOutboxTests(unittest.TestCase):
@@ -42,6 +62,22 @@ class AlphaOutboxTests(unittest.TestCase):
                 write_event(_event(), outbox)
 
             self.assertEqual(deliver.call_count, 2)
+
+    def test_written_derived_target_satisfies_publisher_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outbox = Path(directory)
+            with patch("raw_signal_batch.capture", return_value=None), \
+                 patch("raw_signal_batch.record_status"), \
+                 patch("trade_admission.admit", return_value={
+                     "hard_gate": "pass", "hard_gate_reasons": [],
+                     "symbol_account_gate": "pass",
+                 }):
+                created, path = write_event(_complete_event_without_targets(), outbox)
+
+            self.assertTrue(created)
+            written = json.loads(path.read_text())
+            validate_event(written)
+            self.assertEqual(written["targets"], [102.0])
 
 
 if __name__ == "__main__":

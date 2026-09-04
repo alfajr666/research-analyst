@@ -189,6 +189,11 @@ oxmgr logs research-analyst-orchestrator --lines 40
 oxmgr logs research-analyst-pm-sidecar --lines 40
 ```
 
+The regime-session target uses `scripts/regime_session_healthcheck.py`; the
+probe requires a running worker and a recent completed cycle with valid 1h/4h
+readiness and gate summary fields. Its tracked oxmgr definition is
+`ops/oxfile.toml`.
+
 The core managed targets are:
 
 - `research-analyst-symbol-rotation`
