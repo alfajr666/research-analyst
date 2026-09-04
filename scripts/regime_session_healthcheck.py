@@ -76,6 +76,16 @@ def latest_cycle(log_path: Path | None = None) -> tuple[float, dict] | None:
     if current_at is not None:
         records.append((current_at, "".join(current_payload)))
 
+    # oxmgr can persist long stdout writes without the timestamp prefix.
+    for line in reversed(lines):
+        try:
+            payload = json.loads(line)
+            recorded_at = datetime.fromisoformat(str(payload["cutoff_at"]).replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and REQUIRED_FIELDS <= payload.keys():
+            return recorded_at.timestamp(), payload
+
     for recorded_at, serialized_payload in reversed(records):
         try:
             payload = json.loads(serialized_payload)
