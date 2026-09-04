@@ -61,6 +61,14 @@ class RegimeSessionHealthcheckTests(unittest.TestCase):
                  patch.object(regime_session_healthcheck, "process_running", return_value=True):
                 self.assertEqual(regime_session_healthcheck.main(), 0)
 
+    def test_unprefixed_json_cycle_uses_cutoff_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "regime.log"
+            path.write_text(json.dumps(_cycle()) + "\n")
+            with patch.object(regime_session_healthcheck, "LOG", path), \
+                 patch.object(regime_session_healthcheck, "process_running", return_value=True):
+                self.assertEqual(regime_session_healthcheck.main(), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
