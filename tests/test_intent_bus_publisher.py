@@ -6,6 +6,7 @@ import os
 import tempfile
 
 import pytest
+from trade_admission import candidate_admission_fingerprint
 
 
 @pytest.fixture
@@ -28,7 +29,7 @@ def temp_bus_db(monkeypatch):
 
 
 def _schema_v1_envelope():
-    return {
+    envelope = {
         "schema_version": 1,
         "delivery_id": "ra-env-1",
         "source": "research-analyst",
@@ -38,13 +39,47 @@ def _schema_v1_envelope():
         "symbol": "ETH/USDT:USDT",
         "direction": "SHORT",
         "entry_price": 3000.0,
-        "stop_loss": 3100.0,
-        "take_profit": 2800.0,
+        "stop_loss": 3300.0,
+        "take_profit": 2400.0,
         "take_profit_mode": "fixed_full_close",
-        "observed_at": "2026-01-01T00:00:00Z",
-        "entry_valid_until": "2026-01-01T00:05:00Z",
-        "metadata": {"strategy_id": "impulse-ignition-v1"},
+        "observed_at": "2099-01-01T00:00:00Z",
+        "entry_valid_until": "2099-01-01T00:05:00Z",
+        "metadata": {
+            "strategy_id": "impulse-ignition-v1",
+            "candidate_id": "ra-candidate-1",
+            "structural_context": {
+                "asset": "ETH", "cutoff": "2099-01-01T00:00:00Z",
+                "zones": [{"zone_id": "zone-1", "asset": "ETH", "type": "order_block", "timeframe": "4h",
+                            "direction": "bearish", "low": 3100.0, "high": 3200.0, "state": "active",
+                            "created_at": "2098-12-31T20:00:00Z", "confirmed_at": "2098-12-31T20:00:00Z",
+                            "coverage_status": "covered", "source_evidence_ids": ["zone-bar-1"]}],
+                "atr_by_timeframe": {"4h": 100.0}, "atr_source_bar_ids": {"4h": ["bar-1"]},
+            },
+            "admission_result": {
+                "hard_gate": "pass", "structural_stop_gate": "pass", "selected_zone_id": "zone-1",
+                "selected_zone_asset": "ETH", "selected_zone_kind": "order_block", "selected_zone_state": "active",
+                "selected_zone_created_at": "2098-12-31T20:00:00Z", "selected_zone_confirmed_at": "2098-12-31T20:00:00Z",
+                "selected_zone_coverage_status": "covered", "selected_zone_source_evidence_ids": ["zone-bar-1"],
+                "selected_zone_timeframe": "4h", "structural_atr_method": "wilder",
+                "structural_atr_period": 14, "structural_atr_source_bar_ids": ["bar-1"],
+                "structural_atr": 100.0, "selected_zone_low": 3100.0, "selected_zone_high": 3200.0,
+                "selected_zone_boundary": 3200.0,
+                "entry_zone_buffer": 100.0, "entry_zone_buffer_atr": 1.0,
+                "structural_stop_buffer": 100.0, "structural_stop_buffer_atr": 1.0,
+                "atr14_4h": 100.0,
+                "data_freshness_seconds": 1.0,
+                "structural_context_cutoff": "2099-01-01T00:00:00Z",
+                "candidate_id": "ra-candidate-1",
+            },
+        },
     }
+    envelope["metadata"]["admission_result"]["candidate_fingerprint"] = candidate_admission_fingerprint({
+        "candidate_id": "ra-candidate-1", "strategy_id": "impulse-ignition-v1", "asset": "ETH",
+        "direction": "SHORT", "entry_price": 3000.0, "invalidation_price": 3300.0,
+        "take_profit": 2400.0, "observed_at": envelope["observed_at"],
+        "valid_until": envelope["entry_valid_until"],
+    })
+    return envelope
 
 
 def test_publish_research_intent_writes_row(temp_bus_db):
@@ -84,6 +119,19 @@ def test_publish_disabled_when_flags_off(temp_bus_db, monkeypatch):
     assert ok is False or delivery_id is None
 
 
+def test_publish_rejects_intent_without_admission_proof(temp_bus_db):
+    from intent_bus_publisher import publish_research_intent
+
+    envelope = _schema_v1_envelope()
+    envelope["metadata"].pop("admission_result")
+
+    ok, delivery_id, err = publish_research_intent(envelope, target="bybit")
+
+    assert ok is False
+    assert delivery_id is None
+    assert "admission proof is missing" in str(err)
+
+
 def test_publish_propr_adapts_schema_v2_without_sizing(temp_bus_db):
     from intent_bus_publisher import publish_research_intent
     from intent_bus import IntentBus
@@ -100,8 +148,8 @@ def test_publish_propr_adapts_schema_v2_without_sizing(temp_bus_db):
         assert delivery.payload["thesis_id"] == "ra-env-1"
         assert delivery.payload["symbol"] == "ETH"
         assert delivery.payload["hints"]["entry"] == 3000.0
-        assert delivery.payload["hints"]["sl"] == 3100.0
-        assert delivery.payload["hints"]["primary_tp"] == 2800.0
+        assert delivery.payload["hints"]["sl"] == 3300.0
+        assert delivery.payload["hints"]["primary_tp"] == 2400.0
         assert not any(k in delivery.payload for k in ("quantity", "risk_amount", "leverage"))
     finally:
         bus.close()

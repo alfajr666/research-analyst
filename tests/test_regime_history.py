@@ -11,7 +11,7 @@ from regime_history import (
 )
 
 
-def _rows(cutoff, *, gap_at=None, interval_hours=4, count=90):
+def _rows(cutoff, *, gap_at=None, interval_hours=4, count=300):
     through = cutoff.replace(
         hour=cutoff.hour - cutoff.hour % interval_hours,
         minute=0,
@@ -90,13 +90,13 @@ def test_direct_1h_history_bootstrap_is_ready_and_loadable(tmp_path):
         "VELVET",
         cutoff,
         fetcher=lambda _asset, _start, _end: _rows(
-            cutoff, interval_hours=1, count=96
+            cutoff, interval_hours=1, count=360
         ),
     )
     bars = load_regime_1h_bars(conn, "VELVET", cutoff)
 
     assert result["status"] == "ready"
-    assert result["covered_bars"] == 72
+    assert result["covered_bars"] == 336
     assert result["missing_bars"] == 0
     assert bars.height == 72
     assert bars["source"].unique().to_list() == ["bybit_rest"]
@@ -116,7 +116,7 @@ def test_direct_1h_history_gap_is_retryable(tmp_path):
         "VELVET",
         cutoff,
         fetcher=lambda _asset, _start, _end: _rows(
-            cutoff, interval_hours=1, count=96, gap_at=40
+            cutoff, interval_hours=1, count=360, gap_at=40
         ),
     )
 
@@ -150,6 +150,36 @@ def test_direct_1h_fetch_uses_bybit_hourly_interval(monkeypatch):
     assert requests[0][0]["interval"] == "60"
 
 
+def test_direct_history_fetch_paginates_beyond_provider_limit(monkeypatch):
+    import regime_history
+
+    requests = []
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            page = list(range(200)) if len(requests) == 1 else list(range(40))
+            start = 1000 if len(requests) == 1 else 500
+            return {"retCode": 0, "result": {"list": [[start - index, "1", "2", "0.5", "1", "1"] for index in page]}}
+
+    def get(_url, *, params, timeout):
+        requests.append((params, timeout))
+        return Response()
+
+    monkeypatch.setattr(regime_history.httpx, "get", get)
+
+    rows = regime_history.fetch_bybit_1h("VELVET", 0, 2000)
+
+    assert len(rows) == 240
+    assert len(requests) == 2
+    assert requests[1][0]["end"] < requests[0][0]["end"]
+
+
 def test_duplicate_direct_candle_fails_readiness(tmp_path):
     import config
 
@@ -158,7 +188,7 @@ def test_duplicate_direct_candle_fails_readiness(tmp_path):
     init_regime_history_schema(conn)
     cutoff = datetime(2026, 9, 4, 13, 40, tzinfo=timezone.utc)
     rows = _rows(cutoff)
-    rows.insert(10, rows[10].copy())
+    rows.insert(120, rows[120].copy())
 
     result = ensure_asset_ready(
         conn, "ETH", cutoff, fetcher=lambda _asset, _start, _end: rows

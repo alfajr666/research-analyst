@@ -1,7 +1,7 @@
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -129,21 +129,15 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             self.db,
         )
 
-        assert snapshot["zones"] == [{
-            "zone_id": "zone-1", "reference_id": "zone-1", "asset": "BTC",
-            "kind": "fvg_4h", "type": "fvg", "timeframe": "4h",
-            "direction": "bullish", "strength": 2.0, "low": 95.0, "high": 96.0,
-            "state": "active", "source_evidence_ids": ["bar-1"],
-            "confidence_status": "confirmed", "created_at": "2026-08-17T08:00:00+00:00",
-        }]
+        assert "zones" not in snapshot
 
     def test_live_compact_seam_admits_once_and_selects_one_intent(self):
         import strategy_plugins
 
         def event(strategy_id, score):
             return {"strategy_id": strategy_id, "asset": "BTCUSDT", "direction": "long",
-                    "observed_at": "2099-08-17T12:15:00+00:00",
-                    "valid_until": "2099-08-17T12:20:00+00:00", "entry_price": 100,
+                    "observed_at": "2026-08-17T12:15:00+00:00",
+                    "valid_until": "2026-08-17T12:20:00+00:00", "entry_price": 100,
                     "invalidation_price": 95, "targets": [110], "atr14_4h": 10,
                     "context": {"strategy_score": score}}
 
@@ -152,6 +146,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         old_enabled = config.STRATEGY_ENABLED_IDS
         old_active = config.STRATEGY_ACTIVE_IDS
         old_structural = config.STRUCTURAL_STOP_ADMISSION_ENABLED
+        old_context_builder = strategy_plugins.build_structural_contexts
         writes = []
         try:
             strategy_plugins._REGISTRY.update({sid: strategy_plugins.StrategyPlugin(
@@ -159,7 +154,20 @@ class StrategyPluginRegistryTests(unittest.TestCase):
                     [event(sid, 3 if sid == ids[0] else 1)]) for sid in ids})
             config.STRATEGY_ENABLED_IDS = ids
             config.STRATEGY_ACTIVE_IDS = ids
-            config.STRUCTURAL_STOP_ADMISSION_ENABLED = False
+            strategy_plugins.build_structural_contexts = lambda _candidates, cutoff, **_kwargs: {
+                "BTC": {
+                    "asset": "BTC", "cutoff": cutoff,
+                    "zones": [{
+                        "zone_id": "zone-test", "asset": "BTC", "type": "order_block", "timeframe": "4h",
+                        "direction": "bullish", "low": 98.0, "high": 99.0, "state": "active",
+                        "created_at": cutoff - timedelta(hours=4), "confirmed_at": cutoff - timedelta(hours=4),
+                        "coverage_status": "covered",
+                        "source_evidence_ids": ["bar-test"],
+                    }],
+                    "atr_by_timeframe": {"4h": 1.0},
+                    "atr_source_bar_ids": {"4h": ["bar-test"]},
+                },
+            }
             conn = config.get_db_connection(db_path=self.db)
             conn.execute("""CREATE TABLE source_observations (
                 observation_id VARCHAR, source VARCHAR, venue VARCHAR,
@@ -186,6 +194,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             config.STRATEGY_ENABLED_IDS = old_enabled
             config.STRATEGY_ACTIVE_IDS = old_active
             config.STRUCTURAL_STOP_ADMISSION_ENABLED = old_structural
+            strategy_plugins.build_structural_contexts = old_context_builder
 
     def test_companion_bars_are_checked_in_market_db(self):
         import strategy_plugins

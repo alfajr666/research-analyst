@@ -233,6 +233,9 @@ candidate -> raw ledger -> selected event -> alpha outbox -> intent bus
 
 The system must distinguish structural rejection from scoring suppression,
 alpha persistence, bus publication, executor acceptance, and fill state.
+Every intent handoff must also revalidate generic admission, structural proof
+consistency, symbol/account identity, freshness, expiry, exact cutoff, and the
+unchanged proposed stop. Strategy snapshots must not expose HTF zone records.
 
 ## 9. Required Tests
 

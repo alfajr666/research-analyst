@@ -64,6 +64,27 @@ def validate_event(event: dict) -> None:
         raise ValueError("valid_until must be after observed_at")
     if event["dedupe_key"] != dedupe_key(event):
         raise ValueError("dedupe_key does not match event identity")
+    entry = event.get("entry_price")
+    if entry is None:
+        entry = (event.get("entry_condition") or {}).get("price")
+    stop = event.get("invalidation_price", event.get("stop_loss"))
+    complete_candidate = (
+        entry is not None
+        and stop is not None
+        and bool(event.get("valid_until"))
+        and event.get("data_freshness_seconds") is not None
+    )
+    if not complete_candidate:
+        raise ValueError("candidate admission fields are incomplete")
+    from trade_admission import admit
+    admission = admit(
+        event,
+        now=parse_timestamp(event["observed_at"]),
+        structural_context=event.get("structural_context"),
+    )
+    if admission["hard_gate"] != "pass":
+        raise ValueError("admission failed: " + "; ".join(admission["hard_gate_reasons"]))
+    event["_admission_result"] = admission
 
 
 def normalize_event(event: dict) -> dict:
@@ -330,6 +351,14 @@ class SignalPublisher:
             for event in valid_events:
                 if not self._research_ready_for_delivery(connection, event):
                     continue
+                if config.INTENT_DELIVERY_ENABLED:
+                    # The durable alpha outbox is the retry owner for executor
+                    # handoff; shared-bus publication remains idempotent.
+                    from alpha_outbox import _maybe_deliver_intent, _is_complete_candidate
+                    _maybe_deliver_intent(
+                        event,
+                        complete_candidate=_is_complete_candidate(event),
+                    )
                 for channel, transport in self.transports.items():
                     outcome = self._deliver(connection, event, self.now(), channel, transport)
                     if outcome:

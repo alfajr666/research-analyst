@@ -30,7 +30,7 @@ canonical bases (e.g. `BTC`); `config.expand_perp_symbols(base, venue)` maps the
 | `WS_BYBIT_ENABLED` | `true` | Primary public source (Bybit V5). |
 | `WS_BINANCE_ENABLED` | `false` | Opt-in, off by default. |
 | `WS_SYMBOL_SOURCE` | `static` | `static` \| `rotated` \| `both`; static from `symbols/static_universe.json`. |
-| `WS_STREAM_TIMEFRAMES` | `1m,5m` | 1m + 5m kline + markPrice streamed; strategy-facing 15m/1h/4h resampled from 5m locally. |
+| `WS_STREAM_TIMEFRAMES` | `1m,5m` | 1m + 5m kline + markPrice streamed; canonical 15m/1h/4h bars resampled from 5m locally. The engine may seed strategy 1h/4h history from regime-owned direct REST data. |
 | `WS_MARKPRICE_ENABLED` | `true` | markPrice @1s for live state / funding context. |
 
 Streaming 1m + 5m kline + markPrice matches the strategy-facing "higher TF is
@@ -64,7 +64,7 @@ ws_gateway.py
     - stamp source = 'bybit_ws' | 'binance_ws'
     - stamp data_purity (preserve evaluator gates; failover keeps purity tag)
 ResampleWorker (separate tick loop)
-    - on each 5m close: aggregate -> 15m -> 1h -> 4h for strategy-facing market data (1m and 5m are streamed, not derived)
+     - on each 5m close: aggregate -> 15m -> 1h -> 4h for canonical market data (1m and 5m are streamed, not derived); the engine's hybrid strategy HTF loader may use direct REST seed history before this tail
     - writes derived bars into source_observations with derived provenance
 ```
 

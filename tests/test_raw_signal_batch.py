@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
-from raw_signal_batch import capture, window_start, publish_once
+from raw_signal_batch import capture, record_status, window_start, publish_once
 import orchestrator
 
 
@@ -31,7 +31,8 @@ def test_batch_claim_retry_does_not_duplicate_send(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ANALYST_DB_PATH", str(db))
     monkeypatch.setattr(config, "RAW_SIGNAL_DISCORD_BATCH_ENABLED", True)
     config.init_analyst_db(db)
-    capture(_event(datetime(2026, 8, 29, 5, 40, tzinfo=timezone.utc)), db)
+    raw_id = capture(_event(datetime(2026, 8, 29, 5, 40, tzinfo=timezone.utc)), db)
+    record_status(raw_id, hard_gate_status="pass", db_path=db)
 
     class Transport:
         calls = 0

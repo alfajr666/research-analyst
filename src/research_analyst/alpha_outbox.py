@@ -94,15 +94,17 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     complete_candidate = _is_complete_candidate(event)
     if raw_id and complete_candidate:
         record_status(raw_id, hard_gate_status=admission["hard_gate"],
+                      score_status="pending", clash_status="pending",
+                      executor_intent_status="not_eligible" if admission["hard_gate"] != "pass" else None,
                       reason="; ".join(admission["hard_gate_reasons"]))
     if admission.get("symbol_account_gate") == "fail":
         if raw_id:
             record_status(
                 raw_id,
                 hard_gate_status="fail",
-                score_status="not_evaluated",
-                clash_status="not_evaluated",
-                executor_intent_status="rejected",
+                score_status="pending",
+                clash_status="pending",
+                executor_intent_status="not_eligible",
                 reason=(
                     f"{admission.get('rejection_reason')}; canonical_asset={admission.get('canonical_asset')}; "
                     f"resolved_account={admission.get('resolved_account')}; policy_version={admission.get('policy_version')}"
@@ -137,6 +139,7 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         payload["targets"] = admission_event["targets"]
     if not payload.get("valid_until") and admission_event.get("valid_until"):
         payload["valid_until"] = admission_event["valid_until"]
+    payload["_admission_result"] = admission
     payload["alpha_id"] = str(uuid5(NAMESPACE_URL, key))
     payload["dedupe_key"] = key
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str) + "\n"
@@ -159,9 +162,17 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 print(f"duplicate alpha outbox event unreadable: {exc}")
             return False, destination
-        _maybe_deliver_intent(payload, admission=admission, complete_candidate=complete_candidate)
+        delivery_status = _maybe_deliver_intent(
+            payload, admission=admission, complete_candidate=complete_candidate
+        )
         if raw_id:
-            record_status(raw_id, executor_intent_status="written")
+            record_status(
+                raw_id,
+                executor_intent_status=(
+                    "written" if delivery_status == "written" else
+                    "failed" if delivery_status == "failed" else "not_eligible"
+                ),
+            )
         return True, destination
     finally:
         try:
@@ -182,9 +193,9 @@ def _maybe_deliver_intent(
     advisory alpha event is still emitted). Failures are logged, never raised.
     """
     if not getattr(config, "INTENT_DELIVERY_ENABLED", False):
-        return
+        return "disabled"
     if not complete_candidate:
-        return
+        return "not_eligible"
     try:
         from intent_outbox import build_executor_intent, validate_geometry, write_intent
         if admission is None:
@@ -195,23 +206,28 @@ def _maybe_deliver_intent(
             )
         if admission.get("hard_gate") != "pass":
             print(f"intent skipped (admission): {admission.get('hard_gate_reasons')}")
-            return
-        intent = build_executor_intent(payload)
+            return "rejected"
+        intent = build_executor_intent(payload, admission=admission)
         ok, reason = validate_geometry(intent)
         if not ok:
             print(f"intent skipped (geometry): {reason} for {payload.get('strategy_id')}/{payload.get('asset')}")
-            return
+            return "rejected"
+        delivered = False
         # Legacy filesystem inbox (kept during rollout unless disabled).
         if getattr(config, "INTENT_BUS_LEGACY_INBOX_ENABLED", False):
-            write_intent(intent, config.INTENT_INBOX)
+            created, _ = write_intent(intent, config.INTENT_INBOX, admission=admission)
+            delivered = delivered or created
         # Shared SQLite intent bus fan-out (spec 3.2, 7).
-        _maybe_publish_to_bus(intent)
+        delivered = _maybe_publish_to_bus(intent) or delivered
+        return "written" if delivered else "not_delivered"
     except Exception as exc:  # never break the advisory emit path
         print(f"intent delivery error: {exc}")
+        return "failed"
 
 
-def _maybe_publish_to_bus(intent: dict) -> None:
+def _maybe_publish_to_bus(intent: dict) -> bool:
     """Best-effort fan-out of a built schema-v1 envelope to the shared bus."""
+    published = False
     try:
         from intent_bus_publisher import publish_research_intent
         for target in ("bybit", "propr"):
@@ -219,6 +235,8 @@ def _maybe_publish_to_bus(intent: dict) -> None:
             if not ok and err is not None:
                 print(f"intent bus {target} publish failed: {err} for {intent.get('delivery_id')}")
             elif ok:
+                published = True
                 print(f"intent bus published target={target} delivery={delivery_id}")
     except Exception as exc:  # bus fan-out must never break the pipeline
         print(f"intent bus publish error: {exc}")
+    return published

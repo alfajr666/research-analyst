@@ -53,14 +53,17 @@ class Ema7CrossHammerE2ETests(unittest.TestCase):
         observed = datetime.fromisoformat(event["observed_at"])
         boundary = event["entry_price"] - 1.0
         event["structural_context"] = {
+            "asset": "BTC",
             "cutoff": observed,
             "zones": [{
-                "zone_id": "zone-ema7", "type": "order_block", "timeframe": "4h",
+                "zone_id": "zone-ema7", "asset": "BTC", "type": "order_block", "timeframe": "4h",
                 "direction": "bullish", "low": boundary, "high": boundary,
                 "state": "active", "created_at": observed - timedelta(hours=4),
+                "confirmed_at": observed - timedelta(hours=4),
                 "coverage_status": "covered", "source_evidence_ids": ["bar-1"],
             }],
             "atr_by_timeframe": {"4h": 1.0},
+            "atr_source_bar_ids": {"4h": ["bar-1"]},
         }
         self.assertEqual(admit(event, now=observed + timedelta(minutes=1))["hard_gate"], "pass")
         intent = build_executor_intent(event)

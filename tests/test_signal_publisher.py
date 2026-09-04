@@ -30,7 +30,21 @@ def event(observed_at, valid_until):
         "confidence": 0.67,
         "entry_condition": {"type": "breakout_above", "price": 145.2},
         "invalidation_price": 142.7,
-        "targets": [148.1, 151.0],
+        "targets": [150.2, 151.0],
+        "data_freshness_seconds": 1.0,
+        "structural_context": {
+            "asset": "SOL",
+            "cutoff": observed_at.isoformat(),
+            "zones": [{
+                "zone_id": "zone-signal", "asset": "SOL", "type": "order_block", "timeframe": "4h",
+                "direction": "bullish", "low": 144.0, "high": 144.2, "state": "active",
+                "created_at": (observed_at - timedelta(hours=4)).isoformat(),
+                "confirmed_at": (observed_at - timedelta(hours=4)).isoformat(),
+                "coverage_status": "covered", "source_evidence_ids": ["bar-signal"],
+            }],
+            "atr_by_timeframe": {"4h": 1.0},
+            "atr_source_bar_ids": {"4h": ["bar-signal"]},
+        },
         "feature_snapshot": {"regime": "trending_up"},
     }
     payload["dedupe_key"] = dedupe_key(payload)
@@ -198,7 +212,7 @@ class SignalPublisherTests(unittest.TestCase):
     def test_format_contains_portable_signal_fields(self):
         payload = event(self.current_time, self.current_time + timedelta(hours=1))
         message = format_signal(payload)
-        for value in ("Continuation", "SOL", "LONG", "Confirmed expansion", "breakout above", "142.7", "148.1", "151", "2026-08-16 11:30 UTC", "2026-08-16 10:30 UTC"):
+        for value in ("Continuation", "SOL", "LONG", "Confirmed expansion", "breakout above", "142.7", "150.2", "151", "2026-08-16 11:30 UTC", "2026-08-16 10:30 UTC"):
             self.assertIn(value, message)
         self.assertNotIn("Confidence", message)
 

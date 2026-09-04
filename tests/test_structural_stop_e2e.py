@@ -30,11 +30,13 @@ def test_declared_covered_structure_reaches_executor_selection():
             "observed_at": observed,
             "data_freshness_seconds": 60.0,
             "structural_context": {
+                "asset": "BTC",
                 "cutoff": observed,
                 "zones": [{
-                    "zone_id": "zone-1", "type": "order_block", "timeframe": "4h",
+                    "zone_id": "zone-1", "asset": "BTC", "type": "order_block", "timeframe": "4h",
                     "direction": "bullish", "low": 96.0, "high": 97.0,
-                    "state": "active", "created_at": datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
+                        "state": "active", "created_at": datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
+                        "confirmed_at": datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
                     "coverage_status": "covered", "source_evidence_ids": ["obs-1", "obs-2"],
                 }],
                 "atr_by_timeframe": {"4h": 1.0},
@@ -76,7 +78,7 @@ def test_uncovered_structure_is_rejected_before_scoring():
             "observed_at": observed,
             "data_freshness_seconds": 60.0,
             "structural_context": {
-                "cutoff": observed, "zones": [], "atr_by_timeframe": {"4h": 1.0},
+            "asset": "BTC", "cutoff": observed, "zones": [], "atr_by_timeframe": {"4h": 1.0},
             },
         }
 
@@ -95,9 +97,10 @@ def test_uncovered_structure_is_rejected_before_scoring():
 def test_admission_builds_context_only_for_candidate_assets():
     observed = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
 
-    def bars(count, hours):
+    def bars(count, hours, end=observed):
+        through = end.replace(hour=end.hour - end.hour % (hours // 1), minute=0, second=0, microsecond=0)
         return pl.DataFrame({
-            "timestamp": [observed - timedelta(hours=hours * (count - index)) for index in range(count)],
+            "timestamp": [through - timedelta(hours=hours * (count - index - 1)) for index in range(count)],
             "open": [100.0 + index for index in range(count)],
             "high": [101.0 + index for index in range(count)],
             "low": [99.0 + index for index in range(count)],
@@ -108,7 +111,7 @@ def test_admission_builds_context_only_for_candidate_assets():
         })
 
     context_zone = {
-        "type": "order_block", "direction": "bullish", "low": 98.0, "high": 99.0,
+        "type": "order_block", "timeframe": "4h", "direction": "bullish", "low": 98.0, "high": 99.0,
         "state": "active", "created_at": observed - timedelta(hours=4),
         "source_evidence_ids": ["bar-4h-1"],
     }
@@ -130,3 +133,26 @@ def test_admission_builds_context_only_for_candidate_assets():
     assert load_1h.call_args.args[1] == "BTC"
     decision = resolve([candidate], structural_contexts=contexts, now=observed)
     assert decision["selected_candidate_ids"] == ["candidate-1"]
+
+
+def test_stale_direct_history_cannot_supply_structural_context():
+    observed = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
+    stale = pl.DataFrame({
+        "timestamp": [observed - timedelta(hours=4 * (56 - index + 2)) for index in range(57)],
+        "open": [100.0 + index for index in range(57)],
+        "high": [101.0 + index for index in range(57)],
+        "low": [99.0 + index for index in range(57)],
+        "close": [100.0 + index for index in range(57)],
+        "volume": [1.0] * 57,
+        "bar_id": [f"stale-{index}" for index in range(57)],
+        "source_observation_ids": [[f"stale-{index}"] for index in range(57)],
+    })
+    candidate = {"candidate_id": "candidate-stale", "asset": "BTC"}
+    connection = MagicMock()
+    with patch("structural_stop.config.get_db_connection", return_value=connection), \
+            patch("regime_history.load_regime_4h_bars", return_value=stale), \
+            patch("regime_history.load_regime_1h_bars", return_value=stale):
+        contexts = build_structural_contexts([candidate], observed)
+
+    assert contexts["BTC"]["coverage_status"] == {"4h": "incomplete", "1h": "incomplete"}
+    assert contexts["BTC"]["atr_by_timeframe"] == {}

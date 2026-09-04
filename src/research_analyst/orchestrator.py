@@ -55,6 +55,7 @@ def _source_observation_ids(cutoff_at: datetime, interval: str = "5m") -> list[s
 STARTUP_TIME = time.time()
 LAST_EVALUATION_OBSERVABILITY = {}
 DAEMON_MODE = False
+_RAW_BATCH_LOCK = threading.Lock()
 _LAST_ANALYST_MAINTENANCE = 0.0
 _LAST_ANALYST_VACUUM = 0.0
 
@@ -475,17 +476,22 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         try:
             feat_conn = config.get_db_connection(read_only=False, db_path=config.ANALYST_DB_PATH)
             nowf = datetime.now(timezone.utc)
-            # Load recent 15m bars from the market-owned source observations.
+            # Use the same engine-owned HTF source contract as plugin invocation.
+            from strategy_v2_context import hybrid_htf_context, load_bars_for_interval
             market_conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
-            from strategy_v2_context import load_bars_for_interval
-            bars_by_asset = {
-                asset: (
-                    load_bars_for_interval(market_conn, asset, "1h", cutoff_at),
-                    load_bars_for_interval(market_conn, asset, "4h", cutoff_at),
-                )
-                for asset in evaluation_assets
-            }
-            market_conn.close()
+            try:
+                with hybrid_htf_context(
+                    config.MARKET_DB_PATH, config.REGIME_DB_PATH, cutoff_at
+                ):
+                    bars_by_asset = {
+                        asset: (
+                            load_bars_for_interval(market_conn, asset, "1h", cutoff_at),
+                            load_bars_for_interval(market_conn, asset, "4h", cutoff_at),
+                        )
+                        for asset in evaluation_assets
+                    }
+            finally:
+                market_conn.close()
 
             # Compute FVG / Order Blocks on 1h + 4h for each asset (advisory)
             try:
@@ -731,7 +737,15 @@ def _publish_raw_signal_batch() -> None:
 
 def trigger_raw_signal_batch() -> threading.Thread:
     """Start the raw batch publisher asynchronously after a completed cycle."""
-    worker = threading.Thread(target=_publish_raw_signal_batch, name="raw-signal-batch", daemon=True)
+    def run_once_guarded():
+        if not _RAW_BATCH_LOCK.acquire(blocking=False):
+            return
+        try:
+            _publish_raw_signal_batch()
+        finally:
+            _RAW_BATCH_LOCK.release()
+
+    worker = threading.Thread(target=run_once_guarded, name="raw-signal-batch", daemon=True)
     worker.start()
     return worker
 

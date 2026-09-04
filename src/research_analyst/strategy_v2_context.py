@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 import math
 from pathlib import Path
@@ -78,11 +80,14 @@ def _ensure_utc(ts: datetime) -> datetime:
     return ts.astimezone(timezone.utc)
 
 
-def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: datetime, interval: str = "15m") -> List[Dict]:
+def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: datetime,
+                                     interval: str = "15m", include_invalid: bool = False) -> List[Dict]:
     """Internal: raw rows with source for prefer logic."""
     cutoff = _ensure_utc(cutoff)
+    validity_filter = "" if include_invalid else "AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0"
+    query_cutoff = cutoff + timedelta(minutes=5) if include_invalid else cutoff
     rows = conn.execute(
-        """
+        f"""
         SELECT source_end, source,
                CAST(json_extract(payload_json, '$.open') AS REAL),
                CAST(json_extract(payload_json, '$.high') AS REAL),
@@ -92,13 +97,13 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
                CAST(json_extract(payload_json, '$.open_interest') AS REAL),
                CAST(json_extract(payload_json, '$.funding_rate') AS REAL),
                payload_json, observation_id
-         FROM source_observations
-         WHERE asset = ? AND interval=?
-            AND source_end <= ? AND source_end >= ?
-            AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0
-         ORDER BY source_end ASC
+          FROM source_observations
+          WHERE asset = ? AND interval=?
+             AND source_end <= ? AND source_end >= ?
+             {validity_filter}
+           ORDER BY source_end ASC
         """,
-        (asset, interval, cutoff, start),
+        (asset, interval, query_cutoff, start),
     ).fetchall()
     out = []
     for r in rows:
@@ -167,16 +172,313 @@ def load_15m_bars(conn, symbol: str, cutoff: datetime, lookback_days: int = LOOK
     return load_preferred_15m_bars(conn, asset=asset, cutoff=cutoff, lookback_days=lookback_days)
 
 
+HYBRID_HTF_DATA_CONTRACT_VERSION = "hybrid-htf-v1"
+_HYBRID_HTF_CONTEXT: ContextVar["HybridHTFContext | None"] = ContextVar(
+    "hybrid_htf_context", default=None
+)
+
+
+def _normalise_bar_end(value: Any) -> datetime:
+    """Normalize exact and exchange boundary-minus-one-millisecond ends."""
+    timestamp = _ensure_utc(value)
+    if timestamp.microsecond == 0:
+        return timestamp
+    if timestamp.microsecond == 999000:
+        return (timestamp + timedelta(milliseconds=1)).replace(microsecond=0)
+    raise ValueError(f"bar end is not an exact or millisecond boundary: {timestamp!s}")
+
+
+def _floor_boundary(value: datetime, seconds: int) -> datetime:
+    epoch = int(_ensure_utc(value).timestamp())
+    return datetime.fromtimestamp(epoch - epoch % seconds, timezone.utc)
+
+
+def _contiguous_canonical_tail(rows: list[dict[str, Any]], cutoff: datetime) -> tuple[list[dict[str, Any]], str | None]:
+    grouped: dict[datetime, list[dict[str, Any]]] = {}
+    for row in rows:
+        try:
+            end = _normalise_bar_end(row["timestamp"])
+            prices = [float(row[name]) for name in ("open", "high", "low", "close")]
+            volume = float(row.get("volume") or 0.0)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return [], "canonical_tail_invalid"
+        if (end.timestamp() % 300 != 0
+                or not all(math.isfinite(value) and value > 0 for value in prices)
+                or prices[1] < max(prices[0], prices[3])
+                or prices[2] > min(prices[0], prices[3])
+                or not math.isfinite(volume) or volume < 0):
+            return [], "canonical_tail_invalid"
+        if end > cutoff:
+            return [], "canonical_tail_future"
+        grouped.setdefault(end, []).append(row)
+    if any(len(values) > 1 for values in grouped.values()):
+        return [], "canonical_tail_duplicate"
+    by_end = {
+        _normalise_bar_end(row["timestamp"]): row
+        for row in _prefer_rows(rows)
+        if _normalise_bar_end(row["timestamp"]) <= cutoff
+    }
+    expected = _floor_boundary(cutoff, 300)
+    if expected not in by_end:
+        return [], "canonical_tail_missing"
+    tail = []
+    cursor = expected
+    while cursor in by_end:
+        tail.append(by_end[cursor])
+        cursor -= timedelta(minutes=5)
+    tail.reverse()
+    return tail, None
+
+
+def _direct_seed_is_contiguous(frame: pl.DataFrame, interval: str, required: int,
+                               handoff: datetime) -> bool:
+    if frame.is_empty() or frame.height < required:
+        return False
+    try:
+        ends = [_ensure_utc(value) for value in frame["timestamp"].to_list()]
+        for row in frame.to_dicts():
+            prices = [float(row[name]) for name in ("open", "high", "low", "close")]
+            volume = float(row.get("volume") or 0.0)
+            if (not all(math.isfinite(value) and value > 0 for value in prices)
+                    or prices[1] < max(prices[0], prices[3])
+                    or prices[2] > min(prices[0], prices[3])
+                    or not math.isfinite(volume) or volume < 0):
+                return False
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    seconds = {"1h": 3600, "4h": 14400}[interval]
+    return (
+        len(ends) >= required
+        and ends[-1] == handoff
+        and all(int((right - left).total_seconds()) == seconds
+                for left, right in zip(ends, ends[1:]))
+    )
+
+
+class HybridHTFContext:
+    """Invocation-scoped engine source selection for strategy HTF frames."""
+
+    def __init__(self, market_conn: Any, regime_conn: Any | None, cutoff: datetime):
+        self.market_conn = market_conn
+        self.regime_conn = regime_conn
+        self.cutoff = _ensure_utc(cutoff)
+        self._frames: dict[tuple[str, str, int], pl.DataFrame] = {}
+        self._diagnostics: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def summary(self) -> dict[str, dict[str, dict[str, Any]]]:
+        return {
+            asset: {interval: dict(details) for interval, details in intervals.items()}
+            for asset, intervals in self._diagnostics.items()
+        }
+
+    def _record(self, asset: str, interval: str, **details: Any) -> None:
+        self._diagnostics.setdefault(asset, {})[interval] = {
+            "data_contract_version": HYBRID_HTF_DATA_CONTRACT_VERSION,
+            "cutoff_at": self.cutoff.isoformat(),
+            **details,
+        }
+
+    def load(self, symbol: str, interval: str, lookback_days: int) -> pl.DataFrame:
+        asset = _asset_from_symbol(symbol)
+        key = (asset, interval, int(lookback_days))
+        if key in self._frames:
+            return self._frames[key]
+
+        base_lookback = max(int(lookback_days), 60 if interval == "4h" else 16)
+        start = self.cutoff - timedelta(days=base_lookback)
+        try:
+            raw = _load_raw_observations_for_asset(
+                self.market_conn, asset, self.cutoff, start, interval="5m", include_invalid=True
+            )
+        except Exception as exc:
+            self._record(asset, interval, availability="unavailable",
+                         hybrid_readiness="not_ready", reason="canonical_tail_unavailable",
+                         error=type(exc).__name__)
+            self._frames[key] = pl.DataFrame()
+            return self._frames[key]
+        tail, tail_reason = _contiguous_canonical_tail(raw, self.cutoff)
+        if not tail:
+            self._record(asset, interval, availability="unavailable",
+                         hybrid_readiness="not_ready", reason=tail_reason)
+            self._frames[key] = pl.DataFrame()
+            return self._frames[key]
+
+        seconds = {"1h": 3600, "4h": 14400}.get(interval)
+        if seconds is None:
+            raise ValueError(f"unsupported hybrid interval: {interval}")
+        seed_required = int(getattr(
+            config,
+            f"HYBRID_HTF_{'1H' if interval == '1h' else '4H'}_SEED_BARS",
+            240,
+        ))
+        retain_days = int(getattr(
+            config,
+            f"HYBRID_HTF_{'1H' if interval == '1h' else '4H'}_RETAIN_DAYS",
+            14 if interval == "1h" else 45,
+        ))
+        interval_seconds = seconds
+        seed_reserve = max(300, retain_days * 86400 - seed_required * interval_seconds)
+        desired_handoff = _floor_boundary(
+            self.cutoff - timedelta(seconds=seed_reserve), seconds
+        )
+        earliest_handoff = _floor_boundary(_normalise_bar_end(tail[0]["timestamp"]), seconds)
+        handoff = max(desired_handoff, earliest_handoff)
+        tail_after_handoff = [
+            row for row in tail
+            if _normalise_bar_end(row["timestamp"]) > handoff
+        ]
+        if (not tail_after_handoff
+                or _normalise_bar_end(tail_after_handoff[0]["timestamp"])
+                != handoff + timedelta(minutes=5)):
+            self._record(asset, interval, availability="unavailable",
+                         hybrid_readiness="not_ready", reason="canonical_tail_gap",
+                         handoff_at=handoff.isoformat())
+            self._frames[key] = pl.DataFrame()
+            return self._frames[key]
+
+        direct = pl.DataFrame()
+        direct_ids: list[str] = []
+        direct_versions: list[str] = []
+        direct_error: str | None = None
+        if self.regime_conn is not None:
+            try:
+                from regime_history import load_regime_1h_bars, load_regime_4h_bars
+                loader = load_regime_1h_bars if interval == "1h" else load_regime_4h_bars
+                direct = loader(self.regime_conn, asset, handoff, limit=seed_required)
+                if not direct.is_empty() and not _direct_seed_is_contiguous(
+                    direct, interval, seed_required, handoff
+                ):
+                    self._record(asset, interval, availability="unavailable",
+                                 hybrid_readiness="not_ready",
+                                 reason="direct_seed_incomplete", handoff_at=handoff.isoformat(),
+                                 direct_bar_ids=[str(value) for value in direct["bar_id"].to_list()]
+                                 if "bar_id" in direct.columns else [])
+                    self._frames[key] = pl.DataFrame()
+                    return self._frames[key]
+                direct_ids = [str(value) for value in direct["bar_id"].to_list()]
+                direct_versions = [str(value) for value in direct["bar_version"].unique().to_list()]
+            except Exception as exc:
+                direct_error = type(exc).__name__
+                direct = pl.DataFrame()
+                if direct_error in {"KeyError", "TypeError", "ValueError", "OverflowError"}:
+                    self._record(asset, interval, availability="unavailable",
+                                 hybrid_readiness="not_ready", reason="direct_seed_invalid",
+                                 error=direct_error, handoff_at=handoff.isoformat())
+                    self._frames[key] = pl.DataFrame()
+                    return self._frames[key]
+        if direct.is_empty() and getattr(config, "HYBRID_HTF_MODE", "shadow") != "shadow":
+            self._record(asset, interval, availability="unavailable",
+                         hybrid_readiness="not_ready",
+                         reason="direct_seed_missing", error=direct_error,
+                         handoff_at=handoff.isoformat())
+            self._frames[key] = pl.DataFrame()
+            return self._frames[key]
+
+        local = resample_ohlcv(_rows_to_frame(tail_after_handoff), interval)
+        if local.is_empty() and direct.is_empty():
+            self._record(asset, interval, availability="unavailable",
+                         hybrid_readiness="not_ready", reason="insufficient_htf_tail",
+                         handoff_at=handoff.isoformat())
+            self._frames[key] = pl.DataFrame()
+            return self._frames[key]
+        canonical_ids = sorted({
+            str(observation_id)
+            for row in local.to_dicts()
+            for observation_id in row.get("source_observation_ids", [])
+            if observation_id
+        })
+
+        by_end: dict[datetime, dict[str, Any]] = {}
+        if not direct.is_empty():
+            for row in direct.to_dicts():
+                row["source_provenance"] = [str(row.get("source") or "bybit_rest")]
+                row["data_purity"] = "direct_rest"
+                by_end[_ensure_utc(row["timestamp"])] = row
+        for row in local.to_dicts():
+            by_end[_ensure_utc(row["timestamp"])] = row
+        merged = pl.DataFrame(
+            [by_end[end] for end in sorted(by_end)], strict=False
+        )
+        if "open_interest" not in merged.columns:
+            merged = merged.with_columns(pl.lit(0.0).alias("open_interest"))
+        if "funding_rate" not in merged.columns:
+            merged = merged.with_columns(pl.lit(0.0).alias("funding_rate"))
+        self._record(
+            asset, interval, availability="ready",
+            hybrid_readiness="ready" if not direct.is_empty() else "not_ready",
+            source_mode="hybrid" if not direct.is_empty() else "canonical_only",
+            handoff_at=handoff.isoformat(), direct_bar_ids=direct_ids,
+            direct_bar_versions=direct_versions,
+            canonical_5m_observation_ids=canonical_ids,
+        )
+        self._frames[key] = merged
+        return merged
+
+
+@contextmanager
+def hybrid_htf_context(market_db_path: str | Path | None, regime_db_path: str | Path | None,
+                       cutoff: datetime):
+    """Install one read-only hybrid context for an engine evaluation."""
+    if (not getattr(config, "HYBRID_HTF_ENABLED", True)
+            or getattr(config, "HYBRID_HTF_MODE", "shadow") == "off"):
+        yield None
+        return
+    market_conn = config.get_db_connection(read_only=True, db_path=market_db_path or config.MARKET_DB_PATH)
+    regime_conn = None
+    try:
+        if regime_db_path or getattr(config, "REGIME_DB_PATH", None):
+            try:
+                regime_conn = config.get_db_connection(
+                    read_only=True, db_path=regime_db_path or config.REGIME_DB_PATH
+                )
+            except Exception:
+                regime_conn = None
+        context = HybridHTFContext(market_conn, regime_conn, cutoff)
+        token = _HYBRID_HTF_CONTEXT.set(context)
+        try:
+            yield context
+        finally:
+            _HYBRID_HTF_CONTEXT.reset(token)
+            if regime_conn is not None:
+                regime_conn.close()
+    finally:
+        market_conn.close()
+
+
+def hybrid_htf_provenance(asset: str) -> dict[str, dict[str, Any]]:
+    context = _HYBRID_HTF_CONTEXT.get()
+    if context is None:
+        return {}
+    return context.summary().get(_asset_from_symbol(asset), {})
+
+
+def hybrid_htf_context_active() -> bool:
+    return _HYBRID_HTF_CONTEXT.get() is not None
+
+
+def hybrid_htf_context_cutoff() -> datetime | None:
+    context = _HYBRID_HTF_CONTEXT.get()
+    return context.cutoff if context is not None else None
+
+
 def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
                            lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
-    """Load canonical bars, deriving every higher timeframe from 5m rows.
+    """Load engine-context HTF bars or canonical market bars.
 
-    The market database may retain derived rows for operational inspection, but
-    strategy evaluation never consumes them. This keeps delayed replay and live
-    evaluation on one bucket convention.
+    Within an engine hybrid context, 1h/4h frames use direct historical seeds
+    followed by the canonical 5m-derived tail. Outside that context, higher
+    timeframes remain derived from canonical 5m rows.
     """
-    asset = _asset_from_symbol(symbol)
     cutoff = _ensure_utc(cutoff)
+    context = _HYBRID_HTF_CONTEXT.get()
+    if context is not None and interval in {"1h", "4h"}:
+        if context.cutoff != cutoff:
+            raise ValueError(
+                f"hybrid HTF context cutoff {context.cutoff.isoformat()} "
+                f"does not match requested cutoff {cutoff.isoformat()}"
+            )
+        return context.load(symbol, interval, lookback_days)
+    asset = _asset_from_symbol(symbol)
     if interval in {"15m", "1h", "4h"}:
         base_lookback = max(lookback_days, 60 if interval == "4h" else 16)
         start = cutoff - timedelta(days=base_lookback)

@@ -28,9 +28,10 @@ rotation feed
                          -> market.sqlite3
 ```
 
-The regime cache is exclusive to the regime-session module. Existing strategy
-features and candidate admission continue to use the canonical market path:
-completed 5m observations and local 15m/1h/4h resampling.
+The regime worker owns the direct-history cache. The regime-session module uses
+it for regime calculations, and the evaluator may read it read-only as the
+historical seed for the engine-owned hybrid strategy HTF path defined in
+`specs/hybrid-htf-engine-v1.md`.
 
 ## 2. Objectives
 
@@ -38,20 +39,19 @@ completed 5m observations and local 15m/1h/4h resampling.
   higher-timeframe bars to accumulate.
 - Keep live WebSocket subscriptions limited to the active rotation feed.
 - Avoid a second writer for `data/market.sqlite3`.
-- Keep the regime input small, durable, point-in-time, and auditable.
-- Preserve the existing 5m-derived higher-timeframe contract for strategies.
+- Keep the direct input durable, point-in-time, and auditable.
+- Hand off strategy HTF frames to canonical 5m-derived data at an exact boundary.
 
 ## 3. Locked Data Requirements
 
 ### 3.1 Direct 4h history
 
-The regime worker fetches at least 15 calendar days of completed Bybit linear
-perpetual `4h` candles for every asset that enters the active feed and does not
-already have sufficient cache coverage.
-
-The logical retention target is at least 14 complete days. The extra fetch day
-provides margin for UTC bucket boundaries, request timing, and incomplete
-candles.
+The regime worker fetches enough completed Bybit linear perpetual `4h` candles
+for regime scoring and the configured strategy seed depth. The default hybrid
+target is 240 bars, with a logical retention target of at least 45 complete
+calendar days. The extra fetch day provides margin for UTC bucket boundaries,
+request timing, and incomplete candles. The original 15-day/14-day regime
+minimum remains a valid lower bound when hybrid loading is disabled.
 
 The cache must contain at least:
 
@@ -73,11 +73,12 @@ must not be used to make rotation appear ready.
 
 ### 3.2 Direct 1h history
 
-The regime worker fetches at least 4 calendar days of completed Bybit linear
-perpetual `1h` candles for every asset that enters the active feed and does not
-already have sufficient cache coverage. The logical retention target is at
-least 3 complete days, or 72 complete bars. The extra fetch day provides margin
-for UTC bucket boundaries, request timing, and incomplete candles.
+The regime worker fetches enough completed Bybit linear perpetual `1h` candles
+for regime scoring and the configured strategy seed depth. The default hybrid
+target is 240 bars, with a logical retention target of at least 14 complete
+calendar days. The extra fetch day provides margin for UTC bucket boundaries,
+request timing, and incomplete candles. The original 4-day/3-day regime
+minimum remains a valid lower bound when hybrid loading is disabled.
 
 The cache must contain at least:
 
@@ -98,8 +99,9 @@ still uses:
 - completed 5m bars for recent and prior realized-volatility windows.
 
 The live evaluation bootstrap remains responsible for enough 1m and 5m history
-for active strategy paths. Direct 1h regime history does not replace or alter
-the strategy-facing 1h/4h views derived from the gateway's 5m data.
+for active strategy paths. The engine combines direct 1h/4h seed history with
+the newest canonical 5m-derived tail according to
+`specs/hybrid-htf-engine-v1.md`; strategies remain unaware of that handoff.
 
 ### 3.4 Completed-bar rule
 
@@ -194,8 +196,8 @@ than implying that every input came from one table.
 
 1. The rotation feed identifies the active asset and feed version.
 2. The regime worker creates or resumes its 1h and 4h backfill jobs.
-3. The worker requests 4 days of public Bybit 1h history and 15 days of public
-   Bybit 4h history.
+3. The worker requests enough public Bybit 1h and 4h history for the configured
+   regime and hybrid strategy seed windows.
 4. The worker normalizes, validates, and transactionally upserts both intervals.
 5. The worker verifies at least 57 complete bars and no gaps in each required
    range.
@@ -258,17 +260,19 @@ readiness, not as an executor rejection.
 The regime worker owns pruning of `regime_1h_bars`, `regime_4h_bars`, and both
 backfill job tables on its writer connection.
 
-- Retain at least 3 complete days of 1h bars per asset.
-- Retain at least 14 complete days of 4h bars per asset.
+- Retain at least 14 complete days of 1h bars per asset while hybrid loading is
+  active.
+- Retain at least 45 complete days of 4h bars per asset while hybrid loading is
+  active.
 - Retain score and gate observations according to the separate regime audit
   retention setting.
 - Never prune bars needed by an active backfill job or an in-flight cutoff.
 - Delete old rows before any throttled compaction.
 - `VACUUM` must run only on the regime worker's writer connection.
 
-At 72 1h bars and 84 4h bars per asset for 92 assets, the direct cache is
-approximately 14,400 raw bars. Storage is intentionally negligible compared
-with the existing market database.
+At 336 1h bars and 270 4h bars per asset for 92 assets, the direct cache is
+approximately 55,700 raw bars. Storage remains negligible compared with the
+existing market database.
 
 ## 9. Failure Semantics
 
@@ -290,9 +294,9 @@ For 34 active assets and 92 approved assets:
 ```text
 Live WebSocket topics:          34 x (1m + 5m) = 68
 Regime 1h/4h WebSocket topics:  0
-Initial direct 1h rows:         92 x 72 ~= 6,600
-Initial direct 4h rows:         92 x 84 ~= 7,700
-Initial direct history requests: approximately two per asset
+Initial direct 1h rows:         92 x 336 ~= 30,900
+Initial direct 4h rows:         92 x 270 ~= 24,800
+Initial direct history requests: paginated, independently retried per asset
 Regime DB writers:               1
 Market DB writers:               1
 ```
@@ -305,7 +309,7 @@ remains bounded to active evaluation needs.
 
 Before enabling enforcement with this cache:
 
-- verify 4-day 1h and 15-day 4h requests exclude open candles;
+- verify hybrid-depth 1h and 4h requests exclude open candles;
 - verify at least 57 complete 1h bars are available at every ready cutoff;
 - verify at least 57 complete 4h bars are available at every ready cutoff;
 - verify an interval-specific gap blocks only that asset and interval;
@@ -318,16 +322,17 @@ Before enabling enforcement with this cache:
 - verify retention leaves at least 14 days after pruning;
 - verify the orchestrator never writes the regime database.
 
-The direct and resampled comparison is a parity diagnostic, not permission to
-silently substitute one source for the other. Any accepted numerical difference
-must be documented in the score version.
+The direct and resampled comparison is a parity diagnostic for the engine hybrid
+contract. Source substitution is allowed only at the explicit handoff boundary;
+any accepted numerical difference must be documented in the hybrid data-contract
+version and affected strategy replay results.
 
 ## 12. Explicit Non-Goals
 
 - No direct 1h/4h WebSocket subscription.
 - No continuous 1h/4h stream for the full approved universe.
 - No direct 1h/4h history written by the gateway.
-- No direct 1h/4h history used to silently replace strategy 1h/4h context.
+- No direct 1h/4h history used outside the engine hybrid contract.
 - No reduction of the 57-bar ADX readiness requirement.
 - No global pause because one rotated asset is warming up.
 - No code or production configuration change implied by this document alone.

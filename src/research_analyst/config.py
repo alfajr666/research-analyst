@@ -55,6 +55,7 @@ RAW_SIGNAL_DISCORD_BATCH_MINUTES = int(os.getenv("RAW_SIGNAL_DISCORD_BATCH_MINUT
 RAW_SIGNAL_DISCORD_WEBHOOK_URL = os.getenv("RAW_SIGNAL_DISCORD_WEBHOOK_URL", DISCORD_ALPHA_WEBHOOK_URL)
 RAW_BATCH_CLAIM_LEASE_SECONDS = int(os.getenv("RAW_BATCH_CLAIM_LEASE_SECONDS", "120"))
 RAW_BATCH_MAX_ATTEMPTS = int(os.getenv("RAW_BATCH_MAX_ATTEMPTS", "5"))
+RAW_BATCH_RETRY_BACKOFF_SECONDS = int(os.getenv("RAW_BATCH_RETRY_BACKOFF_SECONDS", "30"))
 if RAW_SIGNAL_DISCORD_BATCH_MINUTES <= 0 or 60 % RAW_SIGNAL_DISCORD_BATCH_MINUTES:
     raise ValueError("RAW_SIGNAL_DISCORD_BATCH_MINUTES must be a positive divisor of 60")
 BINANCE_OI_DISCORD_TOP_N = int(os.getenv("BINANCE_OI_DISCORD_TOP_N", "5"))
@@ -110,6 +111,29 @@ if REGIME_4H_FETCH_DAYS < 15 or REGIME_4H_RETAIN_DAYS < 14 or REGIME_4H_READINES
     raise ValueError("direct regime 4h history settings cannot lower the v1 readiness contract")
 if REGIME_4H_FETCH_DAYS < REGIME_4H_RETAIN_DAYS:
     raise ValueError("REGIME_4H_FETCH_DAYS must cover REGIME_4H_RETAIN_DAYS")
+HYBRID_HTF_ENABLED = os.getenv("HYBRID_HTF_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+HYBRID_HTF_MODE = os.getenv("HYBRID_HTF_MODE", "shadow").strip().lower()
+if HYBRID_HTF_MODE not in {"off", "shadow", "enforce"}:
+    raise ValueError("HYBRID_HTF_MODE must be off, shadow, or enforce")
+HYBRID_HTF_PARITY_VALIDATED = os.getenv("HYBRID_HTF_PARITY_VALIDATED", "false").lower() in (
+    "1", "true", "yes", "on"
+)
+if HYBRID_HTF_ENABLED and HYBRID_HTF_MODE == "enforce" and not HYBRID_HTF_PARITY_VALIDATED:
+    raise ValueError("HYBRID_HTF_PARITY_VALIDATED must be true before hybrid enforcement")
+HYBRID_HTF_1H_SEED_BARS = int(os.getenv("HYBRID_HTF_1H_SEED_BARS", "240"))
+HYBRID_HTF_4H_SEED_BARS = int(os.getenv("HYBRID_HTF_4H_SEED_BARS", "240"))
+if HYBRID_HTF_1H_SEED_BARS < 57 or HYBRID_HTF_4H_SEED_BARS < 57:
+    raise ValueError("hybrid HTF seed bars cannot lower the regime readiness contract")
+# Preserve the regime minimums when hybrid loading is disabled, but retain
+# enough direct history for the longest currently enabled strategy warmups when
+# the engine path is active.
+_HYBRID_HTF_ACTIVE = HYBRID_HTF_ENABLED and HYBRID_HTF_MODE != "off"
+HYBRID_HTF_1H_RETAIN_DAYS = max(REGIME_1H_RETAIN_DAYS, 14,
+                                (HYBRID_HTF_1H_SEED_BARS + 23) // 24 + 4) if _HYBRID_HTF_ACTIVE else REGIME_1H_RETAIN_DAYS
+HYBRID_HTF_4H_RETAIN_DAYS = max(REGIME_4H_RETAIN_DAYS, 45,
+                                (HYBRID_HTF_4H_SEED_BARS + 5) // 6 + 5) if _HYBRID_HTF_ACTIVE else REGIME_4H_RETAIN_DAYS
+HYBRID_HTF_1H_FETCH_DAYS = max(REGIME_1H_FETCH_DAYS, HYBRID_HTF_1H_RETAIN_DAYS + 1)
+HYBRID_HTF_4H_FETCH_DAYS = max(REGIME_4H_FETCH_DAYS, HYBRID_HTF_4H_RETAIN_DAYS + 1)
 EVALUATION_TRIGGER_DIR = Path(os.getenv("EVALUATION_TRIGGER_DIR", str(DEFAULT_DB_DIR / "evaluation_triggers")))
 EVALUATION_RECOVERY_SCAN_SECONDS = int(os.getenv("EVALUATION_RECOVERY_SCAN_SECONDS", "5"))
 EVALUATION_LEASE_SECONDS = int(os.getenv("EVALUATION_LEASE_SECONDS", "600"))
@@ -647,7 +671,8 @@ INTENT_MIN_STOP_ATR_MULTIPLIER = float(os.getenv("INTENT_MIN_STOP_ATR_MULTIPLIER
 DATA_FRESHNESS_MAX_SECONDS = float(os.getenv("DATA_FRESHNESS_MAX_SECONDS", "600"))
 CLASH_MIN_SCORE_MARGIN = float(os.getenv("CLASH_MIN_SCORE_MARGIN", "2.0"))
 STRATEGY_PRIORITY = {}
-STRUCTURAL_STOP_ADMISSION_ENABLED = os.getenv("STRUCTURAL_STOP_ADMISSION_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+# Structural admission is mandatory for every candidate; it has no runtime bypass.
+STRUCTURAL_STOP_ADMISSION_ENABLED = True
 STRUCTURAL_STOP_MIN_ATR_MULTIPLE = float(os.getenv("STRUCTURAL_STOP_MIN_ATR_MULTIPLE", "0.5"))
 STRUCTURAL_STOP_MAX_ATR_MULTIPLE = float(os.getenv("STRUCTURAL_STOP_MAX_ATR_MULTIPLE", "3.0"))
 if STRUCTURAL_STOP_MIN_ATR_MULTIPLE < 0 or STRUCTURAL_STOP_MAX_ATR_MULTIPLE < STRUCTURAL_STOP_MIN_ATR_MULTIPLE:
@@ -677,7 +702,8 @@ for _fundamo_strategy in ("ema99-retest-adx-fundamo-v1", "dual-zone-follower-v2"
 # delivery gate. All default OFF; no implicit path.
 INTENT_BUS_BYBIT_ENABLED = os.getenv("INTENT_BUS_BYBIT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 INTENT_BUS_PROPR_ENABLED = os.getenv("INTENT_BUS_PROPR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
-INTENT_BUS_DB = os.getenv("INTENT_BUS_DB") or None
+_INTENT_BUS_DB_RAW = os.getenv("INTENT_BUS_DB") or ""
+INTENT_BUS_DB = str(Path(_INTENT_BUS_DB_RAW).expanduser()) if _INTENT_BUS_DB_RAW and Path(_INTENT_BUS_DB_RAW).expanduser().is_absolute() else None
 # JSON inbox delivery is compatibility-only; SQLite is authoritative.
 INTENT_BUS_LEGACY_INBOX_ENABLED = os.getenv("INTENT_BUS_LEGACY_INBOX_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
@@ -944,8 +970,19 @@ def init_analyst_db(db_path: str | Path | None = None):
         conn.execute("""CREATE TABLE IF NOT EXISTS discord_signal_batches (
             window_start TEXT PRIMARY KEY, window_end TEXT NOT NULL, status TEXT NOT NULL,
             candidate_count INTEGER NOT NULL, message_count INTEGER NOT NULL DEFAULT 0,
-            claimed_at TEXT, sent_at TEXT, response_body TEXT, error_message TEXT,
+            claimed_at TEXT, claimed_by TEXT, message_text TEXT, message_hash TEXT,
+            sent_at TEXT, response_body TEXT, error_message TEXT,
             attempts INTEGER NOT NULL DEFAULT 0)""")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(discord_signal_batches)").fetchall()}
+        if "claimed_by" not in columns:
+            conn.execute("ALTER TABLE discord_signal_batches ADD COLUMN claimed_by TEXT")
+        if "message_text" not in columns:
+            conn.execute("ALTER TABLE discord_signal_batches ADD COLUMN message_text TEXT")
+        if "message_hash" not in columns:
+            conn.execute("ALTER TABLE discord_signal_batches ADD COLUMN message_hash TEXT")
+        conn.execute("""CREATE TABLE IF NOT EXISTS discord_signal_batch_members (
+            window_start TEXT NOT NULL, raw_signal_id TEXT NOT NULL,
+            PRIMARY KEY (window_start, raw_signal_id))""")
         conn.commit()
     finally:
         conn.close()

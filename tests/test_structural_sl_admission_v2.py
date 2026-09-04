@@ -10,6 +10,7 @@ NOW = datetime(2026, 9, 4, 12, 5, tzinfo=timezone.utc)
 def _zone(zone_id, timeframe, created_at, *, direction="bullish", low=100.0, high=101.0, state="active"):
     return {
         "zone_id": zone_id,
+        "asset": "BTC",
         "type": "order_block",
         "timeframe": timeframe,
         "direction": direction,
@@ -17,6 +18,7 @@ def _zone(zone_id, timeframe, created_at, *, direction="bullish", low=100.0, hig
         "high": high,
         "state": state,
         "created_at": created_at,
+        "confirmed_at": created_at,
         "coverage_status": "covered",
         "source_evidence_ids": [f"evidence-{zone_id}"],
     }
@@ -33,6 +35,7 @@ def _candidate(stop, direction="long", entry=104.0):
 
 def _context(zones, atr_4h=2.0, atr_1h=1.0):
     return {
+        "asset": "BTC",
         "cutoff": NOW,
         "zones": zones,
         "atr_by_timeframe": {"4h": atr_4h, "1h": atr_1h},
@@ -95,6 +98,28 @@ def test_short_uses_upper_boundary_and_selected_timeframe_atr():
     assert result["structural_stop_gate"] == "pass"
     assert result["selected_zone_timeframe"] == "1h"
     assert result["structural_stop_buffer_atr"] == 1.5
+
+
+def test_context_asset_and_cutoff_are_part_of_admission_identity():
+    context = _context([_zone("zone-1", "4h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc))])
+    context["cutoff"] = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+    candidate = _candidate(99.0)
+    candidate["observed_at"] = NOW.isoformat()
+
+    result = admit_selected_structural_stop(candidate, context, now=NOW)
+
+    assert result["structural_stop_gate"] == "fail"
+    assert "structural context cutoff does not match candidate" in result["structural_stop_reasons"]
+
+
+def test_missing_atr_source_lineage_fails_closed():
+    context = _context([_zone("zone-1", "4h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc))])
+    context["atr_source_bar_ids"] = {}
+
+    result = admit_selected_structural_stop(_candidate(99.0), context)
+
+    assert result["structural_stop_gate"] == "fail"
+    assert "4h structural ATR source bar IDs are unavailable" in result["structural_stop_reasons"]
 
 
 def test_structural_admission_is_enabled_by_default():

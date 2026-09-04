@@ -18,9 +18,11 @@ def _candidate(direction, stop):
 
 def _context(direction="bullish", low=95.0, high=96.0, state="active"):
     return {
+        "asset": "BTC",
         "cutoff": NOW,
         "zones": [{
             "zone_id": "structure-1",
+            "asset": "BTC",
             "type": "order_block",
             "timeframe": "4h",
             "direction": direction,
@@ -28,10 +30,12 @@ def _context(direction="bullish", low=95.0, high=96.0, state="active"):
             "high": high,
             "state": state,
             "created_at": datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
+            "confirmed_at": datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
             "coverage_status": "covered",
             "source_evidence_ids": ["obs-1"],
         }],
         "atr_by_timeframe": {"4h": 2.0},
+        "atr_source_bar_ids": {"4h": ["bar-1"]},
     }
 
 
@@ -70,22 +74,25 @@ def test_uncovered_zone_fails_closed():
 def test_zone_selection_prioritizes_4h_then_latest_zone():
     zones = [
         {
-            "zone_id": "old-4h", "type": "fvg", "timeframe": "4h", "direction": "bullish",
+            "zone_id": "old-4h", "asset": "BTC", "type": "fvg", "timeframe": "4h", "direction": "bullish",
             "low": 94.0, "high": 95.0, "state": "active",
-            "created_at": datetime(2026, 9, 1, 4, tzinfo=timezone.utc),
-            "source_evidence_ids": ["old"],
+                "created_at": datetime(2026, 9, 1, 4, tzinfo=timezone.utc),
+                "confirmed_at": datetime(2026, 9, 1, 4, tzinfo=timezone.utc),
+            "coverage_status": "covered", "source_evidence_ids": ["old"],
         },
         {
-            "zone_id": "new-4h", "type": "fvg", "timeframe": "4h", "direction": "bullish",
+            "zone_id": "new-4h", "asset": "BTC", "type": "fvg", "timeframe": "4h", "direction": "bullish",
             "low": 96.0, "high": 97.0, "state": "active",
-            "created_at": datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
-            "source_evidence_ids": ["new"],
+                "created_at": datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
+                "confirmed_at": datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
+            "coverage_status": "covered", "source_evidence_ids": ["new"],
         },
         {
-            "zone_id": "new-1h", "type": "fvg", "timeframe": "1h", "direction": "bullish",
+            "zone_id": "new-1h", "asset": "BTC", "type": "fvg", "timeframe": "1h", "direction": "bullish",
             "low": 98.0, "high": 99.0, "state": "active",
-            "created_at": datetime(2026, 9, 1, 10, tzinfo=timezone.utc),
-            "source_evidence_ids": ["one-hour"],
+                "created_at": datetime(2026, 9, 1, 10, tzinfo=timezone.utc),
+                "confirmed_at": datetime(2026, 9, 1, 10, tzinfo=timezone.utc),
+            "coverage_status": "covered", "source_evidence_ids": ["one-hour"],
         },
     ]
 

@@ -150,8 +150,8 @@ def test_rotated_asset_adapter_loads_each_timeframe_for_the_requested_asset(monk
     init_regime_history_schema(regime_conn)
     through = cutoff.replace(hour=cutoff.hour - cutoff.hour % 4, minute=0, second=0, microsecond=0)
     direct_rows = []
-    for index in range(90):
-        start = through - timedelta(hours=(90 - index) * 4)
+    for index in range(300):
+        start = through - timedelta(hours=(300 - index) * 4)
         close = 100.0 + index
         direct_rows.append([
             int(start.timestamp() * 1000), str(close - 1), str(close + 1),
@@ -159,8 +159,8 @@ def test_rotated_asset_adapter_loads_each_timeframe_for_the_requested_asset(monk
         ])
     one_hour_through = cutoff.replace(minute=0, second=0, microsecond=0)
     direct_1h_rows = []
-    for index in range(96):
-        start = one_hour_through - timedelta(hours=96 - index)
+    for index in range(360):
+        start = one_hour_through - timedelta(hours=360 - index)
         close = 200.0 + index
         direct_1h_rows.append([
             int(start.timestamp() * 1000), str(close - 1), str(close + 1),

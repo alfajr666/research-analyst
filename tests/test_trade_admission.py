@@ -11,11 +11,13 @@ def _candidate(stop, atr=10):
         "atr14_4h": atr, "valid_until": "2099-01-01T00:05:00+00:00",
         "data_freshness_seconds": 1.0,
         "structural_context": {
+            "asset": "BTC",
             "cutoff": datetime(2026, 1, 1, tzinfo=timezone.utc),
             "zones": [{
-                "zone_id": "zone-1", "type": "order_block", "timeframe": "4h",
+                "zone_id": "zone-1", "asset": "BTC", "type": "order_block", "timeframe": "4h",
                 "direction": "bullish", "low": 97.0, "high": 97.5,
                 "state": "active", "created_at": datetime(2025, 12, 31, tzinfo=timezone.utc),
+                "confirmed_at": datetime(2025, 12, 31, tzinfo=timezone.utc),
                 "source_evidence_ids": ["bar-1"], "coverage_status": "covered",
             }],
             "atr_by_timeframe": {"4h": 4.0},
@@ -64,14 +66,18 @@ def test_structural_stop_is_an_independent_hard_gate(monkeypatch):
         "strategy_id": "failed-break-v3",
         "observed_at": "2026-01-01T00:00:00+00:00",
         "structural_context": {
+            "asset": "BTC",
             "cutoff": datetime(2026, 1, 1, tzinfo=timezone.utc),
             "zones": [{
-                "zone_id": "zone-1", "type": "fvg", "timeframe": "4h",
+                "zone_id": "zone-1", "asset": "BTC", "type": "fvg", "timeframe": "4h",
                 "direction": "bullish", "low": 97.0, "high": 98.0,
-                "state": "active", "created_at": datetime(2025, 12, 31, tzinfo=timezone.utc),
+                    "state": "active", "created_at": datetime(2025, 12, 31, tzinfo=timezone.utc),
+                    "confirmed_at": datetime(2025, 12, 31, tzinfo=timezone.utc),
                 "source_evidence_ids": ["bar-1"], "coverage_status": "covered",
+                "confirmed_at": datetime(2025, 12, 31, tzinfo=timezone.utc),
             }],
             "atr_by_timeframe": {"4h": 1.0},
+            "atr_source_bar_ids": {"4h": ["bar-1"]},
         },
     })
     monkeypatch.setattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", True)
@@ -102,14 +108,17 @@ def test_stop_too_far_from_htf_zone_is_rejected_before_scoring(monkeypatch):
         "strategy_id": "failed-break-v3",
         "targets": [200.0],
         "structural_context": {
+            "asset": "BTC",
             "cutoff": datetime(2026, 1, 1, tzinfo=timezone.utc),
             "zones": [{
-                "zone_id": "zone-1", "type": "order_block", "timeframe": "4h",
-                "direction": "bullish", "low": 81.0, "high": 82.0,
-                "state": "active", "created_at": datetime(2025, 12, 31, tzinfo=timezone.utc),
-                "source_evidence_ids": ["bar-1"], "coverage_status": "covered",
+                "zone_id": "zone-1", "asset": "BTC", "type": "order_block", "timeframe": "4h",
+                    "direction": "bullish", "low": 81.0, "high": 82.0,
+                    "state": "active", "created_at": datetime(2025, 12, 31, tzinfo=timezone.utc),
+                    "confirmed_at": datetime(2025, 12, 31, tzinfo=timezone.utc),
+                    "source_evidence_ids": ["bar-1"], "coverage_status": "covered",
             }],
             "atr_by_timeframe": {"4h": 1.0},
+            "atr_source_bar_ids": {"4h": ["bar-1"]},
         },
     })
     monkeypatch.setattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", True)

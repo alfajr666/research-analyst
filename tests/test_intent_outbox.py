@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -10,6 +11,7 @@ from intent_outbox import (
     validate_geometry,
     write_intent,
 )
+from trade_admission import candidate_admission_fingerprint
 from alpha_outbox import write_event
 
 
@@ -168,9 +170,46 @@ class IntentWriteTests(unittest.TestCase):
     def test_atomic_write_and_dedupe(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = Path(directory)
-            intent = build_executor_intent(_alpha_event())
-            created, path = write_intent(intent, inbox)
-            again, again_path = write_intent(intent, inbox)
+            candidate = _alpha_event(
+                observed_at=datetime.now(timezone.utc).isoformat(),
+                valid_until=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            )
+            observed = candidate["observed_at"]
+            candidate["structural_context"] = {
+                "asset": "BTC", "cutoff": observed,
+                "zones": [{"zone_id": "zone-1", "asset": "BTC", "type": "order_block", "timeframe": "4h",
+                            "direction": "bullish", "low": 97.0, "high": 98.0, "state": "active",
+                            "created_at": observed, "confirmed_at": observed, "coverage_status": "covered",
+                            "source_evidence_ids": ["zone-bar-1"]}],
+                "atr_by_timeframe": {"4h": 1.0}, "atr_source_bar_ids": {"4h": ["bar-1"]},
+            }
+            admission = {
+                "hard_gate": "pass", "structural_stop_gate": "pass", "selected_zone_id": "zone-1",
+                "selected_zone_asset": "BTC", "selected_zone_kind": "order_block", "selected_zone_state": "active",
+                "selected_zone_created_at": observed, "selected_zone_confirmed_at": observed,
+                "selected_zone_coverage_status": "covered", "selected_zone_source_evidence_ids": ["zone-bar-1"],
+                "selected_zone_timeframe": "4h", "structural_atr_method": "wilder",
+                "structural_atr_period": 14, "structural_atr_source_bar_ids": ["bar-1"],
+                "structural_atr": 1.0, "selected_zone_low": 97.0, "selected_zone_high": 98.0,
+                "selected_zone_boundary": 97.0,
+                "entry_zone_buffer": 2.0, "entry_zone_buffer_atr": 2.0,
+                "structural_stop_buffer": 2.0, "structural_stop_buffer_atr": 2.0,
+                "atr14_4h": 10.0,
+                "data_freshness_seconds": 1.0,
+                "structural_context_cutoff": observed,
+                "candidate_id": "deliv-1",
+            }
+            admission["candidate_fingerprint"] = candidate_admission_fingerprint({
+                "candidate_id": "deliv-1", "strategy_id": candidate["strategy_id"],
+                "asset": candidate["asset"], "direction": candidate["direction"],
+                "entry_price": candidate["entry_condition"]["price"],
+                "invalidation_price": candidate["invalidation_price"],
+                "take_profit": candidate["targets"][0], "observed_at": candidate["observed_at"],
+                "valid_until": candidate["valid_until"],
+            })
+            intent = build_executor_intent(candidate, admission=admission)
+            created, path = write_intent(intent, inbox, admission=admission)
+            again, again_path = write_intent(intent, inbox, admission=admission)
             self.assertTrue(created)
             self.assertFalse(again)
             self.assertEqual(path, again_path)
@@ -200,15 +239,19 @@ class IntentDeliveryTests(unittest.TestCase):
             valid_until="2099-01-01T00:05:00+00:00",
             data_freshness_seconds=1.0,
             structural_context={
+                "asset": "BTC",
                 "cutoff": "2026-08-28T12:00:00+00:00",
                 "zones": [{
-                    "zone_id": "zone-1", "type": "order_block", "timeframe": "4h",
+                    "zone_id": "zone-1", "asset": "BTC", "type": "order_block", "timeframe": "4h",
                     "direction": "bullish", "low": 97.0, "high": 98.0,
                     "state": "active", "created_at": "2026-08-28T08:00:00+00:00",
+                    "confirmed_at": "2026-08-28T08:00:00+00:00",
                     "coverage_status": "covered", "source_evidence_ids": ["bar-1"],
                 }],
                 "atr_by_timeframe": {"4h": 1.0},
+                "atr_source_bar_ids": {"4h": ["bar-1"]},
             },
+            _admission_result={"structural_stop_gate": "pass", "selected_zone_id": "stale-zone"},
         ), outbox)
         self.assertTrue(created)
         intents = list(config.INTENT_INBOX.glob("*.json"))
@@ -222,12 +265,22 @@ class IntentDeliveryTests(unittest.TestCase):
         with alpha_file.open() as fh:
             alpha = json.load(fh)
         self.assertEqual(written["delivery_id"], alpha["alpha_id"])
+        self.assertEqual(alpha["_admission_result"]["selected_zone_id"], "zone-1")
 
     def test_incomplete_advisory_event_cannot_deliver_intent(self):
         outbox = Path(self.dirname.name) / "alpha-incomplete"
         created, _ = write_event(_alpha_event(), outbox)
         self.assertTrue(created)
         self.assertEqual(list(config.INTENT_INBOX.glob("*.json")), [])
+
+    def test_direct_intent_write_requires_admission_proof(self):
+        outbox = Path(self.dirname.name) / "alpha-proof"
+        intent = build_executor_intent(_alpha_event())
+
+        created, path = write_intent(intent, outbox)
+
+        self.assertFalse(created)
+        self.assertEqual(path.name, "blocked.json")
 
 
 if __name__ == "__main__":

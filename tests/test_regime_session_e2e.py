@@ -32,8 +32,8 @@ def test_batch_wires_direct_history_into_score_provenance(monkeypatch, tmp_path)
     )
     through = cutoff.replace(hour=cutoff.hour - cutoff.hour % 4, minute=0, second=0, microsecond=0)
     direct_rows = []
-    for index in range(90):
-        start = through - timedelta(hours=(90 - index) * 4)
+    for index in range(300):
+        start = through - timedelta(hours=(300 - index) * 4)
         close = 100.0 + index
         direct_rows.append([
             int(start.timestamp() * 1000), str(close - 1), str(close + 1),
@@ -41,8 +41,8 @@ def test_batch_wires_direct_history_into_score_provenance(monkeypatch, tmp_path)
         ])
     one_hour_through = cutoff.replace(minute=0, second=0, microsecond=0)
     direct_1h_rows = []
-    for index in range(96):
-        start = one_hour_through - timedelta(hours=96 - index)
+    for index in range(360):
+        start = one_hour_through - timedelta(hours=360 - index)
         close = 200.0 + index
         direct_1h_rows.append([
             int(start.timestamp() * 1000), str(close - 1), str(close + 1),
@@ -71,7 +71,7 @@ def test_batch_wires_direct_history_into_score_provenance(monkeypatch, tmp_path)
     references = json.loads(row[1])
     assert len(references["regime_1h_bar_ids"]) == 72
     assert len(references["regime_4h_bar_ids"]) == 84
-    assert cache_count == 84
+    assert cache_count == 270
     assert summary["asset_observations"]["SOL"]["history_1h"]["status"] == "ready"
     log = json.loads(format_regime_batch_log(summary))
     assert log["history_1h_ready"] == 1

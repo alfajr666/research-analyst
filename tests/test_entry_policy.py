@@ -90,12 +90,14 @@ def test_shadow_mode_does_not_suppress_an_admissible_candidate(monkeypatch):
         "data_freshness_seconds": 1.0,
     }
     context = {
+        "asset": "BTC",
         "cutoff": "2026-09-04T00:20:00Z",
-        "zones": [{"zone_id": "zone-1", "type": "order_block", "timeframe": "4h",
+        "zones": [{"zone_id": "zone-1", "asset": "BTC", "type": "order_block", "timeframe": "4h",
                    "direction": "bullish", "low": 97.0, "high": 98.0,
-                   "state": "active", "created_at": "2026-09-03T20:00:00Z",
+                   "state": "active", "created_at": "2026-09-03T20:00:00Z", "confirmed_at": "2026-09-03T20:00:00Z",
                    "coverage_status": "covered", "source_evidence_ids": ["bar-1"]}],
         "atr_by_timeframe": {"4h": 1.0},
+        "atr_source_bar_ids": {"4h": ["bar-1"]},
     }
     result = resolve([candidate], structural_contexts={"BTC": context})
 
@@ -121,12 +123,14 @@ def test_entry_policy_enforce_mode_does_not_create_a_second_session_gate(monkeyp
         "data_freshness_seconds": 1.0,
     }
     context = {
+        "asset": "BTC",
         "cutoff": "2026-09-04T00:20:00Z",
-        "zones": [{"zone_id": "zone-1", "type": "order_block", "timeframe": "4h",
+        "zones": [{"zone_id": "zone-1", "asset": "BTC", "type": "order_block", "timeframe": "4h",
                    "direction": "bullish", "low": 97.0, "high": 98.0,
-                   "state": "active", "created_at": "2026-09-03T20:00:00Z",
+                   "state": "active", "created_at": "2026-09-03T20:00:00Z", "confirmed_at": "2026-09-03T20:00:00Z",
                    "coverage_status": "covered", "source_evidence_ids": ["bar-1"]}],
         "atr_by_timeframe": {"4h": 1.0},
+        "atr_source_bar_ids": {"4h": ["bar-1"]},
     }
     result = resolve([candidate], structural_contexts={"BTC": context})
 

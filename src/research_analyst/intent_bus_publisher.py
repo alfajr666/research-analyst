@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 # The shared bus package lives at the canonical neutral location (spec 4).
@@ -61,6 +62,10 @@ def publish_research_intent(
     if target == "propr" and not propr_enabled():
         return False, None, None
     try:
+        from intent_outbox import validate_intent_handoff
+        admitted, reason = validate_intent_handoff(intent, now=datetime.now(timezone.utc))
+        if not admitted:
+            return False, None, ValueError(reason)
         delivery = producer_adapters.build_research_analyst_delivery(
             envelope=intent, target=target, source_event_id=intent.get("delivery_id")
         )

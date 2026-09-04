@@ -109,24 +109,26 @@ No 1h or 4h WebSocket topics are added. The gateway remains the sole writer of
 `market.sqlite3` and derives 15m, 1h, and strategy-facing 4h bars locally from
 completed 5m observations using the canonical resampler.
 
-The regime-session module has separate direct Bybit REST `1h` and `4h` history
-caches, owned by the regime worker and stored in `regime.sqlite3`. These caches
-are not live WebSocket topics and are not replacements for strategy-facing 1h
-or 4h context.
+The regime-session module has direct Bybit REST `1h` and `4h` history caches,
+owned by the regime worker and stored in `regime.sqlite3`. These caches are not
+live WebSocket topics. The evaluator may read them as the historical seed for
+the engine-owned hybrid strategy `1h`/`4h` context, but strategies never select
+or access the source themselves.
 
 The regime module must not add exchange subscriptions, alter gateway sharding,
 or create a second market-database writer.
 
-### RSM-005: Direct higher-timeframe history is regime-exclusive
+### RSM-005: Direct higher-timeframe history is regime-worker-owned
 
 The live strategy path uses the existing Bybit market observations. A separate
 live market provider is not required and must not be introduced.
 
-The regime worker may use Bybit public REST only for its exclusive historical
-`1h` and `4h` caches, as specified in `specs/regime-history-bootstrap-v2.md`. It
-must not write `market.sqlite3`, provide 1m/5m strategy bars, or become a
-competing live writer. The gateway continues to own 1m/5m REST bootstrap and
-WebSocket data.
+The regime worker may use Bybit public REST for its historical `1h` and `4h`
+caches, as specified in `specs/regime-history-bootstrap-v2.md`. It must not
+write `market.sqlite3`, provide 1m/5m strategy bars, or become a competing live
+writer. The gateway continues to own 1m/5m REST bootstrap and WebSocket data.
+The evaluator reads the direct cache read-only through the hybrid HTF engine
+contract.
 
 ### RSM-006: Separate regime observation storage
 
@@ -141,9 +143,10 @@ The evaluator reads it read-only. This keeps regime writes, indexes, and
 retention from contending with candidate, event, and delivery writes.
 
 The market database remains gateway-owned. The regime database is not a second
-general market ledger; it contains the regime-exclusive direct 1h/4h caches plus
-derived score and gate observations with source cutoff references. The direct
-cache schemas and retention contract are defined in
+general market ledger; it contains regime-worker-owned direct 1h/4h caches plus
+derived score and gate observations with source cutoff references. The evaluator
+may read the direct cache for the engine hybrid HTF contract. The direct cache
+schemas and retention contract are defined in
 `specs/regime-history-bootstrap-v2.md`.
 
 The existing `entry_policy_observations` table and `ENTRY_POLICY_MODE` setting
@@ -164,9 +167,10 @@ For one asset it reads:
 - completed 5m bars for realized volatility.
 
 The 1h and 4h regime views come from the direct Bybit REST caches. The 5m view
-is retained for realized volatility. Strategy-facing 1h/4h views remain local
-5m resamples and are not changed by this regime-only cache. The worker must
-not independently reload and resample the same asset once for every strategy.
+is retained for realized volatility. Strategy-facing 1h/4h views are assembled
+by the engine from direct seed rows plus the canonical 5m-derived tail. The
+worker must not independently reload and resample the same asset once for every
+strategy.
 
 The implementation should use one per-cutoff asset cache and reuse the frames
 for all regime calculations. It must not run inside each strategy plugin.
@@ -629,8 +633,9 @@ then switch to `off` after checking the service health and cutoff audit.
 
 ## 11. Explicit Non-Goals
 
-- No direct 1h/4h WebSocket subscriptions; direct 1h/4h REST history is allowed
-  only for the regime-exclusive cache.
+- No direct 1h/4h WebSocket subscriptions; direct 1h/4h REST history remains
+  regime-worker-owned and is shared with the engine only through the hybrid HTF
+  contract.
 - No BTC/SPX correlation provider.
 - No second live market-data writer.
 - No static session-to-regime mapping.

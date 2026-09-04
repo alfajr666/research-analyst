@@ -32,6 +32,19 @@ def _complete_event_without_targets():
         "entry_condition": {"type": "market", "price": 100.0},
         "entry_price": 100.0,
         "invalidation_price": 99.0,
+        "data_freshness_seconds": 1.0,
+        "structural_context": {
+            "asset": "SOL", "cutoff": "2026-08-16T10:15:00+00:00",
+            "zones": [{
+                "zone_id": "zone-alpha", "asset": "SOL", "type": "order_block", "timeframe": "4h",
+                "direction": "bullish", "low": 99.5, "high": 99.75, "state": "active",
+                "created_at": "2026-08-16T06:15:00+00:00", "coverage_status": "covered",
+                "confirmed_at": "2026-08-16T06:15:00+00:00",
+                "source_evidence_ids": ["bar-alpha"],
+            }],
+            "atr_by_timeframe": {"4h": 0.25},
+            "atr_source_bar_ids": {"4h": ["bar-alpha"]},
+        },
         "feature_snapshot": {},
     })
     return event

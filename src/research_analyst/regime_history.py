@@ -173,37 +173,55 @@ def _normalize_row(
 def _fetch_bybit(asset: str, start_ms: int, end_ms: int, interval: str) -> list[Any]:
     """Fetch public completed-window candles without writing market.sqlite3."""
     symbol = f"{str(asset).upper()}USDT"
+    limit = REGIME_1H_REQUEST_LIMIT if interval == "60" else REGIME_4H_REQUEST_LIMIT
     for attempt in range(3):
         try:
-            response = httpx.get(
-                f"{config.BYBIT_LINEAR_BASE_URL.rstrip('/')}/v5/market/kline",
-                params={
-                    "category": "linear",
-                    "symbol": symbol,
-                    "interval": interval,
-                    "start": start_ms,
-                    "end": end_ms - 1,
-                    "limit": REGIME_1H_REQUEST_LIMIT if interval == "60" else REGIME_4H_REQUEST_LIMIT,
-                },
-                timeout=float(getattr(
-                    config, f"REGIME_{'1H' if interval == '60' else '4H'}_REQUEST_TIMEOUT_SECONDS", 20
-                )),
-            )
-            if response.status_code == 429:
-                retry_after = float(response.headers.get("retry-after", "5"))
-                if attempt < 2:
-                    time.sleep(max(0.0, retry_after))
-                    continue
-                raise RegimeHistoryError("rate_limited")
-            response.raise_for_status()
-            payload = response.json()
-            if payload.get("retCode") != 0:
-                raise RegimeHistoryError("bybit_response_error")
-            result = payload.get("result") or {}
-            rows = result.get("list") if isinstance(result, dict) else None
-            if not isinstance(rows, list):
-                raise RegimeHistoryError("malformed_bybit_response")
-            return rows
+            cursor_end = end_ms - 1
+            collected: list[Any] = []
+            while cursor_end >= start_ms:
+                response = httpx.get(
+                    f"{config.BYBIT_LINEAR_BASE_URL.rstrip('/')}/v5/market/kline",
+                    params={
+                        "category": "linear",
+                        "symbol": symbol,
+                        "interval": interval,
+                        "start": start_ms,
+                        "end": cursor_end,
+                        "limit": limit,
+                    },
+                    timeout=float(getattr(
+                        config, f"REGIME_{'1H' if interval == '60' else '4H'}_REQUEST_TIMEOUT_SECONDS", 20
+                    )),
+                )
+                if response.status_code == 429:
+                    retry_after = float(response.headers.get("retry-after", "5"))
+                    if attempt < 2:
+                        time.sleep(max(0.0, retry_after))
+                        raise RegimeHistoryError("rate_limited")
+                    raise RegimeHistoryError("rate_limited")
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get("retCode") != 0:
+                    raise RegimeHistoryError("bybit_response_error")
+                result = payload.get("result") or {}
+                rows = result.get("list") if isinstance(result, dict) else None
+                if not isinstance(rows, list):
+                    raise RegimeHistoryError("malformed_bybit_response")
+                if not rows:
+                    break
+                collected.extend(rows)
+                starts = [
+                    int(float(row[0])) for row in rows
+                    if isinstance(row, (list, tuple)) and row
+                ]
+                if not starts or len(rows) < limit:
+                    break
+                oldest = min(starts)
+                next_end = oldest - 1
+                if next_end >= cursor_end:
+                    raise RegimeHistoryError("non_decreasing_bybit_page")
+                cursor_end = next_end
+            return collected
         except (httpx.HTTPError, ValueError, RegimeHistoryError):
             if attempt == 2:
                 raise
@@ -223,11 +241,15 @@ def _history_config(interval: str) -> tuple[str, str, int, int, int, int]:
     if interval == "1h":
         return (
             "regime_1h_bars", "regime_1h_backfill_jobs", REGIME_1H_INTERVAL_MS,
-            REGIME_1H_FETCH_DAYS, REGIME_1H_RETAIN_DAYS, REGIME_1H_READINESS_BARS,
+            max(REGIME_1H_FETCH_DAYS, int(getattr(config, "HYBRID_HTF_1H_FETCH_DAYS", REGIME_1H_FETCH_DAYS))),
+            max(REGIME_1H_RETAIN_DAYS, int(getattr(config, "HYBRID_HTF_1H_RETAIN_DAYS", REGIME_1H_RETAIN_DAYS))),
+            REGIME_1H_READINESS_BARS,
         )
     return (
         "regime_4h_bars", "regime_4h_backfill_jobs", REGIME_4H_INTERVAL_MS,
-        REGIME_4H_FETCH_DAYS, REGIME_4H_RETAIN_DAYS, REGIME_4H_READINESS_BARS,
+        max(REGIME_4H_FETCH_DAYS, int(getattr(config, "HYBRID_HTF_4H_FETCH_DAYS", REGIME_4H_FETCH_DAYS))),
+        max(REGIME_4H_RETAIN_DAYS, int(getattr(config, "HYBRID_HTF_4H_RETAIN_DAYS", REGIME_4H_RETAIN_DAYS))),
+        REGIME_4H_READINESS_BARS,
     )
 
 

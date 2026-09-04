@@ -1,6 +1,8 @@
 """Deterministic execution admission and candidate clash resolution."""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from datetime import datetime, timezone
 
@@ -100,6 +102,36 @@ def _time(value):
     return (result if result.tzinfo else result.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
+def candidate_admission_fingerprint(candidate: dict) -> str:
+    """Bind an admission proof to the candidate's immutable trade identity."""
+    entry = candidate.get("entry_price")
+    if entry is None:
+        entry = (candidate.get("entry_condition") or {}).get("price")
+    stop = candidate.get("invalidation_price", candidate.get("stop_loss"))
+    targets = candidate.get("targets") or []
+    target = targets[0] if targets else candidate.get("take_profit")
+    try:
+        observed_at = _time(candidate.get("observed_at")).isoformat() if candidate.get("observed_at") else ""
+    except (TypeError, ValueError, OverflowError):
+        observed_at = str(candidate.get("observed_at") or "")
+    try:
+        valid_until = _time(candidate.get("valid_until")).isoformat() if candidate.get("valid_until") else ""
+    except (TypeError, ValueError, OverflowError):
+        valid_until = str(candidate.get("valid_until") or "")
+    material = {
+        "candidate_id": str(candidate.get("candidate_id") or candidate.get("dedupe_key") or ""),
+        "strategy_id": str(candidate.get("strategy_id") or ""),
+        "asset": canonical_asset(candidate.get("asset")),
+        "direction": str(candidate.get("direction") or "").upper(),
+        "entry_price": entry,
+        "stop_loss": stop,
+        "take_profit": target,
+        "observed_at": observed_at,
+        "valid_until": valid_until,
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
 def admit_structural_stop(
     candidate: dict,
     now: datetime | None = None,
@@ -110,6 +142,7 @@ def admit_structural_stop(
         candidate,
         structural_context,
         cutoff=(structural_context or {}).get("cutoff") if structural_context else None,
+        now=now,
     )
 
 
@@ -176,24 +209,22 @@ def admit(
     identity = candidate.get("candidate_id") or candidate.get("dedupe_key")
     if not isinstance(identity, str) or not identity.strip():
         reasons.append("event identity is invalid")
-    structural = {
-        "structural_stop_gate": "unavailable",
-        "structural_stop_reasons": ["structural stop admission disabled"],
-    }
-    if getattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", True):
-        structural = admit_structural_stop(
-            candidate,
-            now=now,
-            structural_context=structural_context or candidate.get("structural_context"),
-        )
-        if structural["structural_stop_gate"] != "pass":
-            reasons.extend(f"structural stop: {reason}" for reason in structural["structural_stop_reasons"])
+    structural = admit_structural_stop(
+        candidate,
+        now=now,
+        structural_context=structural_context or candidate.get("structural_context"),
+    )
+    if structural["structural_stop_gate"] != "pass":
+        reasons.extend(f"structural stop: {reason}" for reason in structural["structural_stop_reasons"])
     atr_pct = float(atr14_4h) / entry if _number(atr14_4h) and _number(entry) and entry > 0 else None
     return {"hard_gate": "pass" if not reasons else "fail", "hard_gate_reasons": reasons,
+            "candidate_id": identity,
+            "candidate_fingerprint": candidate_admission_fingerprint(candidate),
             **symbol_policy,
             "rr": rr, "stop_distance_pct": distance, "selected_take_profit": target,
             "atr14_4h": atr14_4h, "stop_atr_multiple": distance / atr_pct if distance is not None and atr_pct else None,
-            "effective_min_stop_distance_pct": max(absolute_floor, atr_floor), **structural}
+            "effective_min_stop_distance_pct": max(absolute_floor, atr_floor),
+            "data_freshness_seconds": freshness, **structural}
 
 
 def score(candidate: dict) -> dict:
@@ -295,5 +326,10 @@ def resolve(
                     result["status"] = "advisory_only"
                 for result in results:
                     if result.get("candidate_id") in {w["candidate_id"] for w in winners}:
+                        result["status"] = "eligible_suppressed_by_opposite_direction_clash"
+            else:
+                winning_ids = {winner["candidate_id"] for winner in winners}
+                for result in results:
+                    if result.get("candidate_id") in winning_ids and result.get("candidate_id") not in selected_set:
                         result["status"] = "eligible_suppressed_by_opposite_direction_clash"
     return {"results": results, "selected_candidate_ids": selected, "conflict_group_key": "asset+cutoff"}

@@ -50,14 +50,17 @@ class Ema99RetestFundamoE2ETests(unittest.TestCase):
         event["data_freshness_seconds"] = 1.0
         boundary = event["invalidation_price"] + 2.0
         event["structural_context"] = {
+            "asset": "BTC",
             "cutoff": cutoff,
             "zones": [{
-                "zone_id": "zone-retest", "type": "order_block", "timeframe": "4h",
+                "zone_id": "zone-retest", "asset": "BTC", "type": "order_block", "timeframe": "4h",
                 "direction": "bullish", "low": boundary, "high": boundary,
                 "state": "active", "created_at": cutoff - timedelta(hours=4),
+                "confirmed_at": cutoff - timedelta(hours=4),
                 "coverage_status": "covered", "source_evidence_ids": ["bar-1"],
             }],
             "atr_by_timeframe": {"4h": 1.0},
+            "atr_source_bar_ids": {"4h": ["bar-1"]},
         }
         admission = admit(event, now=cutoff + timedelta(minutes=1))
         self.assertEqual(admission["hard_gate"], "pass", admission)

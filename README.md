@@ -82,10 +82,10 @@ second writer.
 
 Bybit is the production public source. The gateway streams completed `1m` and
 `5m` bars and locally derives strategy-facing `15m`, `1h`, and `4h` bars from
-completed `5m` observations. The derived bars are not a separate
-live-ingestion dependency. The regime worker separately reads completed direct
-Bybit REST `4h` candles into `data/regime.sqlite3`; it does not add a WebSocket
-topic or replace the strategy-facing 4h view.
+completed `5m` observations. For strategy `1h`/`4h` warmup, the engine may seed
+historical bars from the regime worker's direct Bybit REST cache, then hand off
+to the canonical 5m-derived tail. The handoff is engine-owned and invisible to
+strategies; see `specs/hybrid-htf-engine-v1.md`.
 
 Closed bars may arrive with an end timestamp one millisecond before the
 boundary, such as `14:44:59.999` for the `14:45` bar. The resampler normalizes
@@ -100,24 +100,53 @@ Canonical asset names are preserved throughout the pipeline. For example,
 `ANKRUSDT` maps to `ANKR` and `MARSCOINUSDT` maps to `MARSCOIN`; bare asset
 names are never truncated.
 
+## Hybrid HTF Engine
+
+Strategy `1h`/`4h` frames use one engine-owned, cutoff-bound source contract:
+
+```text
+direct Bybit REST seed: source_end <= handoff_at
+canonical 5m tail:      source_end > handoff_at and source_end <= cutoff_at
+```
+
+The default seed target is 240 completed bars per timeframe. Direct cache
+retention expands automatically to at least 14 complete `1h` days and 45
+complete `4h` days, plus fetch margin. The regime worker owns and writes the
+direct cache; the engine only reads it. Strategies remain source-blind and keep
+using `load_bars_for_interval`.
+
+`HYBRID_HTF_MODE=shadow` is the default rollout mode. `off` uses canonical
+resampling only. `shadow` exposes a `canonical_only` diagnostic when direct seed
+history is unavailable. `enforce` fails closed without a valid direct seed and is
+rejected unless `HYBRID_HTF_PARITY_VALIDATED=true` records completed
+direct-versus-resampled OHLC and indicator parity validation.
+
+The loader rejects forming or future bars, gaps, duplicates, malformed candles,
+invalid timestamp boundaries, and cutoff mismatches. It never interpolates or
+uses direct history as a substitute for a missing live tail. Candidate events
+carry the hybrid contract version, cutoff, handoff, direct IDs and versions,
+canonical observation IDs, availability, source mode, and readiness.
+
 ## Regime Session
 
 The regime worker runs once per completed `5m` cutoff for the current
 subscription feed. For each asset it loads completed `5m` observations for
-realized-volatility inputs, reads regime-exclusive direct `1h` and `4h` history
-from `data/regime.sqlite3`, computes in-house ADX and regime inputs, then
-persists an immutable score and gate decision. Strategy-facing `1h`/`4h` bars
-remain the gateway's `5m`-derived market-data views.
+realized-volatility inputs, reads direct `1h` and `4h` history from
+`data/regime.sqlite3`, computes in-house ADX and regime inputs, then persists an
+immutable score and gate decision. The engine uses the same direct cache as
+historical seed data before handing strategy HTF frames to the canonical
+`5m`-derived tail. Strategies remain source-blind.
 
 The default ADX length and smoothing are both 14. This implementation requires
 57 complete `1h` and `4h` bars before the score is data-ready. During warmup,
 the score is `insufficient_data` and the reason is
 `regime_score_insufficient_data`. This is expected fail-closed behavior. Do not
 reduce the requirement or invent higher-timeframe bars. New or re-entering
-assets fetch 4 calendar days of completed direct Bybit `1h` history and 15
-calendar days of completed direct Bybit `4h` history, retaining at least 3
-complete 1h days and 14 complete 4h days. Gaps, duplicates, malformed candles,
-stale data, and missing exact-cutoff evidence block only the affected asset.
+assets fetch enough completed direct Bybit `1h`/`4h` history for the regime
+contract and configured hybrid strategy seed depth. The default hybrid target is
+240 bars per timeframe, retaining at least 14 complete `1h` days and 45
+complete `4h` days. Gaps, duplicates, malformed candles, stale data, and
+missing exact-cutoff evidence block only the affected asset.
 
 `REGIME_SESSION_MODE` controls operational behavior:
 
@@ -202,6 +231,11 @@ authoritative and is never changed. Admission records the selected zone,
 entry/SL buffers, ATR provenance, exact cutoff, and source bar IDs. The old
 global `INTENT_MAX_STOP_DISTANCE_PCT` cap is removed; the structural `3.0 ATR`
 maximum is the relevant proximity maximum.
+
+HTF zone records are not included in strategy snapshots. They are constructed
+only after strategy evaluation for emitted candidates. Alpha, compatibility,
+and shared-bus handoffs require a passing admission proof; direct intent writes
+without that proof are rejected.
 
 Soft context scores rank candidates but cannot rescue a failed hard gate.
 Opposing candidates are resolved deterministically; an unresolved clash emits

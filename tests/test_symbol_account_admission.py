@@ -17,12 +17,14 @@ def _candidate(strategy_id, asset, account_id="hyro"):
         "valid_until": "2099-01-01T00:05:00+00:00",
         "data_freshness_seconds": 1.0,
         "structural_context": {
+            "asset": "BTC",
             "cutoff": "2026-01-01T00:00:00+00:00",
-            "zones": [{"zone_id": "zone-1", "type": "order_block", "timeframe": "4h",
+            "zones": [{"zone_id": "zone-1", "asset": "BTC", "type": "order_block", "timeframe": "4h",
                        "direction": "bullish", "low": 97.0, "high": 98.0,
-                       "state": "active", "created_at": "2025-12-31T20:00:00+00:00",
+                       "state": "active", "created_at": "2025-12-31T20:00:00+00:00", "confirmed_at": "2025-12-31T20:00:00+00:00",
                        "coverage_status": "covered", "source_evidence_ids": ["bar-1"]}],
-            "atr_by_timeframe": {"4h": 1.0},
+             "atr_by_timeframe": {"4h": 1.0},
+             "atr_source_bar_ids": {"4h": ["bar-1"]},
         },
     }
 

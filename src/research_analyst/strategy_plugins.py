@@ -18,7 +18,10 @@ from raw_signal_batch import capture, record_status
 from entry_policy import annotate_candidate
 from trade_admission import canonical_asset, resolve
 from structural_stop import build_structural_contexts
-from strategy_v2_context import completed_cycle_for, load_bars_for_interval
+from strategy_v2_context import (
+    completed_cycle_for, hybrid_htf_context, hybrid_htf_context_active,
+    hybrid_htf_context_cutoff, hybrid_htf_provenance, load_bars_for_interval,
+)
 from symbol_rotation import subscription_assets
 
 # Per spec: re-export from config for modules that imported here before
@@ -454,32 +457,6 @@ def _build_snapshot(db_path: str | Path, cutoff_id: str, now: datetime | None,
         ).fetchall()
         for asset, fset, payload in fs:
             snapshot["feature_snapshots"].setdefault(asset, {})[fset] = json.loads(payload) if payload else {}
-        try:
-            zones = feat_conn.execute(
-                """SELECT zone_id, asset, kind, direction, strength, low, high, state,
-                          source_evidence_ids, confidence_status, created_at
-                     FROM structure_zones WHERE cutoff_id = ?""",
-                (cutoff_id,)
-            ).fetchall()
-            if zones:
-                snapshot["zones"] = []
-                for z in zones:
-                    kind = z[2]
-                    if kind.endswith(("_1h", "_4h")):
-                        typ, tf = kind.rsplit("_", 1)
-                    else:
-                        typ, tf = kind, ""
-                    snapshot["zones"].append({
-                        "zone_id": z[0], "reference_id": z[0], "asset": z[1], "kind": kind,
-                        "type": typ, "timeframe": tf, "direction": z[3], "strength": z[4],
-                        "low": z[5], "high": z[6], "state": z[7],
-                        "source_evidence_ids": json.loads(z[8] or "[]"),
-                        "confidence_status": z[9], "created_at": z[10],
-                    })
-                from structure_zones import get_active_zones_for_snapshot
-                snapshot["zones"] = get_active_zones_for_snapshot(snapshot["zones"], max_per=3)
-        except Exception:
-            pass
     finally:
         feat_conn.close()
     return snapshot
@@ -489,6 +466,24 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                              require_finalized: bool, snapshot: dict | None = None,
                              market_db_path: str | Path | None = None) -> Dict[str, object]:
     """Run active plugins against one finalized cutoff. Failures isolated."""
+    if (getattr(config, "HYBRID_HTF_ENABLED", True)
+            and getattr(config, "HYBRID_HTF_MODE", "shadow") != "off"):
+        try:
+            cutoff = _cutoff_from_id(cutoff_id, now)
+        except (TypeError, ValueError):
+            # Preserve the original finalized-cutoff error for malformed IDs.
+            pass
+        else:
+            if (not hybrid_htf_context_active()
+                    or hybrid_htf_context_cutoff() != cutoff):
+                with hybrid_htf_context(
+                    market_db_path or (snapshot or {}).get("market_db_path") or config.MARKET_DB_PATH,
+                    getattr(config, "REGIME_DB_PATH", None), cutoff,
+                ):
+                    return _run_plugins_for_cutoff(
+                        db_path, cutoff_id, now, require_finalized, snapshot=snapshot,
+                        market_db_path=market_db_path,
+                    )
     results: Dict[str, object] = {}
     conn = config.get_db_connection(read_only=True, db_path=db_path)
     try:
@@ -523,7 +518,16 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         config.expand_perp_symbols(attempted_symbols, "bybit"), attempted_symbols
     ))
     results["_attempted_symbols"] = len(attempted_symbols)
+    # Materialize both HTF frames before plugin code runs so every emitted
+    # candidate receives a complete engine source/readiness proof, even when
+    # its strategy only uses lower-timeframe bars.
+    if hybrid_htf_context_active():
+        for asset in attempted_symbols:
+            for interval in ("1h", "4h"):
+                load_bars_for_interval(None, asset, interval, cutoff)
     freshness_cache: dict[str, float | None] = {}
+    candidates: list[dict] = []
+    raw_ids: dict[str, str | None] = {}
 
     for p in plugins:
         try:
@@ -577,6 +581,9 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                 # materialized features must never replace it.
                 ev.setdefault("feature_snapshot", {})
                 ev["feature_snapshot"] = dict(ev["feature_snapshot"])
+                htf_provenance = hybrid_htf_provenance(ev.get("asset", ""))
+                if htf_provenance:
+                    ev["engine_htf_provenance"] = htf_provenance
                 try:
                     connp = config.get_db_connection(read_only=True, db_path=snapshot["market_db_path"])
                     purity_info = _get_bar_purity(connp, ev.get("asset", ""), ev.get("observed_at"), interval=eval_interval)
@@ -596,17 +603,17 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                         snapshot["market_db_path"], eval_interval, cutoff, asset=canonical_asset(asset),
                     )
                 ev["data_freshness_seconds"] = freshness_cache[asset]
+                if p.id in ADMISSION_STRATEGY_IDS:
+                    candidates.append(ev)
+                    raw_ids[ev.get("candidate_id")] = capture(ev)
             results[p.id] = {"emitted": len(events), "events": events}
         except Exception as exc:
             results[p.id] = {"failed": str(exc)[:200]}
-    candidates = [ev for sid, result in results.items() if sid in ADMISSION_STRATEGY_IDS
-                  and isinstance(result, dict) for ev in result.get("events", [])]
-    raw_ids = {ev.get("candidate_id"): capture(ev) for ev in candidates}
     structural_contexts = build_structural_contexts(
         candidates,
         cutoff,
         regime_db_path=config.REGIME_DB_PATH,
-    ) if getattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", True) else {}
+    )
     decision = resolve(candidates, structural_contexts=structural_contexts, now=now)
     selected = set(decision["selected_candidate_ids"])
     by_id = {ev["candidate_id"]: ev for ev in candidates}
@@ -614,12 +621,17 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         raw_id = raw_ids.get(result["candidate_id"])
         if raw_id:
             policy_failed = result.get("symbol_account_gate") == "fail"
+            hard_failed = result.get("hard_gate") != "pass"
+            selected_candidate = result["candidate_id"] in selected
+            conflict = result.get("status") in {
+                "eligible_suppressed_by_opposite_direction_clash", "advisory_only",
+            }
             record_status(
                 raw_id,
                 hard_gate_status=result["hard_gate"],
-                score_status="not_evaluated" if policy_failed else result["status"],
-                clash_status="not_evaluated" if policy_failed else result["status"],
-                executor_intent_status="rejected" if policy_failed else "selected" if result["candidate_id"] in selected else "advisory_only",
+                score_status="pending" if policy_failed or hard_failed else "scored",
+                clash_status="pending" if policy_failed or hard_failed else "conflict" if conflict else "selected" if selected_candidate else "suppressed",
+                executor_intent_status="not_eligible" if policy_failed or hard_failed or selected_candidate else "not_selected",
                 reason="; ".join(result["hard_gate_reasons"]),
             )
     for cid in selected:

@@ -69,19 +69,23 @@ strategy logic.
 The canonical live market source is confirmed Bybit 5m OHLCV. The gateway may
 also retain confirmed 1m bars for strategies whose trigger timeframe is 1m.
 
-All higher-timeframe bars used by strategies must be derived locally from the
-canonical 5m bars:
+All higher-timeframe bars used by strategies must be materialized by the engine
+from the canonical market path, with the `1h`/`4h` hybrid seed contract as the
+only approved historical exception:
 
 ```text
 confirmed 5m -> derived 15m
 confirmed 5m -> derived 1h
 confirmed 5m -> derived 4h
+direct completed 1h/4h seed + confirmed 5m tail -> hybrid strategy 1h/4h
 ```
 
 No strategy may consume a separately fetched or provider-computed 15m, 1h, or
-4h bar as its canonical higher-timeframe input. Resampling inside a strategy is
-allowed only when it uses the cutoff-bounded canonical lower-timeframe rows and
-does not introduce a second bar convention.
+4h bar directly. The engine may read the regime-worker-owned direct 1h/4h seed
+and stitch it to canonical 5m-derived data as specified in
+`specs/hybrid-htf-engine-v1.md`. Resampling inside a strategy is allowed only
+when it uses the cutoff-bounded canonical lower-timeframe rows and does not
+introduce a second bar convention.
 
 ### Bar timestamp semantics
 

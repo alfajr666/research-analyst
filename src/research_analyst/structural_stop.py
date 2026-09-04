@@ -51,17 +51,43 @@ def _canonical_asset(value: Any) -> str:
     return text
 
 
-def _bar_window_is_covered(bars: Any, timeframe: str, required: int) -> bool:
+def _bar_window_is_covered(bars: Any, timeframe: str, required: int, cutoff: datetime) -> bool:
     """Require a contiguous, sufficiently warm direct-history window."""
     if bars is None or getattr(bars, "height", 0) < required:
         return False
+    required_columns = {"timestamp", "open", "high", "low", "close", "bar_id"}
+    if not required_columns.issubset(set(getattr(bars, "columns", []))):
+        return False
+    for row in bars.select(sorted(required_columns)).to_dicts():
+        try:
+            prices = [float(row[key]) for key in ("open", "high", "low", "close")]
+        except (TypeError, ValueError):
+            return False
+        if (
+            not all(math.isfinite(price) and price > 0 for price in prices)
+            or prices[2] > min(prices[0], prices[3])
+            or prices[1] < max(prices[0], prices[3])
+            or not str(row["bar_id"]).strip()
+        ):
+            return False
     timestamps = [_timestamp(value) for value in bars["timestamp"].to_list()]
     seconds = 3600 if timeframe == "1h" else 14400
-    return all(
+    if not all(
         left is not None and right is not None
         and int((right - left).total_seconds()) == seconds
         for left, right in zip(timestamps, timestamps[1:])
+    ):
+        return False
+    if timestamps[-1] is None:
+        return False
+    cutoff = _utc(cutoff)
+    expected_end = cutoff.replace(
+        hour=cutoff.hour - cutoff.hour % (1 if timeframe == "1h" else 4),
+        minute=0,
+        second=0,
+        microsecond=0,
     )
+    return timestamps[-1] == expected_end
 
 
 def _zone_id(asset: str, timeframe: str, zone: dict[str, Any]) -> str:
@@ -74,11 +100,13 @@ def _zone_id(asset: str, timeframe: str, zone: dict[str, Any]) -> str:
 
 
 def _normalise_zone(zone: dict[str, Any], asset: str, timeframe: str) -> dict[str, Any] | None:
+    if _canonical_asset(zone.get("asset")) != asset:
+        return None
     zone_type = str(zone.get("type") or zone.get("kind") or "").lower()
     if zone_type not in {"fvg", "order_block"}:
         return None
     declared_timeframe = str(zone.get("timeframe") or "")
-    if declared_timeframe and declared_timeframe.lower() != timeframe:
+    if declared_timeframe.lower() != timeframe:
         return None
     try:
         low = float(zone["low"])
@@ -88,8 +116,15 @@ def _normalise_zone(zone: dict[str, Any], asset: str, timeframe: str) -> dict[st
     if not all(math.isfinite(value) and value > 0 for value in (low, high)) or low > high:
         return None
     created_at = _timestamp(zone.get("created_at") or zone.get("end"))
-    evidence = zone.get("source_evidence_ids") or []
-    if created_at is None or not isinstance(evidence, list) or not evidence:
+    evidence = zone.get("source_evidence_ids")
+    confirmed_at = _timestamp(zone.get("confirmed_at"))
+    if (
+        created_at is None
+        or confirmed_at is None
+        or not isinstance(evidence, list)
+        or not evidence
+        or not all(isinstance(item, str) and item.strip() for item in evidence)
+    ):
         return None
     generated_id = _zone_id(asset, timeframe, zone)
     result = dict(zone)
@@ -102,8 +137,11 @@ def _normalise_zone(zone: dict[str, Any], asset: str, timeframe: str) -> dict[st
         "low": low,
         "high": high,
         "created_at": created_at,
-        "coverage_status": zone.get("coverage_status", "covered"),
+        "confirmed_at": confirmed_at,
+        "coverage_status": zone.get("coverage_status"),
     })
+    if any(zone.get(flag) for flag in ("stale", "is_stale", "superseded", "filled", "invalidated", "forming")):
+        return None
     return result
 
 
@@ -124,8 +162,6 @@ def select_structural_zone(
     for timeframe in ("4h", "1h"):
         eligible = []
         for raw in zones:
-            if raw.get("asset") and _canonical_asset(raw.get("asset")) != asset:
-                continue
             zone = _normalise_zone(raw, asset, timeframe)
             if zone is None:
                 continue
@@ -133,7 +169,9 @@ def select_structural_zone(
                 continue
             if zone.get("direction") != wanted or zone.get("coverage_status") != "covered":
                 continue
-            if zone["created_at"] > cutoff:
+            if zone["created_at"] > cutoff or zone["confirmed_at"] > cutoff:
+                continue
+            if zone.get("stale") or zone.get("is_stale"):
                 continue
             if direction == "long" and zone["low"] > entry:
                 continue
@@ -185,7 +223,7 @@ def build_structural_contexts(
                     f"REGIME_{'4H' if timeframe == '4h' else '1H'}_READINESS_BARS",
                     57,
                 ))
-                covered = _bar_window_is_covered(bars, timeframe, required)
+                covered = _bar_window_is_covered(bars, timeframe, required, cutoff)
                 contexts[asset]["coverage_status"][timeframe] = "covered" if covered else "incomplete"
                 if not covered:
                     continue
@@ -198,7 +236,11 @@ def build_structural_contexts(
                     str(value) for value in bars["bar_id"].to_list()
                 ] if "bar_id" in bars.columns else []
                 for zone in detect_fvg(bars, atr=atr, tf=timeframe) + detect_order_blocks(bars, atr=atr, tf=timeframe):
-                    normalised = _normalise_zone(zone, asset, timeframe)
+                    source_zone = dict(zone)
+                    source_zone.setdefault("asset", asset)
+                    source_zone.setdefault("coverage_status", "covered")
+                    source_zone.setdefault("confirmed_at", source_zone.get("created_at"))
+                    normalised = _normalise_zone(source_zone, asset, timeframe)
                     if normalised is not None:
                         contexts[asset]["zones"].append(normalised)
     finally:
@@ -211,6 +253,7 @@ def admit_selected_structural_stop(
     context: dict[str, Any] | None,
     *,
     cutoff: datetime | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Apply admission-owned zone selection and ATR buffer validation."""
     result: dict[str, Any] = {
@@ -218,8 +261,15 @@ def admit_selected_structural_stop(
         "structural_stop_reasons": [],
         "selected_zone_id": None,
         "selected_zone_kind": None,
+        "selected_zone_asset": None,
         "selected_zone_timeframe": None,
         "selected_zone_state": None,
+        "selected_zone_created_at": None,
+        "selected_zone_confirmed_at": None,
+        "selected_zone_coverage_status": None,
+        "selected_zone_source_evidence_ids": [],
+        "selected_zone_low": None,
+        "selected_zone_high": None,
         "selected_zone_boundary": None,
         "entry_zone_buffer": None,
         "entry_zone_buffer_atr": None,
@@ -237,6 +287,18 @@ def admit_selected_structural_stop(
         return result
     context_cutoff = _timestamp(context.get("cutoff") or cutoff or candidate.get("observed_at"))
     result["structural_context_cutoff"] = context_cutoff.isoformat() if context_cutoff else None
+    candidate_asset = _canonical_asset(candidate.get("asset"))
+    if _canonical_asset(context.get("asset")) != candidate_asset:
+        result["structural_stop_reasons"].append("structural context asset does not match candidate")
+    candidate_cutoff = _timestamp(candidate.get("cutoff_at") or candidate.get("observed_at"))
+    if candidate_cutoff is not None and context_cutoff != candidate_cutoff:
+        result["structural_stop_reasons"].append("structural context cutoff does not match candidate")
+    if cutoff is not None and context_cutoff is not None and context_cutoff != _utc(cutoff):
+        result["structural_stop_reasons"].append("structural context cutoff is not the requested cutoff")
+    if cutoff is not None and context_cutoff is not None and context_cutoff > _utc(cutoff):
+        result["structural_stop_reasons"].append("structural context cutoff is in the future")
+    if now is not None and context_cutoff is not None and context_cutoff > _utc(now):
+        result["structural_stop_reasons"].append("structural context cutoff is in the future")
     entry = candidate.get("entry_price")
     if entry is None:
         entry = (candidate.get("entry_condition") or {}).get("price")
@@ -260,6 +322,14 @@ def admit_selected_structural_stop(
     if not _finite_positive(atr):
         result["structural_stop_reasons"].append(f"{timeframe} structural ATR is unavailable")
         return result
+    source_bar_ids = (context.get("atr_source_bar_ids") or {}).get(timeframe, [])
+    if (
+        not isinstance(source_bar_ids, list)
+        or not source_bar_ids
+        or not all(isinstance(value, str) and value.strip() for value in source_bar_ids)
+    ):
+        result["structural_stop_reasons"].append(f"{timeframe} structural ATR source bar IDs are unavailable")
+        return result
     boundary = zone["low"] if direction == "long" else zone["high"]
     entry_buffer = float(entry) - zone["high"] if direction == "long" else zone["low"] - float(entry)
     buffer = boundary - float(stop) if direction == "long" else float(stop) - boundary
@@ -268,15 +338,22 @@ def admit_selected_structural_stop(
     result.update({
         "selected_zone_id": zone["zone_id"],
         "selected_zone_kind": zone.get("type") or zone.get("kind"),
+        "selected_zone_asset": zone.get("asset"),
         "selected_zone_timeframe": timeframe,
         "selected_zone_state": zone.get("state"),
+        "selected_zone_created_at": zone["created_at"].isoformat(),
+        "selected_zone_confirmed_at": zone["confirmed_at"].isoformat(),
+        "selected_zone_coverage_status": zone.get("coverage_status"),
+        "selected_zone_source_evidence_ids": list(zone.get("source_evidence_ids") or []),
+        "selected_zone_low": zone["low"],
+        "selected_zone_high": zone["high"],
         "selected_zone_boundary": boundary,
         "entry_zone_buffer": entry_buffer,
         "entry_zone_buffer_atr": entry_buffer_atr,
         "structural_stop_buffer": buffer,
         "structural_stop_buffer_atr": buffer_atr,
         "structural_atr": float(atr),
-        "structural_atr_source_bar_ids": (context.get("atr_source_bar_ids") or {}).get(timeframe, []),
+        "structural_atr_source_bar_ids": source_bar_ids,
     })
     min_multiple = float(getattr(config, "STRUCTURAL_STOP_MIN_ATR_MULTIPLE", STRUCTURAL_MIN_ATR_MULTIPLE))
     max_multiple = float(getattr(config, "STRUCTURAL_STOP_MAX_ATR_MULTIPLE", STRUCTURAL_MAX_ATR_MULTIPLE))
