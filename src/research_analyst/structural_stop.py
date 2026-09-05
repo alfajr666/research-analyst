@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 import hashlib
 from typing import Any
@@ -38,6 +38,14 @@ def _timestamp(value: Any) -> datetime | None:
         return _utc(value)
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _normalise_closed_bar_timestamp(value: Any) -> datetime:
+    """Treat a boundary-minus-one-millisecond exchange timestamp as closed."""
+    timestamp = _utc(value)
+    if timestamp.microsecond == 999000:
+        return (timestamp + timedelta(milliseconds=1)).replace(microsecond=0)
+    return timestamp
 
 
 def _canonical_asset(value: Any) -> str:
@@ -290,7 +298,13 @@ def admit_selected_structural_stop(
     candidate_asset = _canonical_asset(candidate.get("asset"))
     if _canonical_asset(context.get("asset")) != candidate_asset:
         result["structural_stop_reasons"].append("structural context asset does not match candidate")
-    candidate_cutoff = _timestamp(candidate.get("cutoff_at") or candidate.get("observed_at"))
+    candidate_cutoff = _timestamp(
+        candidate.get("cutoff_at")
+        or (candidate.get("feature_snapshot") or {}).get("cutoff")
+        or candidate.get("observed_at")
+    )
+    if candidate_cutoff is not None:
+        candidate_cutoff = _normalise_closed_bar_timestamp(candidate_cutoff)
     if candidate_cutoff is not None and context_cutoff != candidate_cutoff:
         result["structural_stop_reasons"].append("structural context cutoff does not match candidate")
     if cutoff is not None and context_cutoff is not None and context_cutoff != _utc(cutoff):

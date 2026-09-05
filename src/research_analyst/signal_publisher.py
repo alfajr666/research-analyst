@@ -77,9 +77,10 @@ def validate_event(event: dict) -> None:
     if not complete_candidate:
         raise ValueError("candidate admission fields are incomplete")
     from trade_admission import admit
+    from structural_stop import _normalise_closed_bar_timestamp
     admission = admit(
         event,
-        now=parse_timestamp(event["observed_at"]),
+        now=_normalise_closed_bar_timestamp(event["observed_at"]),
         structural_context=event.get("structural_context"),
     )
     if admission["hard_gate"] != "pass":

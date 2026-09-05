@@ -25,6 +25,7 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import config
+from structural_stop import _normalise_closed_bar_timestamp
 
 FUNDAMO_STRATEGY_IDS = frozenset((
     "ema99-retest-adx-fundamo-v1",
@@ -64,7 +65,10 @@ def _same_timestamp(left, right) -> bool:
     try:
         def parse(value):
             parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+            parsed = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+            if parsed.microsecond == 999000:
+                parsed = (parsed + timedelta(milliseconds=1)).replace(microsecond=0)
+            return parsed
         return parse(left) == parse(right)
     except (TypeError, ValueError, OverflowError):
         return False
@@ -299,6 +303,8 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
             intent_observed = datetime.fromisoformat(str(intent.get("observed_at")).replace("Z", "+00:00"))
             proof_cutoff = (proof_cutoff if proof_cutoff.tzinfo else proof_cutoff.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
             intent_observed = (intent_observed if intent_observed.tzinfo else intent_observed.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+            if intent_observed.microsecond == 999000:
+                intent_observed = (intent_observed + timedelta(milliseconds=1)).replace(microsecond=0)
             if proof_cutoff != intent_observed:
                 return False, "admission proof cutoff is inconsistent"
         except (TypeError, ValueError, OverflowError):
@@ -334,8 +340,8 @@ def validate_intent_handoff(intent: dict, admission: dict | None = None, *, now:
     if not ok:
         return False, reason
     try:
-        observed_at = datetime.fromisoformat(str(intent["observed_at"]).replace("Z", "+00:00"))
-        valid_until = datetime.fromisoformat(str(intent["entry_valid_until"]).replace("Z", "+00:00"))
+        observed_at = _normalise_closed_bar_timestamp(intent["observed_at"])
+        valid_until = _normalise_closed_bar_timestamp(intent["entry_valid_until"])
         if valid_until <= observed_at:
             return False, "entry validity is not after observation"
         if now is not None and valid_until <= now.astimezone(timezone.utc):

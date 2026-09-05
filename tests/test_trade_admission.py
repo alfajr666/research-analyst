@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import config
-from trade_admission import admit
+from trade_admission import admit, candidate_admission_fingerprint
 
 
 def _candidate(stop, atr=10):
@@ -30,6 +30,15 @@ def test_stop_at_configured_atr_floor_passes():
     result = admit(_candidate(95.0, atr=10), now=datetime(2026, 1, 1, tzinfo=timezone.utc))
     assert result["hard_gate"] == "pass"
     assert result["stop_atr_multiple"] == 1.25
+
+
+def test_admission_fingerprint_normalises_closed_bar_aliases():
+    exact = {"candidate_id": "id", "strategy_id": "s", "asset": "BTC", "direction": "long",
+             "entry_price": 100, "invalidation_price": 99, "take_profit": 102,
+             "observed_at": "2026-01-01T00:00:00Z", "valid_until": "2026-01-01T00:05:00Z"}
+    alias = dict(exact, observed_at="2025-12-31T23:59:59.999000Z", valid_until="2026-01-01T00:04:59.999000Z")
+
+    assert candidate_admission_fingerprint(exact) == candidate_admission_fingerprint(alias)
 
 
 def test_stop_below_atr_floor_fails(monkeypatch):

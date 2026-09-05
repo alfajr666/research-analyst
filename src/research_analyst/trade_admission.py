@@ -7,7 +7,7 @@ import math
 from datetime import datetime, timezone
 
 import config
-from structural_stop import admit_selected_structural_stop
+from structural_stop import _normalise_closed_bar_timestamp, admit_selected_structural_stop
 from entry_policy import evaluate_entry_policy
 
 
@@ -111,11 +111,17 @@ def candidate_admission_fingerprint(candidate: dict) -> str:
     targets = candidate.get("targets") or []
     target = targets[0] if targets else candidate.get("take_profit")
     try:
-        observed_at = _time(candidate.get("observed_at")).isoformat() if candidate.get("observed_at") else ""
+        observed_at = (
+            _normalise_closed_bar_timestamp(candidate.get("observed_at")).isoformat()
+            if candidate.get("observed_at") else ""
+        )
     except (TypeError, ValueError, OverflowError):
         observed_at = str(candidate.get("observed_at") or "")
     try:
-        valid_until = _time(candidate.get("valid_until")).isoformat() if candidate.get("valid_until") else ""
+        valid_until = (
+            _normalise_closed_bar_timestamp(candidate.get("valid_until")).isoformat()
+            if candidate.get("valid_until") else ""
+        )
     except (TypeError, ValueError, OverflowError):
         valid_until = str(candidate.get("valid_until") or "")
     material = {

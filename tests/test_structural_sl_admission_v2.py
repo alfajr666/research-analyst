@@ -112,6 +112,16 @@ def test_context_asset_and_cutoff_are_part_of_admission_identity():
     assert "structural context cutoff does not match candidate" in result["structural_stop_reasons"]
 
 
+def test_boundary_minus_one_millisecond_observation_matches_context_cutoff():
+    context = _context([_zone("zone-1", "4h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc))])
+    context["cutoff"] = datetime(2026, 9, 4, 12, tzinfo=timezone.utc)
+    candidate = _candidate(99.0)
+    candidate["observed_at"] = "2026-09-04T11:59:59.999000+00:00"
+
+    result = admit_selected_structural_stop(candidate, context, now=context["cutoff"])
+
+    assert result["structural_stop_gate"] == "pass"
+    assert "structural context cutoff does not match candidate" not in result["structural_stop_reasons"]
 def test_missing_atr_source_lineage_fails_closed():
     context = _context([_zone("zone-1", "4h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc))])
     context["atr_source_bar_ids"] = {}
