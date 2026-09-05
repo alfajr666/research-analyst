@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-09-04
+**Last reviewed:** 2026-09-05
 
 Research Analyst is a read-and-decide market research service. It consumes
 public market data, evaluates versioned strategy plugins, records auditable
@@ -102,11 +102,25 @@ names are never truncated.
 
 ## Hybrid HTF Engine
 
-Strategy `1h`/`4h` frames use one engine-owned, cutoff-bound source contract:
+Strategy `1h`/`4h` frames use an engine-owned source contract with two explicit
+cutoffs. `evaluation_cutoff` is the exact trigger cutoff and remains
+authoritative for strategy data, candidate timestamps, freshness, and replay.
+`htf_cutoff` is the latest completed canonical `5m` boundary at or before the
+evaluation cutoff and is the only cutoff used for the hybrid `1h`/`4h` frame.
+
+For example, evaluation at `00:04` uses an HTF cutoff of `00:00`, while
+evaluation at `00:05` uses an HTF cutoff of `00:05`:
+
+```text
+evaluation cutoff: 00:04 -> HTF cutoff: 00:00
+evaluation cutoff: 00:05 -> HTF cutoff: 00:05
+```
+
+The source contract is:
 
 ```text
 direct Bybit REST seed: source_end <= handoff_at
-canonical 5m tail:      source_end > handoff_at and source_end <= cutoff_at
+canonical 5m tail:      source_end > handoff_at and source_end <= htf_cutoff
 ```
 
 The default seed target is 240 completed bars per timeframe. Direct cache
@@ -121,11 +135,15 @@ history is unavailable. `enforce` fails closed without a valid direct seed and i
 rejected unless `HYBRID_HTF_PARITY_VALIDATED=true` records completed
 direct-versus-resampled OHLC and indicator parity validation.
 
-The loader rejects forming or future bars, gaps, duplicates, malformed candles,
-invalid timestamp boundaries, and cutoff mismatches. It never interpolates or
-uses direct history as a substitute for a missing live tail. Candidate events
-carry the hybrid contract version, cutoff, handoff, direct IDs and versions,
-canonical observation IDs, availability, source mode, and readiness.
+The loader rejects forming or future bars, gaps, unresolvable duplicates,
+malformed candles, invalid timestamp boundaries, and cutoff mismatches. Closed
+exchange representations such as an exact boundary and boundary-minus-one
+millisecond are normalized before duplicate validation. Equivalent REST and
+stream rows are reconciled with stream data preferred; conflicting rows remain
+a hard failure. The engine never interpolates or uses direct history as a
+substitute for a missing live tail. Candidate events carry the hybrid contract
+version, both cutoffs, handoff, direct IDs and versions, canonical observation
+IDs, availability, source mode, and readiness.
 
 ## Regime Session
 
@@ -294,6 +312,11 @@ timestamp-prefixed output and long JSON records persisted without a timestamp
 prefix by `oxmgr`, using `cutoff_at` as the cycle freshness value. The tracked
 oxmgr definition is `ops/oxfile.toml`, and the full worker invocation is kept in
 the app's `command` field.
+
+`research-analyst-symbol-rotation` is health-checked by
+`scripts/symbol_rotation_healthcheck.py`, which verifies the worker process and
+that the performance feed is currently `ready` or `fallback`. Its tracked
+definition is also in `ops/oxfile.toml`.
 
 For a deployment of explicitly approved code, restart only services importing
 the changed modules. Verify fresh cutoff logs, restart counts, market freshness,

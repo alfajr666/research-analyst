@@ -87,7 +87,6 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
     """Internal: raw rows with source for prefer logic."""
     cutoff = _ensure_utc(cutoff)
     validity_filter = "" if include_invalid else "AND CAST(json_extract(payload_json, '$.close') AS REAL) > 0"
-    query_cutoff = cutoff + timedelta(minutes=5) if include_invalid else cutoff
     rows = conn.execute(
         f"""
         SELECT source_end, source,
@@ -98,14 +97,14 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
                COALESCE(CAST(json_extract(payload_json, '$.volume') AS REAL), 0.0),
                CAST(json_extract(payload_json, '$.open_interest') AS REAL),
                CAST(json_extract(payload_json, '$.funding_rate') AS REAL),
-               payload_json, observation_id
+               payload_json, observation_id, retrieval_kind, retrieved_at
           FROM source_observations
           WHERE asset = ? AND interval=?
              AND source_end <= ? AND source_end >= ?
              {validity_filter}
            ORDER BY source_end ASC
         """,
-        (asset, interval, query_cutoff, start),
+        (asset, interval, cutoff, start),
     ).fetchall()
     out = []
     for r in rows:
@@ -121,6 +120,8 @@ def _load_raw_observations_for_asset(conn, asset: str, cutoff: datetime, start: 
             "funding_rate": float(r[8]) if r[8] is not None else None,
             "payload": r[9],
             "source_observation_ids": [str(r[10])] if r[10] else [],
+            "retrieval_kind": r[11],
+            "retrieved_at": r[12],
         })
     return out
 
@@ -130,7 +131,7 @@ def _prefer_rows(raw_rows: List[Dict]) -> List[Dict]:
     from collections import defaultdict
     by_ts: Dict[datetime, List[Dict]] = defaultdict(list)
     for r in raw_rows:
-        by_ts[r["timestamp"]].append(r)
+        by_ts[_normalise_bar_end(r["timestamp"])].append(r)
     preferred = []
     for ts, lst in sorted(by_ts.items()):
         if getattr(config, "COINANALYZE_EVAL_ENABLED", False):
@@ -146,8 +147,14 @@ def _prefer_rows(raw_rows: List[Dict]) -> List[Dict]:
         if vagg:
             preferred.append(vagg[0])
             continue
-        # fallback any
-        preferred.append(lst[0])
+        # Prefer a live observation when equivalent REST and stream rows exist.
+        preferred.append(max(
+            lst,
+            key=lambda row: (
+                1 if row.get("retrieval_kind") == "stream" else 0,
+                str(row.get("retrieved_at") or ""),
+            ),
+        ))
     return preferred
 
 
@@ -213,12 +220,23 @@ def _contiguous_canonical_tail(rows: list[dict[str, Any]], cutoff: datetime) -> 
         if end > cutoff:
             return [], "canonical_tail_future"
         grouped.setdefault(end, []).append(row)
-    if any(len(values) > 1 for values in grouped.values()):
-        return [], "canonical_tail_duplicate"
+    canonical_rows: dict[datetime, dict[str, Any]] = {}
+    for end, values in grouped.items():
+        if len(values) == 1:
+            canonical_rows[end] = values[0]
+            continue
+        raw_ends = [_ensure_utc(value["timestamp"]) for value in values]
+        aliases = (
+            len(values) == 2
+            and end in raw_ends
+            and any(value != end for value in raw_ends)
+            and all(_normalise_bar_end(value) == end for value in raw_ends)
+        )
+        if not aliases:
+            return [], "canonical_tail_duplicate"
+        canonical_rows[end] = _prefer_rows(values)[0]
     by_end = {
-        _normalise_bar_end(row["timestamp"]): row
-        for row in _prefer_rows(rows)
-        if _normalise_bar_end(row["timestamp"]) <= cutoff
+        end: row for end, row in canonical_rows.items()
     }
     expected = _floor_boundary(cutoff, 300)
     if expected not in by_end:
@@ -260,10 +278,14 @@ def _direct_seed_is_contiguous(frame: pl.DataFrame, interval: str, required: int
 class HybridHTFContext:
     """Invocation-scoped engine source selection for strategy HTF frames."""
 
-    def __init__(self, market_conn: Any, regime_conn: Any | None, cutoff: datetime):
+    def __init__(self, market_conn: Any, regime_conn: Any | None, cutoff: datetime,
+                 evaluation_cutoff: datetime | None = None):
         self.market_conn = market_conn
         self.regime_conn = regime_conn
         self.cutoff = _ensure_utc(cutoff)
+        self.evaluation_cutoff = (
+            _ensure_utc(evaluation_cutoff) if evaluation_cutoff is not None else self.cutoff
+        )
         self._frames: dict[tuple[str, str, int], pl.DataFrame] = {}
         self._diagnostics: dict[str, dict[str, dict[str, Any]]] = {}
 
@@ -277,6 +299,8 @@ class HybridHTFContext:
         self._diagnostics.setdefault(asset, {})[interval] = {
             "data_contract_version": HYBRID_HTF_DATA_CONTRACT_VERSION,
             "cutoff_at": self.cutoff.isoformat(),
+            "htf_cutoff_at": self.cutoff.isoformat(),
+            "evaluation_cutoff_at": self.evaluation_cutoff.isoformat(),
             **details,
         }
 
@@ -419,7 +443,7 @@ class HybridHTFContext:
 
 @contextmanager
 def hybrid_htf_context(market_db_path: str | Path | None, regime_db_path: str | Path | None,
-                       cutoff: datetime):
+                       cutoff: datetime, *, evaluation_cutoff: datetime | None = None):
     """Install one read-only hybrid context for an engine evaluation."""
     if (not getattr(config, "HYBRID_HTF_ENABLED", True)
             or getattr(config, "HYBRID_HTF_MODE", "shadow") == "off"):
@@ -435,7 +459,9 @@ def hybrid_htf_context(market_db_path: str | Path | None, regime_db_path: str | 
                 )
             except Exception:
                 regime_conn = None
-        context = HybridHTFContext(market_conn, regime_conn, cutoff)
+        context = HybridHTFContext(
+            market_conn, regime_conn, cutoff, evaluation_cutoff=evaluation_cutoff
+        )
         token = _HYBRID_HTF_CONTEXT.set(context)
         try:
             yield context
@@ -463,6 +489,11 @@ def hybrid_htf_context_cutoff() -> datetime | None:
     return context.cutoff if context is not None else None
 
 
+def hybrid_htf_context_evaluation_cutoff() -> datetime | None:
+    context = _HYBRID_HTF_CONTEXT.get()
+    return context.evaluation_cutoff if context is not None else None
+
+
 def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
                            lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
     """Load engine-context HTF bars or canonical market bars.
@@ -474,9 +505,10 @@ def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
     cutoff = _ensure_utc(cutoff)
     context = _HYBRID_HTF_CONTEXT.get()
     if context is not None and interval in {"1h", "4h"}:
-        if context.cutoff != cutoff:
+        if (context.evaluation_cutoff != cutoff
+                and completed_cycle_for(cutoff, "5m") != context.cutoff):
             raise ValueError(
-                f"hybrid HTF context cutoff {context.cutoff.isoformat()} "
+                f"hybrid HTF context evaluation cutoff {context.evaluation_cutoff.isoformat()} "
                 f"does not match requested cutoff {cutoff.isoformat()}"
             )
         return context.load(symbol, interval, lookback_days)

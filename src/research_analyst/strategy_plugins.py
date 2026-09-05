@@ -20,7 +20,8 @@ from trade_admission import canonical_asset, resolve
 from structural_stop import build_structural_contexts
 from strategy_v2_context import (
     completed_cycle_for, hybrid_htf_context, hybrid_htf_context_active,
-    hybrid_htf_context_cutoff, hybrid_htf_provenance, load_bars_for_interval,
+    hybrid_htf_context_evaluation_cutoff, hybrid_htf_provenance,
+    load_bars_for_interval,
 )
 from symbol_rotation import subscription_assets
 
@@ -477,10 +478,12 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
             pass
         else:
             if (not hybrid_htf_context_active()
-                    or hybrid_htf_context_cutoff() != cutoff):
+                    or hybrid_htf_context_evaluation_cutoff() != cutoff):
+                htf_cutoff = completed_cycle_for(cutoff, "5m")
                 with hybrid_htf_context(
                     market_db_path or (snapshot or {}).get("market_db_path") or config.MARKET_DB_PATH,
-                    getattr(config, "REGIME_DB_PATH", None), cutoff,
+                    getattr(config, "REGIME_DB_PATH", None), htf_cutoff,
+                    evaluation_cutoff=cutoff,
                 ):
                     return _run_plugins_for_cutoff(
                         db_path, cutoff_id, now, require_finalized, snapshot=snapshot,

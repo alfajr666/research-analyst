@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-04
+**Last reviewed:** 2026-09-05
 
 This repository is a read-and-decide market research service. It produces
 auditable candidates and validated trade intents. It does not hold exchange
@@ -122,13 +122,20 @@ normalized to `ANKR`; bare names such as `MARSCOIN` must not be truncated.
 
 ## Hybrid HTF Engine
 
-The engine owns the strategy `1h`/`4h` warmup path. It reads the regime worker's
-immutable direct Bybit REST bars as a seed, then continues with the canonical
-completed `5m` tail from `market.sqlite3`:
+The engine owns the strategy `1h`/`4h` warmup path. Each evaluation has two
+cutoffs: `evaluation_cutoff` is the exact trigger cutoff and remains
+authoritative for strategy data, candidate timestamps, freshness, and replay;
+`htf_cutoff` is the latest completed canonical `5m` boundary at or before the
+evaluation cutoff and is the only cutoff used for hybrid `1h`/`4h` frames.
+
+For example, evaluation at `00:04` uses an HTF cutoff of `00:00`, while
+evaluation at `00:05` uses an HTF cutoff of `00:05`. The engine reads the regime
+worker's immutable direct Bybit REST bars as a seed, then continues with the
+canonical completed `5m` tail from `market.sqlite3`:
 
 ```text
 direct seed:       source_end <= handoff_at
-canonical HTF:     source_end > handoff_at and source_end <= cutoff_at
+canonical HTF:     source_end > handoff_at and source_end <= htf_cutoff
 ```
 
 The direct seed target is 240 completed bars per timeframe. Retention must cover
@@ -146,11 +153,15 @@ requires `HYBRID_HTF_PARITY_VALIDATED=true`, after direct-versus-resampled OHLC
 and indicator parity has been measured. The default readiness state is therefore
 safe for rollout and does not silently claim hybrid readiness.
 
-Every affected frame fails closed on forming/future bars, gaps, duplicates,
-malformed candles, invalid boundaries, or cutoff mismatch. Merged frames retain
-continuous indicator state across the handoff. Candidate provenance includes the
-contract version, cutoff, handoff, direct bar IDs/versions, canonical observation
-IDs, availability, source mode, and hybrid readiness.
+Every affected frame fails closed on forming/future bars, gaps, unresolvable
+duplicates, malformed candles, invalid boundaries, or cutoff mismatch. Closed
+exchange representations such as an exact boundary and boundary-minus-one
+millisecond are normalized to one logical bar before duplicate validation. When
+equivalent REST and stream rows exist, stream data is preferred; conflicting
+rows remain a hard failure. Merged frames retain continuous indicator state
+across the handoff. Candidate provenance includes the contract version,
+`evaluation_cutoff`, `htf_cutoff`, handoff, direct bar IDs/versions, canonical
+observation IDs, availability, source mode, and hybrid readiness.
 
 ## Live Strategy Set
 
@@ -250,12 +261,14 @@ oxmgr logs research-analyst-orchestrator --lines 40
 oxmgr logs research-analyst-pm-sidecar --lines 40
 ```
 
+The symbol-rotation target uses `scripts/symbol_rotation_healthcheck.py`; the
+probe requires the worker process and a `ready` or `fallback` performance feed.
 The regime-session target uses `scripts/regime_session_healthcheck.py`; the
 probe requires a running worker and a recent completed cycle with valid 1h/4h
 readiness and gate summary fields. It accepts both timestamp-prefixed records
 and long JSON records persisted without a prefix by `oxmgr`, using the cycle's
-`cutoff_at` for freshness. Its tracked oxmgr definition is `ops/oxfile.toml`;
-the full worker invocation belongs in the app's `command` field.
+`cutoff_at` for freshness. Both tracked definitions are in `ops/oxfile.toml`;
+the full worker invocations belong in each app's `command` field.
 
 The core managed targets are:
 

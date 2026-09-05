@@ -481,7 +481,10 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
             market_conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
             try:
                 with hybrid_htf_context(
-                    config.MARKET_DB_PATH, config.REGIME_DB_PATH, cutoff_at
+                    config.MARKET_DB_PATH,
+                    config.REGIME_DB_PATH,
+                    completed_cycle_for(cutoff_at, "5m"),
+                    evaluation_cutoff=cutoff_at,
                 ):
                     bars_by_asset = {
                         asset: (

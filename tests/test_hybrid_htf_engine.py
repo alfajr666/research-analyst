@@ -121,7 +121,67 @@ def test_engine_stitches_direct_seed_to_canonical_1h_tail(tmp_path, monkeypatch)
         regime_conn.close()
 
 
-def test_engine_excludes_forming_and_future_4h_tail_data(tmp_path, monkeypatch):
+def test_engine_uses_completed_5m_htf_cutoff_for_1m_evaluation(tmp_path, monkeypatch):
+    market, regime, market_conn, regime_conn = _connections(tmp_path)
+    monkeypatch.setattr(config, "HYBRID_HTF_ENABLED", True, raising=False)
+    monkeypatch.setattr(config, "HYBRID_HTF_4H_SEED_BARS", 3, raising=False)
+    try:
+        handoff = datetime(2026, 9, 4, 8, tzinfo=UTC)
+        evaluation_cutoff = datetime(2026, 9, 4, 12, 4, tzinfo=UTC)
+        htf_cutoff = datetime(2026, 9, 4, 12, tzinfo=UTC)
+        _insert_direct_bars(regime_conn, "ROTATED", "4h", handoff, 3)
+        _insert_5m_tail(market_conn, "ROTATED", handoff, 48)
+
+        with hybrid_htf_context(
+            market, regime, htf_cutoff, evaluation_cutoff=evaluation_cutoff
+        ) as context:
+            result = load_bars_for_interval(market_conn, "ROTATED", "4h", evaluation_cutoff)
+            details = context.summary()["ROTATED"]["4h"]
+
+        assert result["timestamp"].to_list()[-1] == htf_cutoff
+        assert details["cutoff_at"] == htf_cutoff.isoformat()
+        assert details["evaluation_cutoff_at"] == evaluation_cutoff.isoformat()
+    finally:
+        market_conn.close()
+        regime_conn.close()
+
+
+def test_engine_reconciles_exact_and_boundary_minus_one_ms_rows(tmp_path, monkeypatch):
+    market, regime, market_conn, regime_conn = _connections(tmp_path)
+    monkeypatch.setattr(config, "HYBRID_HTF_ENABLED", True, raising=False)
+    monkeypatch.setattr(config, "HYBRID_HTF_1H_SEED_BARS", 3, raising=False)
+    try:
+        handoff = datetime(2026, 9, 4, 10, tzinfo=UTC)
+        cutoff = datetime(2026, 9, 4, 11, tzinfo=UTC)
+        _insert_direct_bars(regime_conn, "ROTATED", "1h", handoff, 3)
+        _insert_5m_tail(market_conn, "ROTATED", handoff, 12)
+        market_conn.execute(
+            """UPDATE source_observations
+                  SET source_end = '2026-09-04T10:04:59.999000+00:00'
+                WHERE observation_id LIKE 'tail-ROTATED-%-0'"""
+        )
+        market_conn.execute(
+            """INSERT INTO source_observations
+               SELECT 'backfill-equivalent', source, venue, native_symbol, asset,
+                      market_kind, interval, source_start, '2026-09-04T10:05:00+00:00',
+                      retrieved_at, 'backfill', payload_json
+                 FROM source_observations
+                WHERE observation_id LIKE 'tail-ROTATED-%-0'"""
+        )
+        market_conn.commit()
+
+        with hybrid_htf_context(market, regime, cutoff) as context:
+            result = load_bars_for_interval(market_conn, "ROTATED", "1h", cutoff)
+            details = context.summary()["ROTATED"]["1h"]
+
+        assert result.height == 4
+        assert details["source_mode"] == "hybrid"
+    finally:
+        market_conn.close()
+        regime_conn.close()
+
+
+def test_engine_excludes_rows_after_htf_cutoff(tmp_path, monkeypatch):
     market, regime, market_conn, regime_conn = _connections(tmp_path)
     monkeypatch.setattr(config, "HYBRID_HTF_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "HYBRID_HTF_4H_SEED_BARS", 3, raising=False)
@@ -136,8 +196,8 @@ def test_engine_excludes_forming_and_future_4h_tail_data(tmp_path, monkeypatch):
             result = load_bars_for_interval(market_conn, "ROTATED", "4h", cutoff)
             details = context.summary()["ROTATED"]["4h"]
 
-        assert result.is_empty()
-        assert details["reason"] == "canonical_tail_future"
+        assert result["timestamp"].to_list()[-1] == cutoff
+        assert details["availability"] == "ready"
     finally:
         market_conn.close()
         regime_conn.close()

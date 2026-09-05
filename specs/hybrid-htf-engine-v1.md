@@ -38,19 +38,38 @@ source-selection flag.
 
 ## Handoff Contract
 
-The engine finds the latest contiguous canonical `5m` tail ending at the
-requested cutoff. For each target timeframe, it floors the earliest tail bar to
-that timeframe boundary.
+The engine uses two explicit cutoffs. `evaluation_cutoff` is the exact
+strategy-trigger cutoff and remains authoritative for `1m`/`5m` strategy data,
+candidate timestamps, freshness, and replay. `htf_cutoff` is the latest
+completed canonical `5m` boundary at or before `evaluation_cutoff`; it is the
+only cutoff used for the hybrid `1h`/`4h` frame.
+
+```text
+evaluation cutoff: 00:04 -> HTF cutoff: 00:00
+evaluation cutoff: 00:05 -> HTF cutoff: 00:05
+```
+
+The engine finds the latest contiguous canonical `5m` tail ending at
+`htf_cutoff`. For each target timeframe, it floors the earliest tail bar to
+that timeframe boundary. The engine never queries beyond `htf_cutoff` to look
+for a future or forming bar.
 
 ```text
 direct seed:       source_end <= handoff_at
-canonical HTF:     source_end > handoff_at and source_end <= cutoff_at
+canonical HTF:     source_end > handoff_at and source_end <= htf_cutoff
 ```
 
 The direct and canonical segments must have unique, strictly increasing bar end
-timestamps. A forming bar, future bar, duplicate, malformed candle, or missing
-canonical `5m` bar makes the affected HTF frame unavailable. The engine does not
-interpolate, compress, or silently fill a gap.
+timestamps after canonical timestamp normalization. A forming bar, future bar,
+unresolvable duplicate, malformed candle, or missing canonical `5m` bar makes
+the affected HTF frame unavailable. The engine does not interpolate, compress,
+or silently fill a gap.
+
+Exchange encodings of one closed candle such as an exact boundary and
+boundary-minus-one-millisecond are one logical bar. The canonical loader must
+reconcile those representations before duplicate validation, preferring live
+stream data over REST backfill. Conflicting rows that cannot be reconciled
+remain a hard failure.
 
 If no direct seed is available, `HYBRID_HTF_MODE=shadow` may expose an explicit
 `canonical_only` frame. This is observable and is not treated as hybrid
@@ -98,7 +117,7 @@ required. The context caches frames by asset, timeframe, and cutoff.
 Emitted candidates receive engine metadata containing:
 
 - `data_contract_version`;
-- cutoff;
+- `evaluation_cutoff` and `htf_cutoff`;
 - per-timeframe handoff timestamp;
 - direct bar IDs and bar version;
 - canonical 5m observation IDs;
