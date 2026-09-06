@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
-from raw_signal_batch import capture, record_status, window_start, publish_once
+from raw_signal_batch import capture, record_status, window_start, publish_once, render
 import orchestrator
 
 
@@ -44,6 +44,39 @@ def test_batch_claim_retry_does_not_duplicate_send(tmp_path, monkeypatch):
     assert publish_once(datetime(2026, 8, 29, 6, 0, tzinfo=timezone.utc), db, transport)
     assert not publish_once(datetime(2026, 8, 29, 6, 0, tzinfo=timezone.utc), db, transport)
     assert transport.calls == 1
+
+
+def test_render_exposes_all_candidate_statuses_and_reason(monkeypatch):
+    monkeypatch.setattr(config, "RAW_SIGNAL_DISCORD_BATCH_MINUTES", 30)
+    rows = [(
+        "raw-id", "candidate-id", "bb-rsi-meanrev-v1", "NIULAI", "short",
+        "2026-08-29T05:40:00Z", "{}", "fail",
+        "symbol-account policy: compact Hyro asset policy",
+    ), (
+        "raw-id-2", "candidate-id-2", "demo", "BTC", "long",
+        "2026-08-29T05:41:00Z", "{}", "pass", None,
+    )]
+
+    message = render(rows, datetime(2026, 8, 29, 5, 30, tzinfo=timezone.utc))
+
+    assert "strategy                 gate    reason" in message
+    assert "FAIL" in message
+    assert "PASS" in message
+    assert "compact Hyro asset policy" in message
+    assert "N/A" not in message
+
+
+def test_render_fails_closed_for_unfinished_statuses(monkeypatch):
+    monkeypatch.setattr(config, "RAW_SIGNAL_DISCORD_BATCH_MINUTES", 30)
+    rows = [(
+        "raw-id", "candidate-id", "demo", "BTC", "long",
+        "2026-08-29T05:40:00Z", "{}", None, None,
+    )]
+
+    message = render(rows, datetime(2026, 8, 29, 5, 30, tzinfo=timezone.utc))
+
+    assert "FAIL" in message
+    assert "admission not finalized" in message
 
 
 def test_raw_batch_publisher_failure_is_isolated(monkeypatch, capsys):

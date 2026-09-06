@@ -211,26 +211,25 @@ RAW STRATEGY SIGNALS
 Window: 2026-08-29 05:30-06:00 UTC
 Status: observation only; not execution-authorized
 
-BTC
-  LONG  failed-break-v3  entry=... stop=... target=...
-  LONG  bb-rsi-meanrev-v1  entry=... stop=... target=...
+asset  side   strategy                 gate    reason
+NIULAI SHORT  bb-rsi-meanrev-v1        FAIL    symbol-account policy
+BTC    LONG   failed-break-v3          PASS    -
 
-ETH
-  SHORT ema9-continuation-stochrsi-v1 entry=... stop=... target=...
-
-Totals: 3 raw | 2 hard-gate pass | 1 hard-gate fail
-Clashes: 1 same-direction group | 0 opposite-direction conflicts
-Selected intents: 1 routed to bybit / hyro
+Totals: 2 raw | 1 hard-gate pass | 1 hard-gate fail
+Clashes and delivery states: retained in the analyst ledger
+Selected intents are delivered independently of this observation batch.
 ```
 
-The message must label status per candidate where useful:
+The batch message uses one simple presentation status for each candidate:
 
-- `RAW`
-- `HARD-FAIL`
-- `ELIGIBLE`
-- `SELECTED`
-- `SUPPRESSED`
-- `CONFLICT`
+- `PASS`: hard admission passed
+- `FAIL`: hard admission did not pass, including a candidate whose admission was
+  not finalized when the batch was rendered; the reason column must explain this
+
+The message contains the `gate` and a bounded `reason` column. It does not expose
+score, clash, or executor-delivery states in the compact batch. Those remain
+durable machine-readable ledger fields for audit and operational views. `PASS`
+does not mean selected, delivered, filled, or executed.
 
 Do not include secrets, credentials, internal file paths, or full unbounded
 feature snapshots. Truncate reasons and serialize values consistently.

@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-09-05
+**Last reviewed:** 2026-09-06
 
 Research Analyst is a read-and-decide market research service. It consumes
 public market data, evaluates versioned strategy plugins, records auditable
@@ -261,6 +261,26 @@ no intent. Missing or stale data is rejected by admission, not disguised as a
 score.
 
 See `specs/structural-sl-admission-v2.md` for the normative contract.
+
+### Raw Discord Batch Status
+
+The raw-signal Discord batch is an observation-only view of strategy candidates.
+Each row shows the hard admission gate and a bounded reason:
+
+```text
+asset  side   strategy                 gate    reason
+NIULAI SHORT  bb-rsi-meanrev-v1        FAIL    symbol-account policy
+BTC    LONG   failed-break-v3          PASS    -
+```
+
+The compact display intentionally uses only two gate values:
+
+- `PASS`: hard admission passed;
+- `FAIL`: hard admission failed or was not finalized when the batch was rendered.
+
+`PASS` does not mean selected, delivered, filled, or executed. Score, clash, and
+executor-delivery statuses remain in `raw_signal_status_history` for audit and
+operational views. The batch never delays or changes intent delivery.
 
 ## Intent Delivery
 

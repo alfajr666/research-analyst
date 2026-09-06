@@ -55,14 +55,24 @@ def record_status(raw_signal_id, *, hard_gate_status=None, score_status=None,
     finally:
         conn.close()
 
+def _display_reason(value, limit=60):
+    if not value:
+        return "-"
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[:limit - 3].rstrip() + "..."
+
 def render(rows, start, skipped_symbols=0):
     end = start + timedelta(minutes=config.RAW_SIGNAL_DISCORD_BATCH_MINUTES)
     lines = [f"📊 SIGNAL · research-analyst · {config.RAW_SIGNAL_DISCORD_BATCH_MINUTES}m",
              f"window {start:%H:%M}–{end:%H:%M} UTC", "```",
-             "asset  side   strat                    gate/clash",
-             "─────  ─────  ───────────────────────  ───────────"]
+             "asset  side   strategy                 gate    reason",
+             "─────  ─────  ───────────────────────  ───────  ────────────────────────────────────────────────────────────"]
     for row in rows[:5]:
-        lines.append(f"{row[3]:<5}  {row[4].upper():<5}  {row[2]:<23}  {row[8] or 'pending'}/{row[10] or 'pending'}")
+        gate = "PASS" if row[7] == "pass" else "FAIL"
+        reason = row[8] or ("admission not finalized" if row[7] != "pass" else None)
+        lines.append(
+            f"{row[3]:<5}  {row[4].upper():<5}  {row[2]:<23}  {gate:<7}  {_display_reason(reason)}"
+        )
     lines.append("```")
     remaining = max(0, len(rows) - 5)
     if remaining:
@@ -83,8 +93,7 @@ def publish_once(now=None, db_path=None, transport=None):
             if batch[0] not in {"pending", "claimed"}:
                 return False
             rows = conn.execute("""SELECT r.raw_signal_id,r.candidate_id,r.strategy_id,r.asset,r.direction,
-                        r.observed_at,r.payload_json,h.executor_intent_status,h.hard_gate_status,
-                        h.executor_intent_status,h.clash_status
+                        r.observed_at,r.payload_json,h.hard_gate_status,h.reason
                       FROM discord_signal_batch_members m JOIN raw_signals r ON r.raw_signal_id = m.raw_signal_id
                       LEFT JOIN raw_signal_status_history h ON h.status_id = (
                         SELECT status_id FROM raw_signal_status_history WHERE raw_signal_id=r.raw_signal_id
@@ -92,8 +101,7 @@ def publish_once(now=None, db_path=None, transport=None):
                       WHERE m.window_start = ? ORDER BY r.observed_at,r.raw_signal_id""", (key,)).fetchall()
         else:
             rows = conn.execute("""SELECT r.raw_signal_id,r.candidate_id,r.strategy_id,r.asset,r.direction,
-                    r.observed_at,r.payload_json,h.executor_intent_status,h.hard_gate_status,
-                    h.executor_intent_status,h.clash_status
+                    r.observed_at,r.payload_json,h.hard_gate_status,h.reason
                      FROM raw_signals r LEFT JOIN raw_signal_status_history h ON h.status_id = (
                        SELECT status_id FROM raw_signal_status_history WHERE raw_signal_id=r.raw_signal_id
                        ORDER BY recorded_at DESC LIMIT 1)

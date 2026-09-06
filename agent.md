@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-01
+**Last reviewed:** 2026-09-06
 
 ## Mission and boundaries
 
@@ -107,6 +107,13 @@ daemon-thread side effect publishes committed candidates in fixed UTC 30-minute
 windows. It never reruns strategies, waits on Discord, changes admission, or
 delays the immediate executor intent path. Treat it as observation-only.
 
+The compact batch table contains `asset`, `side`, `strategy`, `gate`, and
+`reason`. The displayed gate has only two values: `PASS` means hard admission
+passed; `FAIL` means hard admission failed or was not finalized when the batch
+was rendered. The reason column explains failures. `PASS` does not mean that a
+candidate was selected, delivered, filled, or executed. Detailed score, clash,
+and executor-delivery states remain in `raw_signal_status_history`.
+
 ## Operations and safety
 
 Use host `oxmgr` definitions for one gateway, one orchestrator, and one PM
@@ -146,8 +153,8 @@ allowed inside the current window.
 - **Research note:** optional `---` section with advisory verdict, thesis, and up
   to two limitations. It never changes deterministic signal fields.
 - **Raw signal batch:** exactly `📊 SIGNAL · research-analyst · 30m`, a UTC window,
-  a fenced fixed-width `asset / side / strat / desc` table with five rows, then
-  `+ N more signal evaluations` and `skipped N symbols (observed)`.
+  a fenced fixed-width `asset / side / strategy / gate / reason` table with five
+  rows, then `+ N more signal evaluations` and `skipped N symbols (observed)`.
 - **OI bar and multi-hour:** `OI ROTATION · Binance USDM` with ranked candidates,
   completion/window metadata, expiry where applicable, and the feed-only footer.
 - **Exit/reduce:** `HOLD`, `REDUCE`, `EXIT`, and `NEAR_TP` are executor PMDecision
