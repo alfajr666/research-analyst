@@ -25,6 +25,8 @@ import config
 from structural_stop import _normalise_closed_bar_timestamp
 
 FUNDAMO_STRATEGY_IDS = frozenset((
+    "dual-zone-follower-v3",
+    "dual-zone-short-follower-v3",
     "ema20-pullback-h4-trend-v1",
     "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1",

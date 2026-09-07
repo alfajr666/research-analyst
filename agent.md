@@ -40,6 +40,8 @@ analyst code and never start duplicate writers.
 | `bb-rsi-meanrev-v1` | 5m | mean reversion | Bybit Hyro |
 | `williams-fractal-scalp-v1` | 5m | trend | Bybit Hyro |
 | `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit Hyro |
+| `dual-zone-follower-v3` | 5m | trend | Bybit Fundamo |
+| `dual-zone-short-follower-v3` | 5m | trend | Bybit Fundamo |
 | `ema99-retest-adx-v1` | 5m | trend | downstream router |
 | `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit Fundamo |
 | `gold-trend-ema-bb-stoch-v1` | 5m | trend | Bybit Fundamo |
@@ -61,21 +63,22 @@ may extend gateway market-data subscriptions for lifecycle context, but never
 extend the evaluator universe.
 Registration is controlled by
 `STRATEGY_ENABLED_IDS`; activation is also constrained by
-`STRATEGY_ACTIVE_IDS` and `plugin_states`. Registered v2 strategies are not
-implicitly live execution strategies.
+`STRATEGY_ACTIVE_IDS` and `plugin_states`. Registered strategy plugins are not
+implicitly live execution strategies. The dual-zone v3 plugins use completed 5m
+execution bars and direct regime-owned 1h ADX/DI data; see
+`specs/strategy-dual-zone-follower-v3.md`.
 
 The evaluator always materializes features for the cutoff-bound effective
 universe, then builds one immutable scope per plugin. Regime enforcement may
 restrict a scope by family, but strategies do not inspect rotation, watchlist,
 regime, or account policy. Account-symbol admission remains a downstream hard
-gate. The strategy engine uses a 5m-only market-data contract, while Binance OI
-rotation and executor position snapshots remain separate; the latter is a 1m
-PM handoff contract.
+gate. The strategy engine evaluates on completed 5m cutoffs; direct 1h/4h setup
+frames remain separate regime-owned inputs. Binance OI rotation and executor
+position snapshots remain separate; the latter is a 1m PM handoff contract.
 
 Trade intents are published through the shared SQLite intent bus configured by
-the absolute `INTENT_BUS_DB`. Legacy JSON inbox writing remains disabled unless
-explicitly enabled for compatibility. Do not create or use a second local intent
-inbox.
+the absolute `INTENT_BUS_DB`. The shared bus is the sole intent handoff. Do not
+create or use a second local intent inbox.
 
 ## Candidate lifecycle
 

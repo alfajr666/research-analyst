@@ -50,6 +50,8 @@ def format_pct(fraction: float | int | None, signed: bool = True) -> str:
 
 
 def _family(setup_class: str) -> str:
+    if setup_class in {"dual_zone_follower", "dual_zone_short_follower"}:
+        return "Dual-zone trend pullback"
     if setup_class.startswith("continuation"):
         return "Continuation"
     if setup_class == "accumulation_base":
@@ -62,6 +64,8 @@ def _family(setup_class: str) -> str:
 
 
 _STRATEGY_LABELS = {
+    "dual-zone-follower-v3": "Dual-zone follower v3",
+    "dual-zone-short-follower-v3": "Dual-zone short follower v3",
     "ema20-pullback-h4-trend-v1": "EMA20 pullback with 4h trend",
     "ema-stack-15m-adx-stochrsi-5m-v1": "EMA stack with ADX/StochRSI",
     "failed-break-v3": "Failed-break reclaim v3",
@@ -82,6 +86,8 @@ def _phase_label(phase: str) -> str:
 
 
 def _setup_label(setup_class: str, phase: str) -> str:
+    if setup_class in {"dual_zone_follower", "dual_zone_short_follower"}:
+        return "Trend pullback"
     if setup_class == "continuation_breakout":
         return "Breakout continuation"
     if setup_class == "accumulation_base":

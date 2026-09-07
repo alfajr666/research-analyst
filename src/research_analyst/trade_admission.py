@@ -14,6 +14,7 @@ from entry_policy import evaluate_entry_policy
 POLICY_VERSION = "symbol-account-policy-v1"
 COMPACT_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 FUNDAMO_STRATEGIES = frozenset((
+    "dual-zone-follower-v3", "dual-zone-short-follower-v3",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",

@@ -158,7 +158,7 @@ bar IDs/versions, availability, source mode, and readiness.
 
 ## Live Strategy Set
 
-The production allowlist currently contains 10 plugins:
+The production allowlist currently contains 12 plugins:
 
 | Strategy | Cadence | Family | Route |
 | --- | --- | --- | --- |
@@ -166,6 +166,8 @@ The production allowlist currently contains 10 plugins:
 | `bb-rsi-meanrev-v1` | 5m | mean_reversion | Bybit Hyro |
 | `williams-fractal-scalp-v1` | 5m | trend | Bybit Hyro |
 | `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit Hyro |
+| `dual-zone-follower-v3` | 5m | trend | Bybit Fundamo |
+| `dual-zone-short-follower-v3` | 5m | trend | Bybit Fundamo |
 | `ema99-retest-adx-v1` | 5m | trend | downstream router |
 | `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit Fundamo |
 | `gold-trend-ema-bb-stoch-v1` | 5m | trend | Bybit Fundamo |

@@ -194,7 +194,7 @@ coexistence, and candidate-admission validation are complete.
 
 ## Live Strategy Set
 
-The current production allowlist contains 10 plugins:
+The current production allowlist contains 12 plugins:
 
 | Strategy | Cadence | Family | Account |
 | --- | --- | --- | --- |
@@ -202,6 +202,8 @@ The current production allowlist contains 10 plugins:
 | `bb-rsi-meanrev-v1` | 5m | mean_reversion | Hyro |
 | `williams-fractal-scalp-v1` | 5m | trend | Hyro |
 | `ema9-adx-stochrsi-state-v1` | 5m | trend | Hyro |
+| `dual-zone-follower-v3` | 5m | trend | Fundamo |
+| `dual-zone-short-follower-v3` | 5m | trend | Fundamo |
 | `ema99-retest-adx-v1` | 5m | trend | downstream router |
 | `ema20-pullback-h4-trend-v1` | 5m | trend | Fundamo |
 | `gold-trend-ema-bb-stoch-v1` | 5m | trend | Fundamo |
@@ -216,6 +218,11 @@ Propr fan-out is an independent shared-bus target.
 Production indicators use the tested in-house EMA, RSI, ATR, ADX, StochRSI, and
 Bollinger implementations. Replacing one with a TA library requires numerical
 parity tests and an explicit strategy-version change.
+
+Dual-zone v3 uses completed 5m execution bars and direct regime-owned 1h ADX/DI
+history. Its candidates enter the normal structural admission and shared SQLite
+intent-bus pipeline; the retired v2 IDs are historical metadata only. See
+`specs/strategy-dual-zone-follower-v3.md`.
 
 ## Evaluation And Admission
 

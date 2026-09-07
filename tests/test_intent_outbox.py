@@ -95,6 +95,8 @@ class IntentBuildTests(unittest.TestCase):
             intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="fundamo")
             self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "hyro"))
         for strategy in (
+            "dual-zone-follower-v3",
+            "dual-zone-short-follower-v3",
             "ema99-double-touch-stochrsi-state-v1",
             "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
         ):

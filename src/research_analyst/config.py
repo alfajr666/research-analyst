@@ -183,10 +183,25 @@ COMPACT_STRATEGY_IDS = frozenset((
     "ema9-adx-stochrsi-state-v1",
 ))
 FUNDAMO_STRATEGY_IDS = frozenset((
+    "dual-zone-follower-v3", "dual-zone-short-follower-v3",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
 ))
+DUAL_ZONE_V3_EXIT_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_EXIT_EMA_LENGTH", "7"))
+DUAL_ZONE_V3_ANCHOR_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_ANCHOR_EMA_LENGTH", "26"))
+DUAL_ZONE_V3_TREND_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_TREND_EMA_LENGTH", "99"))
+DUAL_ZONE_V3_A_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_V3_A_ENTRY_DISTANCE_PCT", "1.0"))
+DUAL_ZONE_V3_A_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_V3_A_TARGET_DISTANCE_PCT", "3.0"))
+DUAL_ZONE_V3_A_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_V3_A_STOP_DISTANCE_PCT", "1.0"))
+DUAL_ZONE_V3_B_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_V3_B_ENTRY_DISTANCE_PCT", "1.5"))
+DUAL_ZONE_V3_B_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_V3_B_TARGET_DISTANCE_PCT", "5.0"))
+DUAL_ZONE_V3_B_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_V3_B_STOP_DISTANCE_PCT", "1.0"))
+DUAL_ZONE_V3_ADX_TIMEFRAME = os.getenv("DUAL_ZONE_V3_ADX_TIMEFRAME", "1h")
+DUAL_ZONE_V3_ADX_LENGTH = int(os.getenv("DUAL_ZONE_V3_ADX_LENGTH", "14"))
+DUAL_ZONE_V3_ADX_SMOOTHING = int(os.getenv("DUAL_ZONE_V3_ADX_SMOOTHING", "14"))
+DUAL_ZONE_V3_MIN_ADX = float(os.getenv("DUAL_ZONE_V3_MIN_ADX", "22.0"))
+DUAL_ZONE_V3_USE_DI_DIRECTION = os.getenv("DUAL_ZONE_V3_USE_DI_DIRECTION", "true").lower() == "true"
 EMA99_RETEST_STRATEGY_ID = "ema99-retest-adx-v1"
 EMA99_RETEST_FAST_EMA_LENGTH = int(os.getenv("EMA99_RETEST_FAST_EMA_LENGTH", "26"))
 EMA99_RETEST_SLOW_EMA_LENGTH = int(os.getenv("EMA99_RETEST_SLOW_EMA_LENGTH", "99"))
@@ -339,6 +354,7 @@ STRATEGY_ENABLED_IDS = tuple(
         "STRATEGY_ENABLED_IDS",
         "failed-break-v3,bb-rsi-meanrev-v1,williams-fractal-scalp-v1,"
         "ema9-adx-stochrsi-state-v1,"
+        "dual-zone-follower-v3,dual-zone-short-follower-v3,"
         "ema20-pullback-h4-trend-v1,gold-trend-ema-bb-stoch-v1,"
         "mtf-exhaustion-reversal-v1,ema99-double-touch-stochrsi-state-v1,"
         "ema7-26-cross-hammer-shooting-star-1h-adx-v1"
@@ -431,7 +447,7 @@ try:
         INTENT_ROUTING = {}
 except (ValueError, TypeError):
     INTENT_ROUTING = {}
-for _fundamo_strategy in ("ema99-retest-adx-v1",
+for _fundamo_strategy in ("dual-zone-follower-v3", "dual-zone-short-follower-v3", "ema99-retest-adx-v1",
                            "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
                            "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1",
                            "trend-wall-v1", "ema99-double-touch-stochrsi-state-v1",
@@ -527,6 +543,7 @@ PRICE_STRUCTURE_STRATEGY_IDS = {
     "accumulation-base-v2", "rsi-reclaim-v1",
     "liquidity-sweep-reversal-v1", "bb-rsi-meanrev-v1", "failed-break-v3",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
+    "dual-zone-follower-v3", "dual-zone-short-follower-v3",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema9-adx-stochrsi-state-v1",

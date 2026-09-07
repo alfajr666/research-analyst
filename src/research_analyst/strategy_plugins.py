@@ -34,7 +34,8 @@ PRICE_STRUCTURE_STRATEGY_IDS = getattr(config, "PRICE_STRUCTURE_STRATEGY_IDS", s
 MIXED_STRATEGY_IDS = getattr(config, "MIXED_STRATEGY_IDS", set())
 ADMISSION_STRATEGY_IDS = {"failed-break-v3", "bb-rsi-meanrev-v1",
                            "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
-                             "ema99-retest-adx-v1",
+                             "dual-zone-follower-v3", "dual-zone-short-follower-v3",
+                              "ema99-retest-adx-v1",
                             "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
                             "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1",
                               "trend-wall-v1", "ema9-adx-stochrsi-state-v1",
@@ -85,6 +86,7 @@ KNOWN_STRATEGIES = {
     "failed-break-v3",
     "williams-fractal-scalp-v1",
     "ema9-continuation-stochrsi-v1",
+    "dual-zone-follower-v3", "dual-zone-short-follower-v3",
     "ema99-retest-adx-v1",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
@@ -125,6 +127,10 @@ def _load_builtin_plugins():
     from strategies.compact.failed_break_v3 import run_plugin as failed_break_run
     from strategies.compact.williams_fractal_scalp_v1 import run_plugin as williams_run
     from strategies.compact.ema9_continuation_stochrsi_v1 import run_plugin as ema9_run
+    from strategies.v2.dual_zone_follower_v3 import (
+        run_plugin as dual_zone_run,
+        run_short_plugin as dual_zone_short_run,
+    )
     from strategies.v2.ema99_retest_adx_v1 import run_plugin as ema99_retest_run
     from strategies.v2.ema20_pullback_h4_trend_v1 import run_plugin as ema20_run
     from strategies.v2.ema_stack_adx_stochrsi_5m_v1 import run_plugin as stack_run
@@ -145,6 +151,8 @@ def _load_builtin_plugins():
     register(StrategyPlugin("failed-break-v3", "v3", ("bars_5m",), (), failed_break_run, "5m", "reversal"))
     register(StrategyPlugin("williams-fractal-scalp-v1", "v2", ("bars_5m",), (), williams_run, "5m", "trend"))
     register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v2", ("bars_5m",), (), ema9_run, "5m", "trend"))
+    register(StrategyPlugin("dual-zone-follower-v3", "v3", ("bars_5m",), (), dual_zone_run, "5m", "trend"))
+    register(StrategyPlugin("dual-zone-short-follower-v3", "v3", ("bars_5m",), (), dual_zone_short_run, "5m", "trend"))
     register(StrategyPlugin("ema99-retest-adx-v1", "v1", ("bars_5m",), (), ema99_retest_run, "5m", "trend"))
     register(StrategyPlugin("ema20-pullback-h4-trend-v1", "v1", ("bars_5m",), (), ema20_run, "5m", "trend"))
     register(StrategyPlugin("ema-stack-15m-adx-stochrsi-5m-v1", "v1", ("bars_5m",), (), stack_run, "5m", "trend"))
@@ -179,6 +187,24 @@ def _load_builtin_plugins():
                 f"atr_{config.EMA99_RETEST_ATR_LENGTH}": config.EMA99_RETEST_ATR_LENGTH,
             }}),
             True,
+        ),
+        "dual-zone-follower-v3": (
+            "5m", "1h",
+            ("5m", {"ema": {
+                f"ema_{config.DUAL_ZONE_V3_EXIT_EMA_LENGTH}": config.DUAL_ZONE_V3_EXIT_EMA_LENGTH,
+                f"ema_{config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH}": config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH,
+                f"ema_{config.DUAL_ZONE_V3_TREND_EMA_LENGTH}": config.DUAL_ZONE_V3_TREND_EMA_LENGTH,
+            }}),
+            False,
+        ),
+        "dual-zone-short-follower-v3": (
+            "5m", "1h",
+            ("5m", {"ema": {
+                f"ema_{config.DUAL_ZONE_V3_EXIT_EMA_LENGTH}": config.DUAL_ZONE_V3_EXIT_EMA_LENGTH,
+                f"ema_{config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH}": config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH,
+                f"ema_{config.DUAL_ZONE_V3_TREND_EMA_LENGTH}": config.DUAL_ZONE_V3_TREND_EMA_LENGTH,
+            }}),
+            False,
         ),
         "ema20-pullback-h4-trend-v1": (
             "1h", "4h",
