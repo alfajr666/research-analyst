@@ -33,6 +33,10 @@ restart_policy = "always"
 max_restarts = 20
 crash_restart_limit = 3
 stop_timeout_secs = 30
+health_cmd = "/home/ubuntu/research-analyst/venv/bin/python /home/ubuntu/research-analyst/scripts/orchestrator_healthcheck.py"
+health_interval_secs = 30
+health_timeout_secs = 5
+health_max_failures = 3
 
 [[apps]]
 name = "research-analyst-regime-session"
