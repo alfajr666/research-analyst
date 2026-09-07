@@ -48,6 +48,28 @@ def test_batch_claim_retry_does_not_duplicate_send(tmp_path, monkeypatch):
     assert transport.calls == 1
 
 
+def test_next_boundary_includes_all_prior_30_minute_evaluations(tmp_path, monkeypatch):
+    db = Path(tmp_path) / "analyst.sqlite3"
+    monkeypatch.setattr(config, "ANALYST_DB_PATH", str(db))
+    monkeypatch.setattr(config, "RAW_SIGNAL_DISCORD_BATCH_ENABLED", True)
+    config.init_analyst_db(db)
+    capture(_event(datetime(2026, 8, 29, 5, 31, tzinfo=timezone.utc)), db)
+    later = _event(datetime(2026, 8, 29, 5, 59, tzinfo=timezone.utc))
+    later["asset"] = "ETH"
+    capture(later, db)
+
+    class Transport:
+        message = None
+        def send(self, text):
+            self.message = text
+            return "ok"
+
+    transport = Transport()
+    assert publish_once(datetime(2026, 8, 29, 6, 0, tzinfo=timezone.utc), db, transport)
+    assert "BTC" in transport.message
+    assert "ETH" in transport.message
+
+
 def test_batch_includes_raw_candidates_regardless_of_admission(tmp_path, monkeypatch):
     db = Path(tmp_path) / "analyst.sqlite3"
     monkeypatch.setattr(config, "ANALYST_DB_PATH", str(db))
@@ -87,6 +109,17 @@ def test_batch_counts_only_evaluated_symbols_without_emissions(tmp_path, monkeyp
 
     assert publish_once(datetime(2026, 8, 29, 6, 0, tzinfo=timezone.utc), db, transport)
     assert "skipped 1 symbols (observed)" in transport.message
+
+
+def test_coverage_persistence_failure_is_isolated(monkeypatch, capsys):
+    def fail_connection(**kwargs):
+        raise RuntimeError("analyst database unavailable")
+
+    monkeypatch.setattr(config, "get_db_connection", fail_connection)
+
+    record_evaluation_coverage("demo", datetime.now(timezone.utc), ["BTC"], {}, "/tmp/unused.sqlite3")
+
+    assert "analyst database unavailable" in capsys.readouterr().out
 
 
 def test_render_shows_all_raw_candidates_as_strategy_pass(monkeypatch):

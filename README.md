@@ -286,21 +286,37 @@ See `specs/structural-sl-admission-v2.md` for the normative contract.
 ### Raw Discord Batch Status
 
 The raw-signal Discord batch is an observation-only view of strategy candidates.
-Each row is a raw strategy emission:
+The publisher runs at the next evaluation after each fixed UTC 30-minute boundary.
+For example, the `06:00` message covers the completed `[05:30, 06:00)` window
+and includes every unbatched raw evaluation from that window, not only the latest
+cutoff. Older late-arriving candidates that are still unbatched are carried into
+the next available message; a candidate is never re-evaluated for Discord.
 
-```text
-asset  side   strat                    desc
-AZTEC  SHORT  williams-fractal-scalp-v1 PASS
-TRIA   LONG   williams-fractal-scalp-v1 PASS
+The message template is:
+
+````text
+📊 SIGNAL · research-analyst · 30m
+window HH:MM–HH:MM UTC
 ```
+asset  side   strat                    desc
+─────  ─────  ───────────────────────  ────
+ASSET  LONG   strategy-id              PASS
+ASSET  SHORT  strategy-id              PASS
+```
++ N more signal evaluations
+Research-only observation; no execution, fills, or orders are implied.
+skipped N symbols (observed)
+````
 
 The batch includes every raw candidate emitted by the evaluated strategy
 plugins. `PASS` means only that the strategy emitted the signal; it does not mean
 admission passed, scoring selected it, delivery succeeded, or execution occurred.
-`+ N more signal evaluations` counts additional emitted candidates. `skipped N
-symbols (observed)` counts symbols actually evaluated by a raw-signal plugin that
-emitted no candidate. Symbols excluded by cadence, scope, or missing required
-datasets are not counted as failed evaluations. Admission, score, clash, and
+Only the first five emitted candidates are shown as table rows; `+ N more signal
+evaluations` counts the remaining emitted candidates. `skipped N symbols
+(observed)` counts symbols actually evaluated by a raw-signal plugin in that
+30-minute window that emitted no candidate. Symbols excluded by cadence, scope,
+or missing required datasets are not counted as failed evaluations. If a completed
+window has no raw candidates, it is skipped. Admission, score, clash, and
 executor-delivery states remain in `raw_signal_status_history`.
 
 ## Intent Delivery

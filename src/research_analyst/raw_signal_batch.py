@@ -48,8 +48,9 @@ def record_evaluation_coverage(strategy_id, evaluated_at, evaluated_assets,
     if not assets:
         return
     timestamp = _utc(evaluated_at).isoformat().replace("+00:00", "Z")
-    conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH)
+    conn = None
     try:
+        conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH)
         conn.executemany(
             """INSERT OR REPLACE INTO raw_signal_evaluation_coverage
                (strategy_id, asset, evaluated_at, emitted_count) VALUES (?, ?, ?, ?)""",
@@ -59,7 +60,11 @@ def record_evaluation_coverage(strategy_id, evaluated_at, evaluated_assets,
     except Exception as exc:
         print(f"raw signal coverage error: {exc}")
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception as exc:
+                print(f"raw signal coverage close error: {exc}")
 
 def record_status(raw_signal_id, *, hard_gate_status=None, score_status=None,
                   clash_status=None, executor_intent_status=None, reason=None, db_path=None):

@@ -123,8 +123,12 @@ cannot weaken hard SL/TP or alter deterministic event fields.
 
 Raw capture is durable and synchronous only for the local ledger. A separate
 daemon-thread side effect publishes committed candidates in fixed UTC 30-minute
-windows. It never reruns strategies, waits on Discord, changes admission, or
-delays the immediate executor intent path. Treat it as observation-only.
+windows. The next boundary publishes the preceding completed window: a `06:00`
+message covers `[05:30, 06:00)` and includes all unbatched evaluations in that
+window, not only the latest cutoff. Older late-arriving unbatched candidates are
+carried into the next available message. It never reruns strategies, waits on
+Discord, changes admission, or delays the immediate executor intent path. Treat
+it as observation-only.
 
 The compact batch table contains `asset`, `side`, `strat`, and `desc`. It includes
 every raw candidate emitted by the evaluated strategy plugins, and each emitted
@@ -136,6 +140,28 @@ evaluated by a raw-signal plugin that emitted no candidate; symbols excluded by
 cadence, scope, or unavailable required datasets are not counted as failed.
 Admission, score, clash, and executor-delivery states remain in
 `raw_signal_status_history`.
+
+The exact message shape is:
+
+````text
+📊 SIGNAL · research-analyst · 30m
+window HH:MM–HH:MM UTC
+```
+asset  side   strat                    desc
+─────  ─────  ───────────────────────  ────
+ASSET  LONG   strategy-id              PASS
+ASSET  SHORT  strategy-id              PASS
+```
++ N more signal evaluations
+Research-only observation; no execution, fills, or orders are implied.
+skipped N symbols (observed)
+````
+
+At most five emitted candidates are shown as rows. The `+ N more signal
+evaluations` line counts additional emitted candidates. The skipped count uses
+only durable coverage for the completed 30-minute window. If that window has no
+raw candidates, the publisher skips it. Late candidates are included once in the
+next unclaimed batch and do not cause a second strategy evaluation.
 
 ## Operations and safety
 
