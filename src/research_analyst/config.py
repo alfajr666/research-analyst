@@ -40,18 +40,10 @@ DEFAULT_DB_DIR = BASE_DIR / "data"
 DEFAULT_DB_DIR.mkdir(parents=True, exist_ok=True)
 
 # API Keys and Credentials
-COINANALYZE_API_KEY = os.getenv("COINANALYZE_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-TELEGRAM_ALLOWED_CHAT_IDS = frozenset(
-    value.strip() for value in os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",") if value.strip()
-)
-TELEGRAM_ALLOWED_USER_IDS = frozenset(
-    value.strip() for value in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").split(",") if value.strip()
-)
 # Discord incoming webhooks (optional). Empty URL disables that stream.
 DISCORD_ALPHA_WEBHOOK_URL = os.getenv("DISCORD_ALPHA_WEBHOOK_URL", "")
-DISCORD_OI_WEBHOOK_URL = os.getenv("DISCORD_OI_WEBHOOK_URL", "")
 RAW_SIGNAL_DISCORD_BATCH_ENABLED = os.getenv("RAW_SIGNAL_DISCORD_BATCH_ENABLED", "false").lower() == "true"
 RAW_SIGNAL_DISCORD_BATCH_MINUTES = int(os.getenv("RAW_SIGNAL_DISCORD_BATCH_MINUTES", "30"))
 RAW_SIGNAL_DISCORD_WEBHOOK_URL = os.getenv("RAW_SIGNAL_DISCORD_WEBHOOK_URL", DISCORD_ALPHA_WEBHOOK_URL)
@@ -60,21 +52,12 @@ RAW_BATCH_MAX_ATTEMPTS = int(os.getenv("RAW_BATCH_MAX_ATTEMPTS", "5"))
 RAW_BATCH_RETRY_BACKOFF_SECONDS = int(os.getenv("RAW_BATCH_RETRY_BACKOFF_SECONDS", "30"))
 if RAW_SIGNAL_DISCORD_BATCH_MINUTES <= 0 or 60 % RAW_SIGNAL_DISCORD_BATCH_MINUTES:
     raise ValueError("RAW_SIGNAL_DISCORD_BATCH_MINUTES must be a positive divisor of 60")
-BINANCE_OI_DISCORD_TOP_N = int(os.getenv("BINANCE_OI_DISCORD_TOP_N", "5"))
-BINANCE_OI_DISCORD_MULTI_HOUR_WINDOW = int(os.getenv("BINANCE_OI_DISCORD_MULTI_HOUR_WINDOW", "6"))
-BINANCE_OI_DISCORD_SKIP_EMPTY = os.getenv("BINANCE_OI_DISCORD_SKIP_EMPTY", "true").lower() == "true"
-
 # Config Settings
 MARKET_DB_PATH = os.getenv("MARKET_DB_PATH", str(DEFAULT_DB_DIR / "market.sqlite3"))
 ANALYST_DB_PATH = os.getenv("ANALYST_DB_PATH", str(DEFAULT_DB_DIR / "analyst.sqlite3"))
-PM_ADVICE_DB_PATH = os.getenv("PM_ADVICE_DB_PATH", str(DEFAULT_DB_DIR / "pm-advice.sqlite3"))
-INGEST_INTERVAL_MINS = int(os.getenv("INGEST_INTERVAL_MINS", "5"))
 ENTRY_POLICY_MODE = os.getenv("ENTRY_POLICY_MODE", "shadow").strip().lower()
-ENTRY_POLICY_COOLDOWN_MINUTES = int(os.getenv("ENTRY_POLICY_COOLDOWN_MINUTES", "30"))
 if ENTRY_POLICY_MODE not in {"off", "shadow", "enforce"}:
     raise ValueError("ENTRY_POLICY_MODE must be off, shadow, or enforce")
-if ENTRY_POLICY_COOLDOWN_MINUTES < 0:
-    raise ValueError("ENTRY_POLICY_COOLDOWN_MINUTES must not be negative")
 REGIME_SESSION_MODE = os.getenv("REGIME_SESSION_MODE", "shadow").strip().lower()
 REGIME_DB_PATH = os.getenv("REGIME_DB_PATH", str(DEFAULT_DB_DIR / "regime.sqlite3"))
 REGIME_SESSION_GRACE_SECONDS = int(os.getenv("REGIME_SESSION_GRACE_SECONDS", "30"))
@@ -117,71 +100,34 @@ if REGIME_4H_FETCH_DAYS < 15 or REGIME_4H_RETAIN_DAYS < 14 or REGIME_4H_READINES
     raise ValueError("direct regime 4h history settings cannot lower the v1 readiness contract")
 if REGIME_4H_FETCH_DAYS < REGIME_4H_RETAIN_DAYS:
     raise ValueError("REGIME_4H_FETCH_DAYS must cover REGIME_4H_RETAIN_DAYS")
-HYBRID_HTF_ENABLED = os.getenv("HYBRID_HTF_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-HYBRID_HTF_MODE = os.getenv("HYBRID_HTF_MODE", "shadow").strip().lower()
-if HYBRID_HTF_MODE not in {"off", "shadow", "enforce"}:
-    raise ValueError("HYBRID_HTF_MODE must be off, shadow, or enforce")
-HYBRID_HTF_PARITY_VALIDATED = os.getenv("HYBRID_HTF_PARITY_VALIDATED", "false").lower() in (
-    "1", "true", "yes", "on"
+DIRECT_HTF_1H_SEED_BARS = int(os.getenv("DIRECT_HTF_1H_SEED_BARS", "240"))
+DIRECT_HTF_4H_SEED_BARS = int(os.getenv("DIRECT_HTF_4H_SEED_BARS", "240"))
+if DIRECT_HTF_1H_SEED_BARS < 57 or DIRECT_HTF_4H_SEED_BARS < 57:
+    raise ValueError("direct HTF seed bars cannot lower the regime readiness contract")
+DIRECT_HTF_1H_RETAIN_DAYS = max(
+    REGIME_1H_RETAIN_DAYS, 14, (DIRECT_HTF_1H_SEED_BARS + 23) // 24 + 4
 )
-if HYBRID_HTF_ENABLED and HYBRID_HTF_MODE == "enforce" and not HYBRID_HTF_PARITY_VALIDATED:
-    raise ValueError("HYBRID_HTF_PARITY_VALIDATED must be true before hybrid enforcement")
-HYBRID_HTF_1H_SEED_BARS = int(os.getenv("HYBRID_HTF_1H_SEED_BARS", "240"))
-HYBRID_HTF_4H_SEED_BARS = int(os.getenv("HYBRID_HTF_4H_SEED_BARS", "240"))
-if HYBRID_HTF_1H_SEED_BARS < 57 or HYBRID_HTF_4H_SEED_BARS < 57:
-    raise ValueError("hybrid HTF seed bars cannot lower the regime readiness contract")
-# Preserve the regime minimums when hybrid loading is disabled, but retain
-# enough direct history for the longest currently enabled strategy warmups when
-# the engine path is active.
-_HYBRID_HTF_ACTIVE = HYBRID_HTF_ENABLED and HYBRID_HTF_MODE != "off"
-HYBRID_HTF_1H_RETAIN_DAYS = max(REGIME_1H_RETAIN_DAYS, 14,
-                                (HYBRID_HTF_1H_SEED_BARS + 23) // 24 + 4) if _HYBRID_HTF_ACTIVE else REGIME_1H_RETAIN_DAYS
-HYBRID_HTF_4H_RETAIN_DAYS = max(REGIME_4H_RETAIN_DAYS, 45,
-                                (HYBRID_HTF_4H_SEED_BARS + 5) // 6 + 5) if _HYBRID_HTF_ACTIVE else REGIME_4H_RETAIN_DAYS
-HYBRID_HTF_1H_FETCH_DAYS = max(REGIME_1H_FETCH_DAYS, HYBRID_HTF_1H_RETAIN_DAYS + 1)
-HYBRID_HTF_4H_FETCH_DAYS = max(REGIME_4H_FETCH_DAYS, HYBRID_HTF_4H_RETAIN_DAYS + 1)
+DIRECT_HTF_4H_RETAIN_DAYS = max(
+    REGIME_4H_RETAIN_DAYS, 45, (DIRECT_HTF_4H_SEED_BARS + 5) // 6 + 5
+)
+DIRECT_HTF_1H_FETCH_DAYS = max(REGIME_1H_FETCH_DAYS, DIRECT_HTF_1H_RETAIN_DAYS + 1)
+DIRECT_HTF_4H_FETCH_DAYS = max(REGIME_4H_FETCH_DAYS, DIRECT_HTF_4H_RETAIN_DAYS + 1)
 EVALUATION_TRIGGER_DIR = Path(os.getenv("EVALUATION_TRIGGER_DIR", str(DEFAULT_DB_DIR / "evaluation_triggers")))
 EVALUATION_RECOVERY_SCAN_SECONDS = int(os.getenv("EVALUATION_RECOVERY_SCAN_SECONDS", "5"))
 EVALUATION_LEASE_SECONDS = int(os.getenv("EVALUATION_LEASE_SECONDS", "600"))
 EVALUATION_MAX_RETRIES = int(os.getenv("EVALUATION_MAX_RETRIES", "5"))
-MIN_CONVICTION = os.getenv("MIN_CONVICTION", "LOW")
-DAILY_BRIEF_TIME_WITA = os.getenv("DAILY_BRIEF_TIME_WITA", "08:00")
-FUTURES_RETENTION_DAYS = int(os.getenv("FUTURES_RETENTION_DAYS", "365"))
-SCANNER_MIN_24H_VOLUME_USD = float(os.getenv("SCANNER_MIN_24H_VOLUME_USD", "5000000"))
-SCANNER_CORE_24H_VOLUME_USD = float(os.getenv("SCANNER_CORE_24H_VOLUME_USD", "100000000"))
-SCANNER_MAX_CONTRACTS = int(os.getenv("SCANNER_MAX_CONTRACTS", "50"))
-DISCOVERY_TOP_N = int(os.getenv("DISCOVERY_TOP_N", "10"))
-DISCOVERY_MIN_RESIDENCY_HOURS = int(os.getenv("DISCOVERY_MIN_RESIDENCY_HOURS", "24"))
-DEEP_BACKFILL_BATCH_SIZE = int(os.getenv("DEEP_BACKFILL_BATCH_SIZE", "5"))
-DEEP_BACKFILL_LEASE_MINUTES = int(os.getenv("DEEP_BACKFILL_LEASE_MINUTES", "30"))
-DEEP_BACKFILL_RETRY_BASE_MINUTES = int(os.getenv("DEEP_BACKFILL_RETRY_BASE_MINUTES", "5"))
-DEEP_BACKFILL_HOURS = int(os.getenv("DEEP_BACKFILL_HOURS", "96"))
-DEEP_WARMUP_4H_ATR_BARS = int(os.getenv("DEEP_WARMUP_4H_ATR_BARS", "14"))
-DEEP_WARMUP_SWING_LOOKBACK = int(os.getenv("DEEP_WARMUP_SWING_LOOKBACK", "20"))
-DEEP_WARMUP_GATE_ENABLED = os.getenv("DEEP_WARMUP_GATE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
-BINANCE_OI_ROTATION_ENABLED = os.getenv("BINANCE_OI_ROTATION_ENABLED", "true").lower() == "true"
-BINANCE_OI_ROTATION_SCANNER_VERSION = os.getenv("BINANCE_OI_ROTATION_SCANNER_VERSION", "v1")
-BINANCE_OI_ROTATION_MIN_24H_VOLUME_USD = float(os.getenv("BINANCE_OI_ROTATION_MIN_24H_VOLUME_USD", "5000000"))
-BINANCE_OI_ROTATION_MAX_CONTRACTS = int(os.getenv("BINANCE_OI_ROTATION_MAX_CONTRACTS", "0"))
-BINANCE_OI_ROTATION_HISTORY_HOURS = int(os.getenv("BINANCE_OI_ROTATION_HISTORY_HOURS", "168"))
-BINANCE_OI_ROTATION_MIN_OI_DELTA_USD = float(os.getenv("BINANCE_OI_ROTATION_MIN_OI_DELTA_USD", "1000000"))
-BINANCE_OI_ROTATION_MIN_OI_PERCENTILE = float(os.getenv("BINANCE_OI_ROTATION_MIN_OI_PERCENTILE", "0.95"))
-BINANCE_OI_ROTATION_MIN_VOLUME_ANOMALY = float(os.getenv("BINANCE_OI_ROTATION_MIN_VOLUME_ANOMALY", "1.0"))
-BINANCE_OI_ROTATION_WATCHLIST_HOURS = int(os.getenv("BINANCE_OI_ROTATION_WATCHLIST_HOURS", "36"))
-BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS = int(os.getenv("BINANCE_OI_ROTATION_FEED_EXPIRY_HOURS", "6"))
-BINANCE_OI_ROTATION_FEED_PATH = Path(os.getenv("BINANCE_OI_ROTATION_FEED_PATH", str(DEFAULT_DB_DIR / "binance_oi_rotation_feed.json")))
-BINANCE_OI_DB_PATH = os.getenv("BINANCE_OI_DB_PATH", str(DEFAULT_DB_DIR / "binance_oi.db"))
+EXECUTION_BACKFILL_HOURS = int(os.getenv("EXECUTION_BACKFILL_HOURS", "24"))
 
 # Tables are deliberately classified here, at the schema boundary.  Startup
 # must never repair a database by creating tables owned by the other service.
 MARKET_SCHEMA_TABLES = frozenset({
     "option_chains", "daily_options_summary", "brain_outputs", "confluence_alerts",
     "scanner_history", "universe_snapshots", "broad_discovery_snapshots",
-    "discovery_watchlist_history", "deep_backfill_jobs", "regime_signals",
+    "discovery_watchlist_history", "regime_signals",
     "source_observations", "source_request_log",
 })
 ANALYST_SCHEMA_TABLES = frozenset({
-    "plugin_states", "positions_feed", "pm_advice", "alpha_candidates",
+    "plugin_states", "alpha_candidates",
     "alpha_events", "signal_deliveries", "alpha_event_status_history",
     "alpha_confidence_observations", "research_requests", "research_reports",
     "research_run_metrics", "research_artifacts", "research_evidence", "pipeline_runs",
@@ -190,47 +136,12 @@ ANALYST_SCHEMA_TABLES = frozenset({
 })
 
 
-# ADR-013 / retention: hard prune of aged research tables (worker-owned)
-BINANCE_OI_PRUNE_ENABLED = os.getenv("BINANCE_OI_PRUNE_ENABLED", "1").strip().lower() not in (
-    "0", "false", "no", "off", "",
-)
-BINANCE_OI_WATCHLIST_HISTORY_RETENTION_DAYS = int(
-    os.getenv("BINANCE_OI_WATCHLIST_HISTORY_RETENTION_DAYS", "14")
-)
-BINANCE_OI_OBSERVATIONS_RETENTION_DAYS = int(
-    os.getenv("BINANCE_OI_OBSERVATIONS_RETENTION_DAYS", "30")
-)
-BINANCE_OI_RAW_OI_RETENTION_DAYS = int(os.getenv("BINANCE_OI_RAW_OI_RETENTION_DAYS", "30"))
-BINANCE_OI_EVENTS_RETENTION_DAYS = int(os.getenv("BINANCE_OI_EVENTS_RETENTION_DAYS", "90"))
-BINANCE_OI_SCANS_RETENTION_DAYS = int(os.getenv("BINANCE_OI_SCANS_RETENTION_DAYS", "30"))
-# P1: skip entered/active membership for forever-static bases
-BINANCE_OI_STATIC_MEMBERSHIP_SKIP = os.getenv(
-    "BINANCE_OI_STATIC_MEMBERSHIP_SKIP", "1"
-).strip().lower() not in ("0", "false", "no", "off", "")
-BINANCE_OI_STATIC_SEED_PATH = os.getenv("BINANCE_OI_STATIC_SEED_PATH", "").strip()
-
-# 10m/15m liquid-tier fast path (additive cadence; see specs/binance-oi-rotation-10m-fast-path.md)
-BINANCE_OI_10M_ENABLED = os.getenv("BINANCE_OI_10M_ENABLED", "true").lower() == "true"
-BINANCE_OI_10M_BAR_MINUTES = int(os.getenv("BINANCE_OI_10M_BAR_MINUTES", "15"))
-BINANCE_OI_10M_MIN_24H_VOLUME_USD = float(os.getenv("BINANCE_OI_10M_MIN_24H_VOLUME_USD", "5000000"))
-BINANCE_OI_10M_MAX_CONTRACTS = int(os.getenv("BINANCE_OI_10M_MAX_CONTRACTS", "100"))
-BINANCE_OI_10M_MIN_OI_DELTA_USD = float(os.getenv("BINANCE_OI_10M_MIN_OI_DELTA_USD", "250000"))
-BINANCE_OI_10M_MIN_OI_PERCENTILE = float(os.getenv("BINANCE_OI_10M_MIN_OI_PERCENTILE", "0.95"))
-BINANCE_OI_10M_MIN_VOLUME_ANOMALY = float(os.getenv("BINANCE_OI_10M_MIN_VOLUME_ANOMALY", "1.0"))
-BINANCE_OI_10M_HISTORY_BARS = int(os.getenv("BINANCE_OI_10M_HISTORY_BARS", "672"))  # ~7d @15m
-BINANCE_OI_10M_DISCORD_ENABLED = os.getenv("BINANCE_OI_10M_DISCORD_ENABLED", "true").lower() == "true"
-BINANCE_OI_10M_FEED_MERGE_HOURLY = os.getenv("BINANCE_OI_10M_FEED_MERGE_HOURLY", "true").lower() == "true"
-
 # Static agreed symbol universe from the approved tradeable-assets snapshot.
 # Persisted in the repo at symbols/static_universe.json so it is version-controlled and
 # survives restarts/prunes. Canonical bases (e.g. BTC); expand to XUSDT perps at load time.
 STATIC_SYMBOLS_PATH = os.getenv("STATIC_SYMBOLS_PATH", str(BASE_DIR / "symbols" / "static_universe.json"))
 STATIC_SYMBOLS_OVERRIDE = os.getenv("STATIC_SYMBOLS", "").strip()
-# Legacy Binance OI universe mode. Performance rotation has its own feed and
-# does not depend on this setting.
-WS_SYMBOL_SOURCE = os.getenv("WS_SYMBOL_SOURCE", "static").strip().lower()
-# Upstream performance rotation. This is deliberately separate from the
-# Binance OI rotation feed above.
+# Upstream performance rotation.
 SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYMBOL_ROTATION_REFRESH_HOURS = int(os.getenv("SYMBOL_ROTATION_REFRESH_HOURS", os.getenv("SYMBOL_ROTATION_CADENCE_HOURS", "4")))
 SYMBOL_ROTATION_CADENCE_HOURS = SYMBOL_ROTATION_REFRESH_HOURS  # compatibility alias
@@ -265,7 +176,6 @@ if SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT > SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS
 # WS provider toggles. Bybit is the default public source; Binance is opt-in/off.
 WS_BYBIT_ENABLED = os.getenv("WS_BYBIT_ENABLED", "true").lower() == "true"
 WS_BINANCE_ENABLED = os.getenv("WS_BINANCE_ENABLED", "false").lower() == "true"
-COINANALYZE_EVAL_ENABLED = os.getenv("COINANALYZE_EVAL_ENABLED", "false").lower() == "true"
 COMPACT_STRATEGY_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 COMPACT_STRATEGY_IDS = frozenset((
     "failed-break-v3", "bb-rsi-meanrev-v1",
@@ -448,158 +358,6 @@ def expand_perp_symbols(bases: List[str], venue: str = "bybit") -> List[str]:
     return [b if str(b).upper().endswith("USDT") else f"{b}USDT" for b in bases]
 
 
-def init_binance_oi_db(db_path: str | Path | None = None):
-    """Initialize the Binance OI rotation tables in a dedicated DB file.
-    This separates it from the main market DB to reduce lock contention.
-    Supports dual cadence (1h + 10m/15m) by including bar_minutes in identity keys.
-    """
-    target = str(db_path or BINANCE_OI_DB_PATH)
-    conn = get_db_connection(read_only=False, db_path=target)
-    try:
-        # New schema (with bar_minutes in relevant PKs)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_observations (
-                source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                scanner_version VARCHAR, symbol VARCHAR, asset VARCHAR,
-                quote VARCHAR, contract_type VARCHAR, is_eligible BOOLEAN,
-                rejection_reason VARCHAR, volume_24h_usd DOUBLE,
-                open_interest_usd DOUBLE, oi_change_1h_pct DOUBLE,
-                oi_change_1h_usd DOUBLE, price_change_1h DOUBLE,
-                volume_1h_usd DOUBLE, volume_anomaly DOUBLE,
-                oi_spike_percentile DOUBLE, observed_at TIMESTAMP WITH TIME ZONE,
-                bar_minutes INTEGER DEFAULT 60,
-                PRIMARY KEY (source, completed_interval_at, scanner_version, symbol, bar_minutes)
-            );
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_events (
-                source VARCHAR, asset VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                scanner_version VARCHAR, symbol VARCHAR, rank INTEGER,
-                metrics_json VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
-                bar_minutes INTEGER DEFAULT 60,
-                PRIMARY KEY (source, asset, completed_interval_at, scanner_version, bar_minutes)
-            );
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_watchlist_history (
-                source VARCHAR, asset VARCHAR, symbol VARCHAR,
-                observed_at TIMESTAMP WITH TIME ZONE, state VARCHAR,
-                expires_at TIMESTAMP WITH TIME ZONE, deep_backfill_required BOOLEAN,
-                overlap_annotated BOOLEAN, PRIMARY KEY (source, asset, observed_at)
-            );
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_observations_ts ON binance_oi_rotation_observations (completed_interval_at, symbol);")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_raw_oi_history (
-                source VARCHAR, symbol VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
-                open_interest_usd DOUBLE, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                bar_minutes INTEGER DEFAULT 60,
-                PRIMARY KEY (source, symbol, observed_at)
-            );
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_raw_oi_history_interval ON binance_oi_rotation_raw_oi_history (completed_interval_at, symbol);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_watchlist_ts ON binance_oi_rotation_watchlist_history (asset, observed_at);")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS binance_oi_rotation_scans (
-                source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                scanner_version VARCHAR, status VARCHAR, completed_at TIMESTAMP WITH TIME ZONE,
-                bar_minutes INTEGER DEFAULT 60,
-                PRIMARY KEY (source, completed_interval_at, scanner_version, bar_minutes)
-            );
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS discord_oi_deliveries (
-                delivery_key VARCHAR PRIMARY KEY,
-                kind VARCHAR NOT NULL,
-                status VARCHAR NOT NULL,
-                attempted_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                completed_at TIMESTAMP WITH TIME ZONE,
-                response_body VARCHAR,
-                error_message VARCHAR
-            );
-        """)
-
-        # One-time migration for pre-10m DBs: add column + backfill + recreate tables with widened PK to avoid cadence collisions at :00 boundaries.
-        def _has_column(table: str, col: str) -> bool:
-            try:
-                info = conn.execute(f"PRAGMA table_info({table})").fetchall()
-                return any(r[1] == col for r in info)
-            except Exception:
-                return False
-
-        needs_migrate = (
-            not _has_column("binance_oi_rotation_scans", "bar_minutes")
-            or not _has_column("binance_oi_rotation_observations", "bar_minutes")
-            or not _has_column("binance_oi_rotation_events", "bar_minutes")
-        )
-        if needs_migrate:
-            # Add columns where missing (for raw too)
-            for tbl in ("binance_oi_rotation_observations", "binance_oi_rotation_events", "binance_oi_rotation_scans", "binance_oi_rotation_raw_oi_history"):
-                if not _has_column(tbl, "bar_minutes"):
-                    try:
-                        conn.execute(f"ALTER TABLE {tbl} ADD COLUMN bar_minutes INTEGER DEFAULT 60;")
-                    except Exception:
-                        pass
-            # Backfill legacy rows
-            for tbl in ("binance_oi_rotation_observations", "binance_oi_rotation_events", "binance_oi_rotation_scans", "binance_oi_rotation_raw_oi_history"):
-                try:
-                    conn.execute(f"UPDATE {tbl} SET bar_minutes = 60 WHERE bar_minutes IS NULL;")
-                except Exception:
-                    pass
-
-            # Recreate core identity tables with bar_minutes inside PK so 15m@12:00 and 60m@12:00 coexist.
-            # We copy data; drop old after.
-            for (old_name, create_sql, copy_sql) in [
-                ("binance_oi_rotation_scans",
-                 """CREATE TABLE binance_oi_rotation_scans_new (
-                        source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                        scanner_version VARCHAR, status VARCHAR, completed_at TIMESTAMP WITH TIME ZONE,
-                        bar_minutes INTEGER DEFAULT 60,
-                        PRIMARY KEY (source, completed_interval_at, scanner_version, bar_minutes)
-                    )""",
-                 """INSERT INTO binance_oi_rotation_scans_new SELECT source, completed_interval_at, scanner_version, status, completed_at, COALESCE(bar_minutes,60) FROM binance_oi_rotation_scans"""),
-                ("binance_oi_rotation_observations",
-                 """CREATE TABLE binance_oi_rotation_observations_new (
-                        source VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                        scanner_version VARCHAR, symbol VARCHAR, asset VARCHAR,
-                        quote VARCHAR, contract_type VARCHAR, is_eligible BOOLEAN,
-                        rejection_reason VARCHAR, volume_24h_usd DOUBLE,
-                        open_interest_usd DOUBLE, oi_change_1h_pct DOUBLE,
-                        oi_change_1h_usd DOUBLE, price_change_1h DOUBLE,
-                        volume_1h_usd DOUBLE, volume_anomaly DOUBLE,
-                        oi_spike_percentile DOUBLE, observed_at TIMESTAMP WITH TIME ZONE,
-                        bar_minutes INTEGER DEFAULT 60,
-                        PRIMARY KEY (source, completed_interval_at, scanner_version, symbol, bar_minutes)
-                    )""",
-                 """INSERT INTO binance_oi_rotation_observations_new SELECT source, completed_interval_at, scanner_version, symbol, asset, quote, contract_type, is_eligible, rejection_reason, volume_24h_usd, open_interest_usd, oi_change_1h_pct, oi_change_1h_usd, price_change_1h, volume_1h_usd, volume_anomaly, oi_spike_percentile, observed_at, COALESCE(bar_minutes,60) FROM binance_oi_rotation_observations"""),
-                ("binance_oi_rotation_events",
-                 """CREATE TABLE binance_oi_rotation_events_new (
-                        source VARCHAR, asset VARCHAR, completed_interval_at TIMESTAMP WITH TIME ZONE,
-                        scanner_version VARCHAR, symbol VARCHAR, rank INTEGER,
-                        metrics_json VARCHAR, observed_at TIMESTAMP WITH TIME ZONE,
-                        bar_minutes INTEGER DEFAULT 60,
-                        PRIMARY KEY (source, asset, completed_interval_at, scanner_version, bar_minutes)
-                    )""",
-                 """INSERT INTO binance_oi_rotation_events_new SELECT source, asset, completed_interval_at, scanner_version, symbol, rank, metrics_json, observed_at, COALESCE(bar_minutes,60) FROM binance_oi_rotation_events"""),
-            ]:
-                try:
-                    conn.execute(create_sql)
-                    conn.execute(copy_sql)
-                    conn.execute(f"DROP TABLE {old_name}")
-                    conn.execute(f"ALTER TABLE {old_name}_new RENAME TO {old_name}")
-                except Exception as e:
-                    # If anything fails, leave tables as-is (new columns added); worst case same-ts different-bar may need manual.
-                    print(f"OI schema migrate partial for {old_name}: {e}")
-
-            # Recreate indexes after possible recreate
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_observations_ts ON binance_oi_rotation_observations (completed_interval_at, symbol);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_raw_oi_history_interval ON binance_oi_rotation_raw_oi_history (completed_interval_at, symbol);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_binance_oi_rotation_watchlist_ts ON binance_oi_rotation_watchlist_history (asset, observed_at);")
-            conn.commit()
-        conn.commit()
-    finally:
-        conn.close()
-
 STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
         "STRATEGY_ENABLED_IDS",
@@ -612,8 +370,8 @@ STRATEGY_ENABLED_IDS = tuple(
 )
 
 # Evaluation intervals the active strategy plugins run on. 5m is streamed
-# directly by ws_gateway; 15m is a derived extension point. HTF (1h/4h) remains
-# an enrichment layer only (resampled, not evaluated standalone).
+# directly by ws_gateway; 15m is a derived extension point. HTF (1h/4h) is
+# loaded from the regime-owned direct history during each evaluation.
 EVAL_INTERVALS = [
     s.strip() for s in os.getenv("EVAL_INTERVALS", "5m").split(",")
     if s.strip() and s.strip() != "1m"
@@ -627,16 +385,7 @@ STRATEGY_ACTIVE_IDS = tuple(
     s.strip() for s in os.getenv("STRATEGY_ACTIVE_IDS", "").split(",") if s.strip()
 )
 
-# Phase 7: LLM position-management sidecar (emit-only). Enabled for this deployment.
-PM_SIDECAR_ENABLED = os.getenv("PM_SIDECAR_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-PM_CADENCE_MINUTES = max(5, int(os.getenv("PM_CADENCE_MINUTES", "5")))
-PM_LLM_TIMEOUT_S = int(os.getenv("PM_LLM_TIMEOUT_S", "20"))
-PM_LLM_RETRIES = int(os.getenv("PM_LLM_RETRIES", "1"))
-PM_REASON_MAX_CHARS = int(os.getenv("PM_REASON_MAX_CHARS", "120"))
-
-# Phase 8: tiered prune retention, days per interval. <=0 disables that tier.
-# 5m/15m are medium; HTF (1h/4h) are long. Historical 1m rows are not
-# deleted by the no-1m migration.
+# Tiered prune retention, days per interval. <=0 disables that tier.
 PRUNE_5M_DAYS = int(os.getenv("PRUNE_5M_DAYS", "30"))
 PRUNE_15M_DAYS = int(os.getenv("PRUNE_15M_DAYS", "90"))
 PRUNE_1H_DAYS = int(os.getenv("PRUNE_1H_DAYS", "365"))
@@ -667,15 +416,9 @@ ANALYST_PIPELINE_RETENTION_DAYS = int(os.getenv("ANALYST_PIPELINE_RETENTION_DAYS
 ANALYST_RAW_SIGNAL_RETENTION_DAYS = int(os.getenv("ANALYST_RAW_SIGNAL_RETENTION_DAYS", "90"))
 ANALYST_CANDIDATE_RETENTION_DAYS = int(os.getenv("ANALYST_CANDIDATE_RETENTION_DAYS", "90"))
 ANALYST_EVENT_RETENTION_DAYS = int(os.getenv("ANALYST_EVENT_RETENTION_DAYS", "365"))
-ANALYST_PM_RETENTION_DAYS = int(os.getenv("ANALYST_PM_RETENTION_DAYS", "30"))
 ANALYST_DELIVERY_RETENTION_DAYS = int(os.getenv("ANALYST_DELIVERY_RETENTION_DAYS", "365"))
 ANALYST_METRICS_RETENTION_DAYS = int(os.getenv("ANALYST_METRICS_RETENTION_DAYS", "30"))
 ANALYST_RESEARCH_RETENTION_DAYS = int(os.getenv("ANALYST_RESEARCH_RETENTION_DAYS", "30"))
-ANALYST_DISCOVERY_RETENTION_DAYS = int(os.getenv("ANALYST_DISCOVERY_RETENTION_DAYS", "90"))
-ANALYST_WATCHLIST_RETENTION_DAYS = int(os.getenv("ANALYST_WATCHLIST_RETENTION_DAYS", "365"))
-# Phase 9: rotation feed (exports active binance_oi_rotation members to the WS
-# universe feed). Disabled by default; also requires WS_SYMBOL_SOURCE=rotated|both.
-ROTATION_FEED_ENABLED = os.getenv("ROTATION_FEED_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
 # Trade-intent outbox → bybit-executor (see bybit-executor/AGENTS.md "Trade Intent
 # Contract", schema_version 1). The internal alpha event is the advisory record
@@ -740,25 +483,13 @@ INTENT_BUS_DB = str(Path(_INTENT_BUS_DB_RAW).expanduser()) if _INTENT_BUS_DB_RAW
 # JSON inbox delivery is compatibility-only; SQLite is authoritative.
 INTENT_BUS_LEGACY_INBOX_ENABLED = os.getenv("INTENT_BUS_LEGACY_INBOX_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
-# PM sidecar <-> bybit-executor handoff (the executor's PM Decision Contract).
-# EXECUTOR_SNAPSHOT_DIR: where the executor writes its 1m position snapshots
-#   (<dir>/<exchange_id>/<account_id>/latest.json). When set, the PM sidecar reads
-#   OPEN/PENDING positions from there instead of the local positions_feed table.
-# EXECUTOR_DECISION_DIR: the executor's POSITION_DECISION_DIR — the PM sidecar
-#   writes one PMDecision file (<decision_id>.json) per advice there. If unset, the
-#   sidecar stays DB-only (no executor delivery).
+# Executor snapshot handoff used by ws_gateway to retain open-position symbols
+# during universe rotation. Position management is owned by standalone-llm-pm.
 if BYBIT_EXECUTOR_DIR:
     _default_exec_snapshots = Path(BYBIT_EXECUTOR_DIR) / "data" / "position-snapshots"
-    _default_exec_decisions = Path(BYBIT_EXECUTOR_DIR) / "data" / "position-decisions"
 else:
     _default_exec_snapshots = ""
-    _default_exec_decisions = ""
 EXECUTOR_SNAPSHOT_DIR = os.getenv("EXECUTOR_SNAPSHOT_DIR", str(_default_exec_snapshots)) if _default_exec_snapshots else os.getenv("EXECUTOR_SNAPSHOT_DIR", "")
-EXECUTOR_DECISION_DIR = os.getenv("EXECUTOR_DECISION_DIR", str(_default_exec_decisions)) if _default_exec_decisions else os.getenv("EXECUTOR_DECISION_DIR", "")
-PM_REDUCE_FRACTION = float(os.getenv("PM_REDUCE_FRACTION", "0.5"))
-PM_DECISION_VALIDITY_MINUTES = int(os.getenv("PM_DECISION_VALIDITY_MINUTES", "5"))
-PM_ACTION_CONFIDENCE = float(os.getenv("PM_ACTION_CONFIDENCE", "0.70"))
-PM_NEAR_TP_REDUCE_FRACTION = float(os.getenv("PM_NEAR_TP_REDUCE_FRACTION", "0.75"))
 
 # accumulation-base-v2 knobs (specs/strategy-accumulation-base-v2.md)
 # Defaults grilled 2026-08-18 — independent prefixes; tighter coil / emit floor.
@@ -828,13 +559,6 @@ LSR_V1_REQUIRE_CLOSE_LOCATION = os.getenv("LSR_V1_REQUIRE_CLOSE_LOCATION", "fals
 LSR_V1_FVG_SNAP_ATR = float(os.getenv("LSR_V1_FVG_SNAP_ATR", "0.25"))
 LSR_V1_USE_15M_EPHEMERAL_FVG = os.getenv("LSR_V1_USE_15M_EPHEMERAL_FVG", "true").lower() == "true"
 
-# LLM delivery-order booster cap (ADR); does not alter event confidence
-LLM_BOOST_CAP = float(os.getenv("LLM_BOOST_CAP", "0.10"))
-
-# CA + venue-aggregate failover for 15m backbone (specs/ca-truth-venue-agg-failover.md)
-MARKET_FAILOVER_ENABLED = os.getenv("MARKET_FAILOVER_ENABLED", "false").lower() == "true"
-LEGACY_SCANNER_ENABLED = os.getenv("LEGACY_SCANNER_ENABLED", "false").lower() == "true"
-
 # Emit classification (normative, see spec)
 PRICE_STRUCTURE_STRATEGY_IDS = {
     "ema99-retest-adx-fundamo-v1",
@@ -851,28 +575,6 @@ PRICE_STRUCTURE_STRATEGY_IDS = {
 MIXED_STRATEGY_IDS = {
     "impulse-ignition-v2", "continuation-breakout-v2",
 }
-
-FAILOVER_SOURCE_NAME = os.getenv("FAILOVER_SOURCE_NAME", "venue_agg_v1")
-FAILOVER_CATCHUP_HOURS = int(os.getenv("FAILOVER_CATCHUP_HOURS", "2"))
-FAILOVER_WATCHLIST_CAP = int(os.getenv("FAILOVER_WATCHLIST_CAP", "20"))
-FAILOVER_MAX_REQUESTS_PER_CYCLE = int(os.getenv("FAILOVER_MAX_REQUESTS_PER_CYCLE", "80"))
-FAILOVER_CIRCUIT_AGE_MIN = int(os.getenv("FAILOVER_CIRCUIT_AGE_MIN", "30"))
-FAILOVER_CIRCUIT_CLEAR_AGE_MIN = int(os.getenv("FAILOVER_CIRCUIT_CLEAR_AGE_MIN", "20"))
-FAILOVER_CIRCUIT_429_RATE = float(os.getenv("FAILOVER_CIRCUIT_429_RATE", "0.50"))
-FAILOVER_CIRCUIT_CLEAR_429_RATE = float(os.getenv("FAILOVER_CIRCUIT_CLEAR_429_RATE", "0.25"))
-FAILOVER_CIRCUIT_WINDOW_MIN = int(os.getenv("FAILOVER_CIRCUIT_WINDOW_MIN", "30"))
-
-# CA shaping when limited (specs/ca-limited-takeover.md) — reduces non-critical load to aid recovery + takeover
-CA_SHAPE_ON_CIRCUIT = os.getenv("CA_SHAPE_ON_CIRCUIT", "true").lower() == "true"
-CA_SHAPE_SKIP_SECONDARY = os.getenv("CA_SHAPE_SKIP_SECONDARY", "true").lower() == "true"
-
-# Failover data completeness (specs/ca-limited-takeover.md)
-FAILOVER_FUNDING_PRIORITY = os.getenv("FAILOVER_FUNDING_PRIORITY", "true").lower() == "true"
-
-# Rate limiting & budgeting (see specs/external-api-rate-limiting.md)
-COINANALYZE_RPS = float(os.getenv("COINANALYZE_RPS", "0.08"))
-COINANALYZE_MAX_CONCURRENT = int(os.getenv("COINANALYZE_MAX_CONCURRENT", "5"))
-COINANALYZE_DEFAULT_RETRY_AFTER = int(os.getenv("COINANALYZE_DEFAULT_RETRY_AFTER", "5"))
 
 LLM_RESEARCH_ENABLED = os.getenv("LLM_RESEARCH_ENABLED", "false").lower() == "true"
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
@@ -892,8 +594,6 @@ LLM_INCLUDE_IN_DISCORD = os.getenv("LLM_INCLUDE_IN_DISCORD", os.getenv("LLM_INCL
 LLM_PRICING_VERSION = os.getenv("LLM_PRICING_VERSION", "openai-chat-2026-08-v1")
 LLM_INPUT_COST_PER_1K_USD = float(os.getenv("LLM_INPUT_COST_PER_1K_USD", "0"))
 LLM_OUTPUT_COST_PER_1K_USD = float(os.getenv("LLM_OUTPUT_COST_PER_1K_USD", "0"))
-# LLM_BOOST_CAP defined with strategy v2 knobs above (delivery priority only)
-
 # Research execution delivery is opt-in per target. Research never receives
 # exchange credentials; these paths are only shared inbox directories.
 EXECUTION_OUTBOX_DIR = Path(os.getenv("EXECUTION_OUTBOX_DIR", str(DEFAULT_DB_DIR / "execution_outbox")))
@@ -917,27 +617,7 @@ EXECUTION_TARGETS = {
 }
 
 
-def validate_telegram_allowlist() -> None:
-    """Command polling is unsafe unless at least one sender restriction exists."""
-    if not TELEGRAM_ALLOWED_CHAT_IDS and not TELEGRAM_ALLOWED_USER_IDS:
-        raise ValueError(
-            "Telegram command polling requires TELEGRAM_ALLOWED_CHAT_IDS or TELEGRAM_ALLOWED_USER_IDS"
-        )
-
-# Freqtrade historical data path (for regime signal module)
-FREQTRADE_DATA_DIR = os.getenv(
-    "FREQTRADE_DATA_DIR",
-    "/home/ubuntu/freqtrade-trading-bot/backtest/pair_trading/freqtrade_cache_91/binanceusdm/futures"
-)
-
-# Directory for persisted HMM model pickles
-HMM_MODELS_DIR = DEFAULT_DB_DIR / "hmm_models"
-HMM_MODELS_DIR.mkdir(parents=True, exist_ok=True)
-
 # API Base URLs
-COINANALYZE_BASE_URL = "https://api.coinalyze.net/v1"
-DERIBIT_BASE_URL = "https://www.deribit.com/api/v2"
-BINANCE_FUTURES_BASE_URL = os.getenv("BINANCE_FUTURES_BASE_URL", "https://fapi.binance.com")
 BYBIT_LINEAR_BASE_URL = os.getenv("BYBIT_LINEAR_BASE_URL", "https://api.bybit.com")
 
 def get_db_connection(read_only: bool = False, db_path: str | Path | None = None):
@@ -1029,35 +709,6 @@ def init_analyst_db(db_path: str | Path | None = None):
         conn.close()
 
 
-def init_pm_advice_db(db_path: str | Path | None = None):
-    """Initialize the PM-owned advice ledger in its dedicated database."""
-    target = str(db_path or PM_ADVICE_DB_PATH)
-    conn = get_db_connection(read_only=False, db_path=target)
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS pm_advice (
-                advice_id VARCHAR PRIMARY KEY,
-                position_id VARCHAR NOT NULL,
-                strategy_id VARCHAR NOT NULL,
-                asset VARCHAR NOT NULL,
-                action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp', 'update_stop')),
-                reason VARCHAR,
-                htf_bias VARCHAR,
-                rr DOUBLE,
-                confidence DOUBLE,
-                proposed_action VARCHAR,
-                proposed_confidence DOUBLE,
-                normalization_reason VARCHAR,
-                cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL
-            );
-        """)
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def init_alpha_db(db_path: str | Path | None = None):
     """Publisher alpha ledger schema (delegates to guarded init_db)."""
     init_db(db_path, force_alpha=True)
@@ -1097,89 +748,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
             );
         """)
 
-        # Phase 7: LLM position-management sidecar (emit-only). `positions_feed` is
-        # executor-owned (PM reads it); `pm_advice` is PM-owned (executor consumes).
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS positions_feed (
-                position_id VARCHAR PRIMARY KEY,
-                symbol VARCHAR NOT NULL,
-                asset VARCHAR NOT NULL,
-                side VARCHAR NOT NULL,
-                entry DOUBLE NOT NULL,
-                size DOUBLE,
-                opened_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                strategy_id VARCHAR NOT NULL,
-                current_pnl DOUBLE,
-                stop_loss DOUBLE,
-                status VARCHAR NOT NULL DEFAULT 'open',
-                updated_at TIMESTAMP WITH TIME ZONE NOT NULL
-            );
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS pm_advice (
-                advice_id VARCHAR PRIMARY KEY,
-                position_id VARCHAR NOT NULL,
-                strategy_id VARCHAR NOT NULL,
-                asset VARCHAR NOT NULL,
-                action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp', 'update_stop')),
-                reason VARCHAR,
-                htf_bias VARCHAR,
-                rr DOUBLE,
-                confidence DOUBLE,
-                proposed_action VARCHAR,
-                proposed_confidence DOUBLE,
-                normalization_reason VARCHAR,
-                cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL
-            );
-        """)
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(pm_advice)")}
-        table_sql = str(conn.execute("SELECT sql FROM sqlite_master WHERE name='pm_advice'").fetchone()[0]).lower()
-        if "confidence" not in columns or "update_stop" not in table_sql:
-            # SQLite cannot alter a CHECK constraint. Rebuild the legacy table so
-            # near_tp decisions can be persisted without losing existing advice.
-            conn.execute("ALTER TABLE pm_advice RENAME TO pm_advice_legacy_v1")
-            conn.execute("""
-                CREATE TABLE pm_advice (
-                    advice_id VARCHAR PRIMARY KEY,
-                    position_id VARCHAR NOT NULL,
-                    strategy_id VARCHAR NOT NULL,
-                    asset VARCHAR NOT NULL,
-                    action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp', 'update_stop')),
-                    reason VARCHAR,
-                    htf_bias VARCHAR,
-                    rr DOUBLE,
-                    confidence DOUBLE,
-                    proposed_action VARCHAR,
-                    proposed_confidence DOUBLE,
-                    normalization_reason VARCHAR,
-                    cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                    observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE NOT NULL
-                );
-            """)
-            conn.execute("""
-                INSERT INTO pm_advice
-                    (advice_id, position_id, strategy_id, asset, action, reason,
-                     htf_bias, rr, cutoff_at, observed_at, created_at)
-                SELECT advice_id, position_id, strategy_id, asset, action, reason,
-                       htf_bias, rr, cutoff_at, observed_at, created_at
-                FROM pm_advice_legacy_v1
-            """)
-            conn.execute("DROP TABLE pm_advice_legacy_v1")
-        else:
-            for name, definition in (
-                ("proposed_action", "VARCHAR"),
-                ("proposed_confidence", "DOUBLE"),
-                ("normalization_reason", "VARCHAR"),
-            ):
-                if name not in columns:
-                    conn.execute(f"ALTER TABLE pm_advice ADD COLUMN {name} {definition}")
-        position_columns = {row[1] for row in conn.execute("PRAGMA table_info(positions_feed)")}
-        if "stop_loss" not in position_columns:
-            conn.execute("ALTER TABLE positions_feed ADD COLUMN stop_loss DOUBLE")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_pm_advice_pos ON pm_advice (position_id, cutoff_at);")
         if not is_alpha:
             # Create option_chains table (15-min snapshots)
             conn.execute("""
@@ -1540,26 +1108,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_discovery_snapshot_ts ON broad_discovery_snapshots (observed_at, symbol);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_discovery_watchlist_ts ON discovery_watchlist_history (pool, symbol, observed_at);")
-
-        # Mutable execution state for durable deep-history bootstrap work. The
-        # append-only watchlist table remains the audit record of qualification.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS deep_backfill_jobs (
-                symbol        VARCHAR PRIMARY KEY,
-                status        VARCHAR NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
-                attempts      INTEGER NOT NULL DEFAULT 0,
-                next_retry_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                last_error    VARCHAR,
-                created_at    TIMESTAMP WITH TIME ZONE NOT NULL,
-                updated_at    TIMESTAMP WITH TIME ZONE NOT NULL,
-                started_at    TIMESTAMP WITH TIME ZONE,
-                completed_at  TIMESTAMP WITH TIME ZONE
-            );
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_deep_backfill_due ON deep_backfill_jobs (status, next_retry_at);")
-
-        # Binance OI tables moved to dedicated BINANCE_OI_DB_PATH (see init_binance_oi_db)
-        # to reduce lock contention with main market data.
 
         # Create regime_signals table (HMM + dual VWAP daily signals)
         conn.execute("""

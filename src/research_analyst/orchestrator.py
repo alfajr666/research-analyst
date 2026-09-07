@@ -498,9 +498,6 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         for iv, ivres in pres.items():
             print(f"Plugins [{iv}] for {cutoff_id}: { {k: v.get('emitted', v) for k,v in ivres.items() if not k.startswith('_')} }")
 
-        # Phase 9: rotation feed (disabled by default; also needs WS_SYMBOL_SOURCE=rotated|both).
-        print("Legacy rotation feed disabled in live orchestrator.")
-
         # Drop phase: after verification, drop legacy futures_data (opt-in via env for safety)
         if os.getenv("DROP_LEGACY_FUTURES", "0").lower() in ("1", "true", "yes"):
             try:

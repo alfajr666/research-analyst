@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 
 from strategies.v2.continuation_breakout_v2 import ContV2Config, STRATEGY_ID, evaluate_symbol
-from strategy_v2_context import has_active_event
+from strategy_v2_context import has_active_event, resample_ohlcv
 
 
 def _trend_then_flag(
@@ -101,6 +101,8 @@ class ContinuationBreakoutV2Tests(unittest.TestCase):
         )
         event = evaluate_symbol(
             bars,
+            bars_1h=resample_ohlcv(bars, "1h"),
+            bars_4h=resample_ohlcv(bars, "4h"),
             asset="SOL",
             symbol="SOLUSDT_PERP.A",
             cutoff=cutoff,

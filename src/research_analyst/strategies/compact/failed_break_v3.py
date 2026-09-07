@@ -13,7 +13,6 @@ from strategy_v2_context import (
     evaluation_symbols,
     get_shared_computation_context,
     load_bars_for_interval,
-    resample_ohlcv,
     strategy_market_connection,
     stoch_rsi,
 )
@@ -61,7 +60,9 @@ def evaluate_symbol(bars_5m: pl.DataFrame, bars_4h: pl.DataFrame | None = None, 
                     symbol: str, cutoff: datetime, cooldown_bars: int = 4, features=None) -> dict | None:
     if bars_5m.height < 40: return None
     if not last_completed_bar_fresh(bars_5m, cutoff): return None
-    setup = _latest_setup(bars_4h if bars_4h is not None else resample_ohlcv(bars_5m, "4h"))
+    if bars_4h is None or bars_4h.is_empty():
+        return None
+    setup = _latest_setup(bars_4h)
     if setup is None: return None
     if features is None:
         k, d = _stoch_rsi(bars_5m["close"])
@@ -83,9 +84,9 @@ def evaluate_symbol(bars_5m: pl.DataFrame, bars_4h: pl.DataFrame | None = None, 
             "confidence": 0.5, "confidence_status": "uncalibrated", "entry_condition": {"type": "market", "price": entry},
             "entry_price": entry, "stop_loss": stop, "take_profit": target, "invalidation_price": stop, "targets": [target],
             "plugin_version": PLUGIN_VERSION, "feature_snapshot": {"source_symbol": symbol, "execution_timeframe": "5m",
-            "context_timeframe": "15m->4h", "swing": setup["swing"], "strategy_stop": stop, "minimum_target_r": 2.0,
+            "context_timeframe": "native_4h", "swing": setup["swing"], "strategy_stop": stop, "minimum_target_r": 2.0,
             "stoch_k": float(k[-1]), "stoch_d": float(d[-1]), "cooldown_bars": cooldown_bars,
-            "cutoff": cutoff.isoformat(), "timeframe_provenance": "5m->4h"}}
+            "cutoff": cutoff.isoformat(), "timeframe_provenance": "native_4h"}}
 
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:

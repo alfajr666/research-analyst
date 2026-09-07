@@ -17,7 +17,7 @@ lookahead/repainting behavior.
 - Higher-timeframe filter: the previous completed 1h ADX/DMI observation.
 - Long and short entries are stateful: qualifying EMA cross, then EMA99 retest.
 - The RSI/EMA26-spread exit is deterministic and authoritative.
-- The RSI/EMA26-spread exit is not delegated to the LLM PM sidecar.
+- The RSI/EMA26-spread exit is not delegated to the standalone PM.
 - ATR protection remains strategy-defined; the executor owns venue placement and
   protection confirmation.
 - The strategy does not define a take-profit target. The executor derives and
@@ -277,7 +277,7 @@ When triggered:
 6. Let the executor own reduce-only close submission, reconciliation, retry,
    and venue-confirmed closure.
 
-The existing LLM PM sidecar may continue its normal observation of positions,
+The standalone PM may continue its normal observation of positions,
 but it is not the authority for this strategy's RSI/spread exit. The mechanical
 decision must be idempotent by position ID, position revision, strategy policy,
 and 5m cutoff.
@@ -382,7 +382,7 @@ hold:
 - Executor-derived 2R intent delivery is verified without changing the alpha
   thesis.
 - Mechanical exits are durably delivered and cannot be delegated to or vetoed
-  by the LLM PM sidecar.
+by the standalone PM.
 - Dynamic ATR stop revisions are supported and venue-confirmed, or live
   activation is blocked.
 - Existing legacy positions and records remain recoverable.

@@ -39,10 +39,9 @@ completed trigger
        alpha ledger + publisher
        -> shared SQLite intent bus
 
-executor 1m position snapshots
-  -> independent PM sidecar
-       HOLD / REDUCE / EXIT / NEAR_TP
-       -> executor decision inbox
+ executor 1m position snapshots
+   -> standalone-llm-pm (separate service)
+        -> executor decision inbox
 ```
 
 The gateway writes market observations before publishing a trigger. The
@@ -58,10 +57,10 @@ turn a successful evaluation into a failed market pipeline.
 | `research-analyst-ws` | Public bars, backfill, resampling, triggers | `data/market.sqlite3` |
 | `research-analyst-regime-session` | Per-asset score and gate observations | `data/regime.sqlite3` |
 | `research-analyst-orchestrator` | Features, strategies, admission, publishing | `data/analyst.sqlite3` |
-| `research-analyst-pm-sidecar` | LLM position-management decisions | Executor decision inbox |
 
 All production services are managed by `oxmgr`. Never start a second gateway,
-regime worker, orchestrator, or PM sidecar manually.
+regime worker, or orchestrator manually. Position management is owned by the
+separate `standalone-llm-pm` service.
 
 ## Database Ownership
 
@@ -122,50 +121,29 @@ Canonical asset names are preserved throughout the pipeline. For example,
 `ANKRUSDT` maps to `ANKR` and `MARSCOINUSDT` maps to `MARSCOIN`; bare asset
 names are never truncated.
 
-## Hybrid HTF Engine
+## Direct HTF Engine
 
-Strategy `1h`/`4h` frames use an engine-owned source contract with two explicit
-cutoffs. `evaluation_cutoff` is the exact trigger cutoff and remains
-authoritative for strategy data, candidate timestamps, freshness, and replay.
-`htf_cutoff` is the latest completed canonical `5m` boundary at or before the
-evaluation cutoff and is the only cutoff used for the hybrid `1h`/`4h` frame.
+Strategy `1h`/`4h` frames use completed native Bybit REST bars from the
+regime-owned history database. The websocket gateway's committed `5m` bars are
+the independent execution and evaluation path. No direct bars are merged with
+or substituted by resampled `5m` bars.
 
-For example, evaluation at `00:04` uses an HTF cutoff of `00:00`, while
-evaluation at `00:05` uses an HTF cutoff of `00:05`:
+At an evaluation cutoff, each direct timeframe uses only bars with
+`source_end <= evaluation_cutoff`. The engine rejects forming or future bars,
+gaps, duplicates, malformed candles, insufficient history, missing direct
+history, and cutoff mismatches. A missing direct `1h` or `4h` frame blocks only
+strategies requiring that timeframe; a missing `5m` window blocks execution
+evaluation.
 
-```text
-evaluation cutoff: 00:04 -> HTF cutoff: 00:00
-evaluation cutoff: 00:05 -> HTF cutoff: 00:05
-```
+The default direct seed target is 240 completed bars per timeframe. Retention
+expands automatically to at least 14 complete `1h` days and 45 complete `4h`
+days, plus fetch margin. The regime worker owns and writes the direct cache;
+the engine only reads it. Strategies remain source-blind and keep using
+`load_bars_for_interval`.
 
-The source contract is:
-
-```text
-direct Bybit REST seed: source_end <= handoff_at
-canonical 5m tail:      source_end > handoff_at and source_end <= htf_cutoff
-```
-
-The default seed target is 240 completed bars per timeframe. Direct cache
-retention expands automatically to at least 14 complete `1h` days and 45
-complete `4h` days, plus fetch margin. The regime worker owns and writes the
-direct cache; the engine only reads it. Strategies remain source-blind and keep
-using `load_bars_for_interval`.
-
-`HYBRID_HTF_MODE=shadow` is the default rollout mode. `off` uses canonical
-resampling only. `shadow` exposes a `canonical_only` diagnostic when direct seed
-history is unavailable. `enforce` fails closed without a valid direct seed and is
-rejected unless `HYBRID_HTF_PARITY_VALIDATED=true` records completed
-direct-versus-resampled OHLC and indicator parity validation.
-
-The loader rejects forming or future bars, gaps, unresolvable duplicates,
-malformed candles, invalid timestamp boundaries, and cutoff mismatches. Closed
-exchange representations such as an exact boundary and boundary-minus-one
-millisecond are normalized before duplicate validation. Equivalent REST and
-stream rows are reconciled with stream data preferred; conflicting rows remain
-a hard failure. The engine never interpolates or uses direct history as a
-substitute for a missing live tail. Candidate events carry the hybrid contract
-version, both cutoffs, handoff, direct IDs and versions, canonical observation
-IDs, availability, source mode, and readiness.
+Candidate events carry the `direct-htf-v1` contract, evaluation cutoff, direct
+bar IDs and versions, source mode, availability, and readiness. The full
+contract is in `specs/direct-htf-engine-v1.md`.
 
 ## Regime Session
 
@@ -339,18 +317,11 @@ Publisher compatibility handling can reconstruct that field from
 `_admission_result.selected_take_profit` for legacy events; events without a
 recoverable target remain invalid and are not delivered.
 
-## PM Sidecar
+## Position Management
 
-The PM sidecar is independent from the orchestrator and is the sole LLM
-position-management authority. It reads executor 1m snapshots, joins the
-originating intent and market context, and writes durable decision files under
-the executor's `data/position-decisions` directory.
-
-`HOLD` is neutral. `REDUCE`, `EXIT`, and `NEAR_TP` are confidence-gated and
-valid for five minutes. The sidecar cannot change entry, stop, target,
-direction, sizing, or hard protections. Positions without an originating
-intent use `strategy_id=unmanaged` and receive a durable neutral `HOLD` without
-an LLM call.
+LLM position management is outside this repository and is owned by the
+`standalone-llm-pm` service. Research Analyst publishes validated trade intents;
+the executor and standalone PM own position lifecycle decisions.
 
 ## Operations
 
@@ -360,7 +331,6 @@ oxmgr logs research-analyst-symbol-rotation --lines 40
 oxmgr logs research-analyst-ws --lines 40
 oxmgr logs research-analyst-regime-session --lines 40
 oxmgr logs research-analyst-orchestrator --lines 40
-oxmgr logs research-analyst-pm-sidecar --lines 40
 ```
 
 `research-analyst-regime-session` is health-checked by
@@ -378,7 +348,7 @@ definition is also in `ops/oxfile.toml`.
 
 For a deployment of explicitly approved code, restart only services importing
 the changed modules. Verify fresh cutoff logs, restart counts, market freshness,
-regime persistence, pipeline completion, publisher state, and PM decisions.
+regime persistence, pipeline completion, and publisher state.
 
 Database retention runs online every six hours on each database owner's writer
 connection. It deletes in small committed batches and never runs `VACUUM` in a

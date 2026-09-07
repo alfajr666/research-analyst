@@ -11,8 +11,6 @@ class StrategyPluginRegistryTests(unittest.TestCase):
     def setUp(self):
         self.prev_enabled = getattr(config, "STRATEGY_ENABLED_IDS", ())
         self.prev_active = getattr(config, "STRATEGY_ACTIVE_IDS", ())
-        self.prev_warmup = config.DEEP_WARMUP_GATE_ENABLED
-        config.DEEP_WARMUP_GATE_ENABLED = False
         self.directory = tempfile.TemporaryDirectory()
         self.db = Path(self.directory.name) / "m.db"
         self.prev_db_path = config.MARKET_DB_PATH
@@ -41,7 +39,6 @@ class StrategyPluginRegistryTests(unittest.TestCase):
     def tearDown(self):
         config.STRATEGY_ENABLED_IDS = self.prev_enabled
         config.STRATEGY_ACTIVE_IDS = self.prev_active
-        config.DEEP_WARMUP_GATE_ENABLED = self.prev_warmup
         config.MARKET_DB_PATH = self.prev_db_path
         config.ANALYST_DB_PATH = self.prev_analyst_db_path
         self.directory.cleanup()
@@ -238,41 +235,6 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)
             config.STRATEGY_ENABLED_IDS = old_enabled
             config.STRATEGY_ACTIVE_IDS = old_active
-
-    def test_deep_warmup_gate_blocks_cold_plugin_scope(self):
-        import strategy_plugins
-
-        old_registry = strategy_plugins._REGISTRY.copy()
-        old_enabled = config.STRATEGY_ENABLED_IDS
-        old_active = config.STRATEGY_ACTIVE_IDS
-        old_static = config.STATIC_SYMBOLS_OVERRIDE
-        old_rotation = config.SYMBOL_ROTATION_ENABLED
-        old_warmup = config.DEEP_WARMUP_GATE_ENABLED
-        calls = []
-        try:
-            strategy_plugins._REGISTRY["failed-break-v3"] = strategy_plugins.StrategyPlugin(
-                "failed-break-v3", "test", ("bars_5m",), (), lambda *_: calls.append(True) or []
-            )
-            config.STRATEGY_ENABLED_IDS = ("failed-break-v3",)
-            config.STRATEGY_ACTIVE_IDS = ("failed-break-v3",)
-            config.STATIC_SYMBOLS_OVERRIDE = "BTC"
-            config.SYMBOL_ROTATION_ENABLED = False
-            config.DEEP_WARMUP_GATE_ENABLED = True
-            result = strategy_plugins._run_plugins_for_cutoff(
-                self.db, "5m:2026-08-17T12:05:00Z", None, False,
-                snapshot={"eval_interval": "5m", "feature_snapshots": {},
-                          "market_db_path": str(self.db)},
-            )
-            assert result["failed-break-v3"] == {"skipped": "deep warmup: no ready assets"}
-            assert calls == []
-        finally:
-            strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)
-            config.STRATEGY_ENABLED_IDS = old_enabled
-            config.STRATEGY_ACTIVE_IDS = old_active
-            config.STATIC_SYMBOLS_OVERRIDE = old_static
-            config.SYMBOL_ROTATION_ENABLED = old_rotation
-            config.DEEP_WARMUP_GATE_ENABLED = old_warmup
-
 
 if __name__ == "__main__":
     unittest.main()

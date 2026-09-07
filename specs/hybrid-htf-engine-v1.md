@@ -2,7 +2,8 @@
 
 ## Status
 
-Implementation specification. This changes the strategy `1h`/`4h` data path to
+Superseded by `direct-htf-engine-v1.md`. Historical implementation record only.
+This changes the strategy `1h`/`4h` data path to
 an engine-owned hybrid series. Strategy plugins remain symbol-dumb and blind to
 the source transition.
 

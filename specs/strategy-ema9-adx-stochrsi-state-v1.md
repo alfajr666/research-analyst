@@ -179,8 +179,8 @@ reported first because it is evaluated first in the Pine strategy. A strategy
 exit must never cancel or move the executor's hard stop or external 2R target.
 
 The implementation exposes this policy as a pure, deterministic evaluator. It
-does not create a second order writer or bypass the locked PM sidecar contract.
-The current PM sidecar remains the authority for advisory management decisions;
+does not create a second order writer or bypass the standalone PM contract.
+The standalone PM remains the authority for advisory management decisions;
 true 1M mechanical decision delivery requires a separate PM cadence/integration
 rollout.
 

@@ -87,22 +87,17 @@ The existing database ownership contract remains mandatory:
 
 | Store | Writer | Readers |
 | --- | --- | --- |
-| `market.sqlite3` | WS gateway | orchestrator, regime worker, PM sidecar |
+| `market.sqlite3` | WS gateway | orchestrator, regime worker |
 | `regime.sqlite3` | regime-session worker | orchestrator, hybrid computation, admission |
-| `analyst.sqlite3` | orchestrator-owned ledger | publisher, PM sidecar, research readers |
+| `analyst.sqlite3` | orchestrator-owned ledger | publisher, research readers |
 | shared intent bus | shared-bus publisher | executor |
 
 The computation layer is read-only with respect to all databases. It must not
 open external market APIs, write market observations, write regime history, or
 write analyst ledgers.
 
-The PM sidecar remains a separate process. It uses the same computation module
-and contracts but has its own bounded in-memory cache. In-memory state must not
-be treated as shared between processes or as a correctness dependency.
-
-The existing `pm_advice` writer ownership must be resolved before implementing
-resource or retention changes. The documented analyst single-writer contract
-and the current PM-sidecar write path must not remain ambiguous.
+Position management is owned by the separate standalone-llm-pm repository. It
+does not share this computation module or the analyst databases.
 
 ## 6. Cutoff Model
 
@@ -490,27 +485,15 @@ one design, not as independent optimizations.
 - Keep 5m volatility updates on the completed 5m cadence.
 - Persist immutable score and gate decisions through the regime writer only.
 
-### 14.4 PM sidecar
+### 14.4 Process inventory
 
-- Reuse the same shared numerical feature module.
-- Cache 4h and 5m frames per asset/cutoff within a PM cycle.
-- Avoid loading the same 4h frame separately for bias and swings.
-- Reuse one LLM client per PM pass where the client contract permits.
-- Continue to emit safe `HOLD` on unavailable or invalid LLM decisions.
-
-### 14.5 Process inventory
-
-The five managed analyst processes remain:
+The four managed analyst processes are:
 
 - symbol rotation;
 - WS gateway;
 - regime session;
 - orchestrator;
-- PM sidecar.
-
-The standalone publisher loop must not run alongside orchestrator publishing.
-Any external `standalone-llm-pm` process must be explicitly classified as
-distinct or retired before PM resource work is considered complete.
+- The standalone-llm-pm process is managed from its own repository.
 
 ## 15. Retention And Compaction
 

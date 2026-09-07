@@ -57,13 +57,9 @@ def _target_sides() -> int:
 
 
 def _source_priority(source: str) -> int:
-    if getattr(config, "COINANALYZE_EVAL_ENABLED", False) and source == "coinalyze":
-        return 0
     if source.endswith("_ws"):
-        return 1
-    if source == getattr(config, "FAILOVER_SOURCE_NAME", "venue_agg_v1"):
-        return 2
-    return 3
+        return 0
+    return 1
 
 
 def _finite_positive(value: object) -> bool:

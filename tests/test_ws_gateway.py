@@ -22,7 +22,6 @@ def test_plan_bybit_streams_shards():
 
 
 def test_gateway_static_mode_is_independent_from_compact_evaluation_universe(monkeypatch):
-    monkeypatch.setattr(config, "WS_SYMBOL_SOURCE", "static")
     monkeypatch.setattr(config, "load_static_symbols", lambda: ["BTC", "ETH", "PAXG", "QQQ", "SOL"])
     monkeypatch.setattr(config, "SYMBOL_ROTATION_ENABLED", False)
     monkeypatch.setattr(config, "EXECUTOR_SNAPSHOT_DIR", "")
@@ -54,37 +53,11 @@ def test_gateway_keeps_fresh_open_position_after_rotation_drop(monkeypatch, tmp_
     assert wsg.select_universe() == ["BTC", "ETH", "SOL"]
 
 
-def test_backfill_candidates_skip_symbols_with_retained_ready_history(monkeypatch, tmp_path):
-    from datetime import datetime, timedelta, timezone
-    from warmup import required_5m_bars
+def test_backfill_hours_follow_execution_contract(monkeypatch):
+    monkeypatch.setattr(config, "WS_BACKFILL_HOURS", 6)
+    monkeypatch.setattr(config, "EXECUTION_BACKFILL_HOURS", 24)
 
-    db = tmp_path / "market.sqlite3"
-    monkeypatch.setattr(config, "MARKET_DB_PATH", str(db))
-    config.init_market_db(db)
-    cutoff = datetime(2026, 9, 7, 12, 5, tzinfo=timezone.utc)
-    conn = config.get_db_connection(db_path=db)
-    try:
-        rows = []
-        for interval, count, minutes in (("5m", required_5m_bars(), 5),):
-            for index in range(count):
-                end = cutoff - timedelta(minutes=minutes * (count - index - 1))
-                rows.append((
-                    f"ready-{interval}-{index}", "bybit_ws", "bybit", "READYUSDT", "READY", "usdt_perp",
-                    interval, end - timedelta(minutes=minutes), end, end, "test",
-                    '{"open":100,"high":101,"low":99,"close":100,"volume":1}',
-                ))
-        conn.executemany(
-            """INSERT INTO source_observations
-               (observation_id, source, venue, native_symbol, asset, market_kind,
-                interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            rows,
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    assert wsg._backfill_candidates(["READY", "COLD"], cutoff) == ["COLD"]
+    assert wsg._backfill_hours() == 24
 
 
 def test_plan_binance_streams_single_conn():
@@ -163,13 +136,89 @@ def test_publish_base_triggers_excludes_future_bars(monkeypatch):
 def test_bar_record_to_row_shape():
     rec = {"native_symbol": "BTCUSDT", "asset": "BTC", "interval": "5m", "open": 1, "high": 2,
            "low": 0.5, "close": 1.5, "volume": 10, "source_start_ms": 1700000000000,
-           "source_end_ms": 1700000300000, "confirm": 1}
+           "source_end_ms": 1700000299999, "confirm": 1}
     row = wsg.bar_record_to_row(rec, "bybit_ws", "bybit", "stream")
     assert row["source"] == "bybit_ws"
     assert row["interval"] == "5m"
+    assert row["source_end"].microsecond == 0
     p = __import__("json").loads(row["payload_json"])
     assert p["open"] == 1.0 and p["close"] == 1.5 and p["open_interest"] is None
     assert row["observation_id"].startswith("b") or len(row["observation_id"]) == 64
+
+
+def test_backfill_replaces_boundary_alias_with_one_logical_observation(tmp_path):
+    import json
+
+    db = tmp_path / "market.sqlite3"
+    config.init_market_db(db)
+    conn = config.get_db_connection(db_path=db)
+    try:
+        conn.execute(
+            """INSERT INTO source_observations
+               (observation_id, source, venue, native_symbol, asset, market_kind,
+                interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "old-stream-alias", "bybit_ws", "bybit", "BTCUSDT", "BTC", "usdt_perp", "5m",
+                "2026-09-04T10:00:00+00:00", "2026-09-04T10:04:59.999000+00:00",
+                "2026-09-04T10:05:00+00:00", "stream",
+                json.dumps({"open": 100, "high": 101, "low": 99, "close": 100, "volume": 1}),
+            ),
+        )
+        row = wsg.bar_record_to_row(
+            {
+                "native_symbol": "BTCUSDT", "asset": "BTC", "interval": "5m",
+                "open": 100, "high": 102, "low": 99, "close": 101, "volume": 2,
+                "source_start_ms": 1788516000000, "source_end_ms": 1788516300000,
+            },
+            "bybit_ws", "bybit", "backfill",
+        )
+        wsg._executemany_rows(conn, [row])
+        logical_rows = conn.execute(
+            """SELECT source_end, retrieval_kind, payload_json
+                 FROM source_observations
+                WHERE asset='BTC' AND interval='5m'"""
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert len(logical_rows) == 1
+    assert logical_rows[0][0] == "2026-09-04T10:05:00+00:00"
+    assert logical_rows[0][1] == "backfill"
+    assert json.loads(logical_rows[0][2])["close"] == 101.0
+
+
+def test_repair_existing_boundary_aliases_requires_exact_row(tmp_path):
+    db = tmp_path / "market.sqlite3"
+    config.init_market_db(db)
+    conn = config.get_db_connection(db_path=db)
+    try:
+        rows = [
+            (
+                "stream-alias", "bybit_ws", "bybit", "BTCUSDT", "BTC", "usdt_perp", "5m",
+                "2026-09-04 10:00:00+00:00", "2026-09-04 10:04:59.999000+00:00",
+                "2026-09-04T10:05:00+00:00", "stream", "{}",
+            ),
+            (
+                "backfill-exact", "bybit_ws", "bybit", "BTCUSDT", "BTC", "usdt_perp", "5m",
+                "2026-09-04T10:00:00+00:00", "2026-09-04T10:05:00+00:00",
+                "2026-09-04T10:05:00+00:00", "backfill", "{}",
+            ),
+        ]
+        conn.executemany(
+            """INSERT INTO source_observations
+               (observation_id, source, venue, native_symbol, asset, market_kind,
+                interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+        assert wsg._repair_existing_boundary_aliases(conn) == 1
+        assert conn.execute(
+            "SELECT observation_id FROM source_observations WHERE interval='5m' ORDER BY observation_id"
+        ).fetchall() == [("backfill-exact",)]
+    finally:
+        conn.close()
 
 
 def test_resample_and_persist_writes_derived(tmp_path, monkeypatch):
@@ -178,7 +227,7 @@ def test_resample_and_persist_writes_derived(tmp_path, monkeypatch):
     config.init_db(str(db))
     conn = config.get_db_connection(db_path=str(db))
     try:
-        # Insert 5m bars for BTC across ~6 hours (every 5m) -> derives 15m/1h/4h.
+        # Insert 5m bars for BTC across ~6 hours (every 5m) -> derives 15m only.
         now = dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
         rows = []
         t = now - dt.timedelta(minutes=360)
@@ -199,16 +248,21 @@ def test_resample_and_persist_writes_derived(tmp_path, monkeypatch):
 
         written = wsg.resample_and_persist(conn, ["BTC"], now, "bybit_ws")
         assert written > 0, written
-        # 5m is streamed (not derived); 15m/1h/4h are derived from 5m.
+        # 5m is streamed (not derived); 15m is the only auxiliary frame.
         cnt5 = conn.execute(
             "SELECT count(*) FROM source_observations WHERE asset='BTC' AND interval='5m' AND retrieval_kind='backfill'",
         ).fetchone()[0]
         assert cnt5 > 0, cnt5
-        for tf in ("15m", "1h", "4h"):
+        for tf in ("15m",):
             cnt = conn.execute(
                 "SELECT count(*) FROM source_observations WHERE asset='BTC' AND interval=? AND source='bybit_ws'",
                 (tf,)).fetchone()[0]
             assert cnt > 0, (tf, cnt)
+        for tf in ("1h", "4h"):
+            cnt = conn.execute(
+                "SELECT count(*) FROM source_observations WHERE asset='BTC' AND interval=? AND source='bybit_ws'",
+                (tf,)).fetchone()[0]
+            assert cnt == 0, (tf, cnt)
     finally:
         conn.close()
 

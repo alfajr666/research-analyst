@@ -12,7 +12,7 @@ from strategies.v2.rsi_reclaim_v1 import (
     evaluate_symbol,
     rsi_series,
 )
-from strategy_v2_context import has_active_event, ema_last, atr_last
+from strategy_v2_context import has_active_event, ema_last, atr_last, resample_ohlcv
 from strategy_plugins import KNOWN_STRATEGIES, load_enabled_plugins
 import config
 
@@ -119,6 +119,8 @@ class RsiReclaimV1Tests(unittest.TestCase):
         cfg = _loose_cfg()
         event = evaluate_symbol(
             bars,
+            bars_1h=resample_ohlcv(bars, "1h"),
+            bars_4h=resample_ohlcv(bars, "4h"),
             asset="SOL",
             symbol="SOLUSDT_PERP.A",
             cutoff=cutoff,

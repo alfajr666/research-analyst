@@ -245,7 +245,7 @@ The following remain outside this resolver:
 - hard stop-loss and fixed take-profit enforcement
 - LLM authority over deterministic event fields
 
-The LLM PM sidecar may manage an active position with `HOLD`, `REDUCE`, or
+The standalone PM may manage an active position with `HOLD`, `REDUCE`, or
 `EXIT`, but it cannot weaken executor hard-stop or fixed-take-profit protections.
 
 ## Test Requirements
@@ -269,7 +269,7 @@ Tests must prove:
 
 - `specs/adr-strategy-confluence-scoring.md`
 - `specs/research-to-bot-execution-adapter.md`
-- `specs/llm-position-sidecar.md`
+- standalone-llm-pm repository
 - `specs/alpha-outcome-policy.md`
 - `agent.md`
 - `README.md`

@@ -1,6 +1,7 @@
 """FVG and Order Block zone detection per data-platform-strategy-plugins spec.
 
-Computes on resampled 1h/4h bars from CoinAnalyze data.
+Computes on the already materialized, cutoff-bound 1h/4h bars supplied by the
+caller.
 Zones are advisory (support/neutral/contradict/unavailable).
 Each snapshot keeps at most the 3 most recent active zones per asset/tf/dir/type.
 """
@@ -23,13 +24,6 @@ def compute_atr(df: pl.DataFrame, period: int = 14) -> float:
     df = df.with_columns(pl.max_horizontal("tr1", "tr2", "tr3").alias("tr"))
     atr = df["tr"].tail(period).mean()
     return float(atr) if atr and atr > 0 else 1.0
-
-
-def _resample_to_higher(df: pl.DataFrame, every: str = "1h") -> pl.DataFrame:
-    if df.is_empty():
-        return df
-    from strategy_v2_context import resample_ohlcv
-    return resample_ohlcv(df, every)
 
 
 def detect_fvg(bars: pl.DataFrame, atr: float | None = None, min_gap_mult: float = 0.25, tf: str = "1h") -> List[Dict[str, Any]]:

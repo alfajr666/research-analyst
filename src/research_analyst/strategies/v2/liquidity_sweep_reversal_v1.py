@@ -43,7 +43,6 @@ from strategy_v2_context import (
     evaluation_symbols,
     load_15m_bars,
     load_bars_for_interval,
-    resample_ohlcv,
     resolve_bias,
     snapshot_zones_for_asset,
     structure_bias_4h,
@@ -149,6 +148,8 @@ def _avg_body_20(bars: pl.DataFrame) -> float:
 def evaluate_symbol(
     bars_15m: pl.DataFrame,
     *,
+    bars_1h=None,
+    bars_4h=None,
     asset: str,
     symbol: str,
     cutoff: datetime,
@@ -175,8 +176,8 @@ def evaluate_symbol(
     if observed_at.tzinfo is None:
         observed_at = observed_at.replace(tzinfo=timezone.utc)
 
-    bars_1h = resample_ohlcv(bars_15m, "1h")
-    bars_4h = resample_ohlcv(bars_15m, "4h")
+    if bars_1h is None or bars_4h is None:
+        return None
     if bars_4h.height < 50 or bars_1h.height < 50:
         return None
 
@@ -450,6 +451,8 @@ def evaluate(
 
     for native_symbol, asset in symbols:
         bars = load_bars_for_interval(conn, native_symbol, eval_interval, cutoff)
+        bars_1h = load_bars_for_interval(conn, native_symbol, "1h", cutoff)
+        bars_4h = load_bars_for_interval(conn, native_symbol, "4h", cutoff)
         if bars.height < 60:
             continue
         zones = snapshot_zones_for_asset(snapshot or {}, asset) if snapshot else None
@@ -461,6 +464,8 @@ def evaluate(
 
         cand = evaluate_symbol(
             bars,
+            bars_1h=bars_1h,
+            bars_4h=bars_4h,
             asset=asset,
             symbol=native_symbol,
             cutoff=cutoff,

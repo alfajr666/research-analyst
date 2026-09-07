@@ -55,7 +55,7 @@ _HEALTH = {
     "last_message_at": None, "last_bar_at": None, "active_connections": 0,
     "reconnect_count": 0, "last_error": None, "subscribed_count": 0,
     "feed_id": None, "effective_universe_version": None,
-    "fallback_state": None, "warmup": {}, "subscribed_symbols": [],
+    "fallback_state": None, "subscribed_symbols": [],
     "topic_count": 0, "last_backfill": {},
 }
 
@@ -95,39 +95,6 @@ BINANCE_TF_STREAM = {"5m": "5m"}
 # --------------------------------------------------------------------------- #
 # Universe selection
 # --------------------------------------------------------------------------- #
-def load_rotated_bases() -> List[str]:
-    """Bases fed by the rotation feed (analog of binance_oi_rotation) when enabled.
-
-    Tolerant: returns [] if the feed file is missing or unparsable.
-    """
-    path = getattr(config, "BINANCE_OI_ROTATION_FEED_PATH", "")
-    p = Path(path) if path else None
-    if not p or not p.exists():
-        return []
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    out: List[str] = []
-    if isinstance(data, list):
-        items = data
-    elif isinstance(data, dict):
-        items = data.get("candidates") or data.get("symbols") or []
-    else:
-        return []
-    for it in items:
-        if isinstance(it, str):
-            sym = it
-        elif isinstance(it, dict):
-            sym = it.get("symbol") or it.get("asset") or it.get("native_symbol") or ""
-        else:
-            continue
-        sym = str(sym).upper().replace("USDT", "").replace("_PERP", "").replace(".A", "")
-        if sym:
-            out.append(sym)
-    return out
-
-
 def _open_position_assets(now: datetime | None = None) -> set[str]:
     """Keep fresh open positions subscribed after rotation removes their assets."""
     snapshot_dir = getattr(config, "EXECUTOR_SNAPSHOT_DIR", "") or ""
@@ -405,9 +372,16 @@ def _row_timestamp(value: Any) -> datetime:
     return _ts(value)
 
 
+def _canonical_bar_end(end: datetime, interval: str) -> datetime:
+    """Normalize Bybit's closed-candle end-minus-one-millisecond form."""
+    if interval == "5m" and end.microsecond == 999000:
+        return end + timedelta(milliseconds=1)
+    return end
+
+
 def bar_record_to_row(rec: Dict[str, Any], source: str, venue: str, retrieval_kind: str) -> Dict[str, Any]:
     """Shape a normalized kline record into a source_observations row dict."""
-    end = _ts(rec["source_end_ms"])
+    end = _canonical_bar_end(_ts(rec["source_end_ms"]), rec["interval"])
     start = _ts(rec["source_start_ms"]) if rec.get("source_start_ms") else end
     payload = {
         "open": rec["open"], "high": rec["high"], "low": rec["low"], "close": rec["close"],
@@ -459,78 +433,6 @@ def flush_pending() -> int:
     return len(rows)
 
 
-def _ensure_deep_backfill_jobs(symbols: List[str]) -> int:
-    """Record rotation membership before any provider backfill starts."""
-    from warmup import ensure_backfill_jobs
-
-    conn = config.get_db_connection(db_path=config.MARKET_DB_PATH)
-    try:
-        created = ensure_backfill_jobs(conn, symbols)
-        return created
-    finally:
-        conn.close()
-
-
-def _refresh_deep_backfill_jobs(symbols: List[str]) -> dict[str, str]:
-    """Refresh durable warmup state from the latest completed 5m boundary."""
-    from warmup import ensure_backfill_jobs, ready_assets, refresh_backfill_jobs
-
-    now = datetime.now(timezone.utc)
-    cutoff = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
-    conn = config.get_db_connection(db_path=config.MARKET_DB_PATH)
-    try:
-        ensure_backfill_jobs(conn, symbols, now=now)
-        _, details = ready_assets(conn, symbols, cutoff)
-        _HEALTH["warmup"] = details
-        return refresh_backfill_jobs(conn, symbols, cutoff, now=now)
-    finally:
-        conn.close()
-
-
-def _backfill_candidates(symbols: List[str], cutoff: datetime | None = None) -> List[str]:
-    """Return symbols missing complete, fresh history for any streamed interval."""
-    from market_coverage import assess_db_coverage
-    from warmup import ready_assets
-
-    cutoff = cutoff or datetime.now(timezone.utc).replace(
-        minute=datetime.now(timezone.utc).minute // 5 * 5,
-        second=0,
-        microsecond=0,
-    )
-    conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
-    try:
-        ready, details = ready_assets(conn, symbols, cutoff)
-        _HEALTH["warmup"] = details
-        ready_set = set(ready)
-        candidates = [symbol for symbol in symbols if symbol not in ready_set]
-        interval_minutes = {"5m": 5}
-        for symbol in symbols:
-            if symbol in candidates:
-                continue
-            for interval in STREAMED_TFS:
-                if interval == "5m":
-                    continue
-                minutes = interval_minutes.get(interval)
-                if minutes is None:
-                    candidates.append(symbol)
-                    break
-                expected = max(2, min(1000, int(config.WS_BACKFILL_HOURS) * 60 // minutes))
-                coverage = assess_db_coverage(
-                    conn,
-                    asset=symbol,
-                    interval=interval,
-                    cutoff=cutoff,
-                    expected_bars=expected,
-                    max_age_seconds=float(getattr(config, "DATA_FRESHNESS_MAX_SECONDS", 600)),
-                )
-                if coverage.status != "covered":
-                    candidates.append(symbol)
-                    break
-        return candidates
-    finally:
-        conn.close()
-
-
 def _record_backfill(provider: str, symbols: List[str], rows: int, started: float) -> None:
     _HEALTH["last_backfill"] = {
         "provider": provider,
@@ -539,6 +441,11 @@ def _record_backfill(provider: str, symbols: List[str], rows: int, started: floa
         "rows": rows,
         "duration_seconds": round(max(0.0, time.monotonic() - started), 3),
     }
+
+
+def _backfill_hours() -> int:
+    """Fetch recent 5m history for execution only."""
+    return max(int(config.WS_BACKFILL_HOURS), int(config.EXECUTION_BACKFILL_HOURS))
 
 
 def backfill_via_rest(provider: str, symbols: List[str], hours: int,
@@ -623,7 +530,77 @@ def backfill_via_rest(provider: str, symbols: List[str], hours: int,
 # --------------------------------------------------------------------------- #
 # Writer task: single DB writer (live bars + resample from 5m)
 # --------------------------------------------------------------------------- #
+def _remove_boundary_aliases(conn, rows: List[Dict[str, Any]]) -> None:
+    """Remove pre-normalization aliases before inserting their canonical row."""
+    for row in rows:
+        if row.get("interval") != "5m":
+            continue
+        end = _row_timestamp(row["source_end"])
+        if end.microsecond != 0:
+            continue
+        alias_end = (end - timedelta(milliseconds=1)).isoformat()
+        conn.execute(
+            """DELETE FROM source_observations
+                WHERE source=? AND venue=? AND native_symbol=? AND interval='5m'
+                  AND source_end=? AND observation_id<>?""",
+            (
+                row["source"], row["venue"], row["native_symbol"],
+                alias_end, row["observation_id"],
+            ),
+        )
+
+
+def _repair_existing_boundary_aliases(conn) -> int:
+    """Drop old aliases only when their exact canonical row is already present."""
+    rows = conn.execute(
+        """SELECT observation_id, source, venue, native_symbol, source_end
+             FROM source_observations
+            WHERE interval='5m' AND source LIKE '%_ws'
+              AND source_end LIKE '%.999000%'"""
+    ).fetchall()
+    if not rows:
+        return 0
+    candidate_times = sorted({
+        _row_timestamp(source_end) + timedelta(milliseconds=1)
+        for _, _, _, _, source_end in rows
+    })
+    candidate_values = [
+        value
+        for timestamp in candidate_times
+        for value in (timestamp.isoformat(), timestamp.isoformat().replace("T", " "))
+    ]
+    exact_keys = {
+        (source, venue, native_symbol, _row_timestamp(source_end))
+        for start in range(0, len(candidate_values), 500)
+        for source, venue, native_symbol, source_end in conn.execute(
+            """SELECT source, venue, native_symbol, source_end
+                 FROM source_observations
+                WHERE interval='5m' AND source_end IN ({})""".format(
+                    ",".join("?" for _ in candidate_values[start:start + 500])
+                ),
+            candidate_values[start:start + 500],
+        ).fetchall()
+    }
+    aliases = [
+        (observation_id,)
+        for observation_id, source, venue, native_symbol, source_end in rows
+        if _row_timestamp(source_end).microsecond == 999000
+        and (
+            source, venue, native_symbol,
+            _row_timestamp(source_end) + timedelta(milliseconds=1),
+        ) in exact_keys
+    ]
+    if aliases:
+        conn.executemany(
+            "DELETE FROM source_observations WHERE observation_id=?",
+            aliases,
+        )
+        conn.commit()
+    return len(aliases)
+
+
 def _executemany_rows(conn, rows: List[Dict[str, Any]]) -> None:
+    _remove_boundary_aliases(conn, rows)
     conn.executemany(
         """
         INSERT OR IGNORE INTO source_observations
@@ -663,7 +640,7 @@ def _publish_base_triggers(rows: List[Dict[str, Any]]) -> None:
 
 
 def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) -> int:
-    """Build 15m/1h/4h derived bars from recent 5m and upsert them.
+    """Build the auxiliary 15m frame from recent committed 5m bars.
 
     5m is streamed directly. Derived bars keep the originating ws source
     (e.g. bybit_ws) so the emit-gate purity check (pure_*) and
@@ -698,7 +675,7 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
         ).fetchone()
         if stamped and stamped[0] and stamped[0] == stamped[1]:
             df = df.with_columns((pl.col("timestamp") + pl.duration(minutes=5)).alias("timestamp"))
-        for every in ("15m", "1h", "4h"):
+        for every in ("15m",):
             state_key = (asset, every, ws_source)
             previous = _RESAMPLE_STATE.get(state_key)
             start = (
@@ -711,7 +688,7 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
             )
             # Include the preceding bucket so the first repaired bucket has a
             # complete source window, then replace only affected derived rows.
-            source_start = start - timedelta(minutes={"15m": 15, "1h": 60, "4h": 240}[every])
+            source_start = start - timedelta(minutes=15)
             source_df = df.filter(pl.col("timestamp") >= source_start)
             res = resample_ohlcv(source_df, every)
             if res.is_empty():
@@ -733,7 +710,7 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
                     "observation_id": make_observation_id(ws_source, "derived", asset + "USDT", every, end),
                     "source": ws_source, "venue": "derived", "native_symbol": asset + "USDT",
                     "asset": asset, "market_kind": MARKET_KIND, "interval": every,
-                    "source_start": end - timedelta(minutes={"15m": 15, "1h": 60, "4h": 240}[every]),
+                    "source_start": end - timedelta(minutes=15),
                     "source_end": end,
                     "retrieved_at": now, "retrieval_kind": "resampled",
                     "payload_json": json.dumps({
@@ -779,27 +756,6 @@ async def writer_task(queue: asyncio.Queue, bases: List[str], ws_source: str) ->
         while True:
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=1.0)
-                if isinstance(item, dict) and item.get("_writer_command"):
-                    try:
-                        if item["_writer_command"] == "ensure_backfill_jobs":
-                            from warmup import ensure_backfill_jobs
-                            result = ensure_backfill_jobs(conn, item["symbols"])
-                        elif item["_writer_command"] == "refresh_backfill_jobs":
-                            from warmup import ensure_backfill_jobs, ready_assets, refresh_backfill_jobs
-                            ensure_backfill_jobs(conn, item["symbols"], now=item["now"])
-                            _, details = ready_assets(conn, item["symbols"], item["cutoff"])
-                            _HEALTH["warmup"] = details
-                            result = refresh_backfill_jobs(
-                                conn, item["symbols"], item["cutoff"], now=item["now"]
-                            )
-                        else:
-                            raise ValueError(f"unknown writer command: {item['_writer_command']}")
-                        item["future"].set_result(result)
-                    except Exception as exc:
-                        item["future"].set_exception(exc)
-                    finally:
-                        queue.task_done()
-                    continue
                 batch.append(item)
                 if len(batch) >= 500:
                     _executemany_rows(conn, batch)
@@ -922,21 +878,6 @@ async def _run(provider: str, bases: List[str], queue: asyncio.Queue, source: st
         await _binance_conn(streams, queue, source)
 
 
-async def _writer_command(queue: asyncio.Queue, command: str, symbols: List[str],
-                          *, cutoff: datetime | None = None,
-                          now: datetime | None = None) -> Any:
-    loop = asyncio.get_running_loop()
-    future = loop.create_future()
-    queue.put_nowait({
-        "_writer_command": command,
-        "symbols": list(symbols),
-        "cutoff": cutoff,
-        "now": now or datetime.now(timezone.utc),
-        "future": future,
-    })
-    return await future
-
-
 async def _supervise_provider(provider: str, supervisor: SubscriptionSupervisor,
                               queue: asyncio.Queue, source: str) -> None:
     """Keep live streams aligned with the current durable feed version."""
@@ -954,9 +895,7 @@ async def _supervise_provider(provider: str, supervisor: SubscriptionSupervisor,
             result = supervisor.reconcile(desired, feed)
             observed_feed_id = current_identity
             if result["added"]:
-                await _writer_command(queue, "ensure_backfill_jobs", result["added"])
-                deep_hours = max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS)
-                backfill_symbols = _backfill_candidates(result["added"])
+                backfill_symbols = result["added"]
                 loop = asyncio.get_running_loop()
                 if backfill_symbols:
                     started = time.monotonic()
@@ -964,20 +903,11 @@ async def _supervise_provider(provider: str, supervisor: SubscriptionSupervisor,
                         backfill_via_rest,
                         provider,
                         backfill_symbols,
-                        deep_hours,
+                        _backfill_hours(),
                         lambda row: loop.call_soon_threadsafe(queue.put_nowait, row),
                     )
                     _record_backfill(provider, backfill_symbols, written, started)
                 await queue.join()
-                cutoff = datetime.now(timezone.utc).replace(
-                    minute=datetime.now(timezone.utc).minute // 5 * 5,
-                    second=0,
-                    microsecond=0,
-                )
-                await _writer_command(
-                    queue, "refresh_backfill_jobs", result["added"],
-                    cutoff=cutoff,
-                )
             print(
                 f"[ws_gateway] reconcile feed={result['feed_id']} "
                 f"added={len(result['added'])} removed={len(result['removed'])} "
@@ -999,9 +929,16 @@ async def _supervise_provider(provider: str, supervisor: SubscriptionSupervisor,
 
 async def run_async() -> None:
     config.init_market_db()
+    repair_conn = config.get_db_connection(db_path=config.MARKET_DB_PATH)
+    try:
+        repaired = _repair_existing_boundary_aliases(repair_conn)
+    finally:
+        repair_conn.close()
+    if repaired:
+        print(f"[ws_gateway] repaired {repaired} legacy 5m boundary aliases")
     bases, feed = subscription_state()
     if not bases:
-        print("[ws_gateway] empty universe; check WS_SYMBOL_SOURCE / static_universe.json")
+        print("[ws_gateway] empty universe; check static_universe.json and symbol rotation feed")
         return
     print(f"[ws_gateway] universe={len(bases)} symbols; bybit={config.WS_BYBIT_ENABLED} binance={config.WS_BINANCE_ENABLED}; streamed TFs={STREAMED_TFS}")
     _HEALTH["subscribed_count"] = len(bases)
@@ -1011,22 +948,18 @@ async def run_async() -> None:
     _HEALTH["effective_universe_version"] = feed.get("effective_universe_version")
     _HEALTH["fallback_state"] = feed.get("fallback_reason")
 
-    _ensure_deep_backfill_jobs(bases)
-    _refresh_deep_backfill_jobs(bases)
-    backfill_symbols = _backfill_candidates(bases)
+    backfill_symbols = bases
 
     if config.WS_BYBIT_ENABLED:
         started = time.monotonic()
-        n = backfill_via_rest("bybit", backfill_symbols, max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS))
+        n = backfill_via_rest("bybit", backfill_symbols, _backfill_hours())
         _record_backfill("bybit", backfill_symbols, n, started)
         print(f"[ws_gateway] bybit backfill wrote {n} bars")
-        _refresh_deep_backfill_jobs(bases)
     if config.WS_BINANCE_ENABLED:
         started = time.monotonic()
-        n = backfill_via_rest("binance", backfill_symbols, max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS))
+        n = backfill_via_rest("binance", backfill_symbols, _backfill_hours())
         _record_backfill("binance", backfill_symbols, n, started)
         print(f"[ws_gateway] binance backfill wrote {n} bars")
-        _refresh_deep_backfill_jobs(bases)
 
     queue: asyncio.Queue = asyncio.Queue()
     ws_source = config.BYBIT_WS_SOURCE if config.WS_BYBIT_ENABLED else config.BINANCE_WS_SOURCE

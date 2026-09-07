@@ -342,14 +342,13 @@ Normative current runtime sources:
 - `CONTEXT.md`
 - `specs/trade-admission-and-clash-resolution.md`
 - `specs/strategy-fidelity-repair-and-expansion-v1.md`
-- `specs/llm-position-sidecar.md`
-- `specs/pm-sidecar-llm-only-v1.md`
+- standalone-llm-pm repository for position-management decisions
 
 Historical or superseded documents remain useful for background but cannot
 override this register where they conflict:
 
 - `specs/data-platform-strategy-plugins.md` for historical zone details;
 - `specs/strategy-v2-shared-library.md` for older advisory semantics;
-- `specs/mechanical-exit-sidecar-v1.md` for superseded mechanical PM behavior;
+- `specs/archive/mechanical-exit-sidecar-v1.md` for superseded mechanical PM behavior;
 - `docs/DESIGN.md` where its older universe, timer, or ownership descriptions
   differ from current runtime notes.

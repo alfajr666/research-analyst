@@ -206,9 +206,8 @@ Open position
 ```
 
 The deterministic exit evaluator returns a policy signal only. It does not
-place orders, move protection, or create a second order writer. The current
-LLM-only PM sidecar remains the live management authority until a compatible
-mechanical policy integration is separately approved.
+place orders, move protection, or create a second order writer. Position
+management is owned by the standalone-llm-pm and executor services.
 
 ## Candidate Contract
 

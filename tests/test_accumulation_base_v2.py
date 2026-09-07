@@ -9,7 +9,7 @@ import polars as pl
 
 import config
 from strategies.v2.accumulation_base_v2 import AccV2Config, STRATEGY_ID, evaluate, evaluate_symbol
-from strategy_v2_context import has_active_event, resolve_bias
+from strategy_v2_context import has_active_event, resolve_bias, resample_ohlcv
 
 
 def _bars_15m(
@@ -94,6 +94,8 @@ class AccumulationBaseV2Tests(unittest.TestCase):
         cfg = AccV2Config(n=12, k=8.0, d_max=8.0, r_max=20.0, s_min=0.0, g=2.0)
         event = evaluate_symbol(
             bars,
+            bars_1h=resample_ohlcv(bars, "1h"),
+            bars_4h=resample_ohlcv(bars, "4h"),
             asset="SOL",
             symbol="SOLUSDT_PERP.A",
             cutoff=cutoff,

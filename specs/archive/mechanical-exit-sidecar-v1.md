@@ -1,9 +1,12 @@
-# Mechanical Exit and LLM Management Sidecar v1
+# Retired: Mechanical Exit and LLM Management Sidecar v1
+
+This historical analyst-local sidecar design is retained for audit reference.
+Position management is now owned by the standalone-llm-pm service.
 
 ## Status
 
 Superseded by the locked LLM-only PM contract in
-`specs/llm-position-sidecar.md`. Retained as historical design context; its
+`specs/archive/llm-position-sidecar.md`. Retained as historical design context; its
 mechanical-veto behavior is not part of the current target architecture.
 
 Implementation specification for a universal position-management sidecar shared

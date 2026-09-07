@@ -125,4 +125,4 @@ admission later rejects.
   its emitted target or stop.
 - Duplicate cutoff execution produces no duplicate alpha event or intent.
 - No event uses an unfinished higher-timeframe bar.
-- Existing PM sidecar behavior continues to use the originating strategy ID.
+- Standalone PM behavior continues to use the originating strategy ID.

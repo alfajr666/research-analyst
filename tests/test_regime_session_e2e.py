@@ -93,7 +93,6 @@ def test_enforced_regime_scope_filters_each_plugin_by_asset_family(monkeypatch, 
     old_enabled = config.STRATEGY_ENABLED_IDS
     old_active = config.STRATEGY_ACTIVE_IDS
     old_analyst_db = config.ANALYST_DB_PATH
-    monkeypatch.setattr(config, "DEEP_WARMUP_GATE_ENABLED", False)
     config.ANALYST_DB_PATH = str(analyst_db)
     cutoff = datetime(2026, 9, 4, 13, 40, tzinfo=timezone.utc)
     market_conn = config.get_db_connection(db_path=market_db)

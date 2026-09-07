@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import config
 from db_maintenance import prune_analyst_db, prune_market_db, prune_regime_db
+from regime_history import init_regime_history_schema
 from regime_session import init_regime_db
 
 
@@ -152,6 +153,33 @@ def test_regime_retention_removes_old_scores_and_gates(tmp_path, monkeypatch):
         assert result["regime_gate_decisions"] == 1
         assert conn.execute("SELECT COUNT(*) FROM regime_scores").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM regime_gate_decisions").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_regime_retention_uses_direct_htf_windows(tmp_path, monkeypatch):
+    db = tmp_path / "regime.sqlite3"
+    init_regime_db(db)
+    conn = config.get_db_connection(db_path=db)
+    init_regime_history_schema(conn)
+    monkeypatch.setattr(config, "DIRECT_HTF_1H_RETAIN_DAYS", 14)
+    now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    old = (now - timedelta(days=15)).isoformat()
+    recent = (now - timedelta(days=1)).isoformat()
+    try:
+        for bar_id, source_end in (("old-direct", old), ("recent-direct", recent)):
+            conn.execute(
+                """INSERT INTO regime_1h_bars
+                   (bar_id, asset, bar_end, source, venue, open, high, low, close,
+                    volume, source_start, source_end, request_id, retrieved_at, bar_version)
+                   VALUES (?, 'BTC', ?, 'bybit_rest', 'bybit', 99, 101, 98, 100,
+                           1, ?, ?, NULL, ?, 'bybit-rest-1h-v1')""",
+                (bar_id, source_end, source_end, source_end, source_end),
+            )
+        conn.commit()
+        result = prune_regime_db(conn, now)
+        assert result["regime_1h_bars"] == 1
+        assert conn.execute("SELECT COUNT(*) FROM regime_1h_bars").fetchone()[0] == 1
     finally:
         conn.close()
 

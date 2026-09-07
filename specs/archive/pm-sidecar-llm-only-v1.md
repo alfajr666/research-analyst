@@ -1,9 +1,12 @@
-# LLM-Only Position Management v1
+# Retired: LLM-Only Position Management v1
+
+This analyst-local sidecar blueprint is retained for historical reference. The
+standalone-llm-pm service is now the position-management implementation.
 
 ## Status
 
 Locked design specification. This document is the implementation blueprint for
-the PM contract recorded in `specs/llm-position-sidecar.md`.
+the PM contract recorded in `specs/archive/llm-position-sidecar.md`.
 
 This is a design lock, not an assertion that the current runtime already
 implements every requirement. The implementation must land in small, verified
@@ -620,5 +623,5 @@ considered live:
 - The executor's existing near-TP behavior is overloaded onto `HOLD` and must
   become explicit `NEAR_TP` behavior.
 - Several older documents describe the superseded mechanical-veto contract;
-  this specification and `specs/llm-position-sidecar.md` are authoritative for
+ this specification and `specs/archive/llm-position-sidecar.md` are authoritative for
   the target design.

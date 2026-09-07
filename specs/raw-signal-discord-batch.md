@@ -346,6 +346,6 @@ Tests must prove:
 - `specs/trade-admission-and-clash-resolution.md`
 - `specs/adr-strategy-confluence-scoring.md`
 - `specs/research-to-bot-execution-adapter.md`
-- `specs/llm-position-sidecar.md`
+- standalone-llm-pm repository
 - `README.md`
 - `agent.md`

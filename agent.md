@@ -15,7 +15,8 @@ service has no exchange credentials and never sizes or places orders.
   raw signals, alpha, and delivery records.
 - `bybit-executor` owns credentials, sizing, leverage, venue checks, orders,
   fills, lifecycle, protective SL, and fixed TP.
-- The PM sidecar reads executor snapshots and emits advice; it does not trade.
+- `standalone-llm-pm` owns position-management advice; this repository does not
+  run a PM loop or write executor position-decision files.
 
 Never add `quantity`, `risk_amount`, leverage, `order_type`, or credentials to an analyst
 intent. Never call old multi-target adapters for the live compact path.
@@ -107,18 +108,12 @@ selects the entry order type and the executor decides how to size, place,
 protect, reconcile, and close the position. A written intent is not an
 acceptance, order, or fill.
 
-## PM sidecar
+## Position management
 
-With `PM_SIDECAR_ENABLED=true`, the sidecar reads fresh `OPEN` positions from
-`<snapshot-root>/<exchange>/<account>/latest.json` and runs on a five-minute
-decision cadence. It emits `HOLD`, `REDUCE`, `EXIT`, or `NEAR_TP` with a short
-reason. `HOLD` is a no-op and needs no confidence; action-bearing decisions
-require the configured `PM_ACTION_CONFIDENCE` threshold. Any missing LLM key,
-timeout, exception, unknown action, invalid confidence, or invalid response
-becomes an auditable `HOLD`. Decisions are valid for exactly five minutes.
-`NEAR_TP` is distinct from `HOLD`: the executor checks the venue mark against
-the immutable original TP and performs at most one reduce-only action. PM advice
-cannot weaken hard SL/TP or alter deterministic event fields.
+LLM position management is owned by the separate `standalone-llm-pm` service.
+This repository publishes validated trade intents only; it does not run a PM
+loop or write executor position-decision files. The executor remains
+authoritative for venue state, protection, hard exits, and execution.
 
 ## Raw Discord batches
 
@@ -166,8 +161,9 @@ next unclaimed batch and do not cause a second strategy evaluation.
 
 ## Operations and safety
 
-Use host `oxmgr` definitions for one gateway, one orchestrator, and one PM
-sidecar role. The gateway publishes durable completed-5m evaluation triggers and
+Use host `oxmgr` definitions for one gateway and one orchestrator role. The
+standalone-llm-pm service is managed separately. The gateway publishes durable
+completed-5m evaluation triggers and
 the orchestrator consumes them; there is no timer-based evaluation fallback. Do
 not launch duplicate database writers. Keep intent delivery off until paper
 execution and protection checks pass. Keep secrets and runtime artifacts

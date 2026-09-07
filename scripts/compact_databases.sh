@@ -81,7 +81,6 @@ SERVICES=(
   research-analyst-regime-session
   research-analyst-ws
   research-analyst-symbol-rotation
-  research-analyst-pm-sidecar
 )
 REQUIRED_SERVICES=(
   research-analyst-orchestrator

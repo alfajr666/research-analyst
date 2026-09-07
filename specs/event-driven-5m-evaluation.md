@@ -227,7 +227,8 @@ an executable opportunity.
 The first target is 5m only.
 
 - 1m observations are not part of the active strategy engine contract.
-- 15m/1h/4h derived bars remain enrichment data.
+- 15m may remain auxiliary data derived from committed 5m bars; 1h/4h setup
+  history is native regime-owned data and must not be derived from 5m.
 - 15m evaluation should not be triggered by the 5m event unless explicitly
   configured as a separate interval trigger.
 - `invoke_plugins_for_intervals` should eventually support an explicit interval

@@ -2,8 +2,8 @@
 
 > Target architecture for the re-purposed `research-analyst` repo (formerly "Alpha
 > Producer"). This document is the consolidated design reference. It is grounded in
-> the actual code as scanned; sections that are *target-only* (not yet built) are
-> marked **[TARGET]** and link to their spec in `specs/`.
+> the actual code as scanned; historical migration notes are retained in the
+> relevant specs where they provide audit context.
 
 ---
 
@@ -13,15 +13,15 @@ A research-grade, venue-neutral **discovery + strategy-evaluation** engine for
 crypto perpetuals. It continuously:
 
 1. Maintains a market-data feed for a **static 97-symbol universe** (sourced from
-    an approved tradeable-assets snapshot), with optional **rotated symbols** when enabled.
+    an approved tradeable-assets snapshot), with an optional **performance-rotated subscription feed**.
 2. Evaluates **strategies as plugins** on **5m / 15m** bars, using **HTF
-   (1h/4h) swing + FVG/OB** context resampled from the base feed.
+    (1h/4h) swing + FVG/OB** context from the regime-owned direct cache.
 3. Emits a **trade intent** per evaluation — a falsifiable directional thesis
    (entry, invalidation, targets, expiry) — delivered to **Discord as a signal**.
    A signal is **advisory only**: it is not an order and does not imply a fill on
    any venue.
-4. Optionally runs an **LLM position-management sidecar** that advises the executor
-   on open positions (hold / exit / reduce) — also emit-only, toggled on/off.
+4. Publishes validated trade intents to the executor. Position management is owned
+   by the separate `standalone-llm-pm` service.
 
 The engine **never holds exchange credentials and never places orders**.
 
@@ -31,9 +31,9 @@ The engine **never holds exchange credentials and never places orders**.
 
 ```
                  ┌─────────────────────────────────────────────────────────┐
-   public WS      │                 ws_gateway  [TARGET]                     │
+   public WS      │                 ws_gateway                                │
    (Bybit on,     │  ConnectionPool → StreamRouter → IngestBuffer → SQLite   │
-     Binance off)  │  ResampleWorker: 5m → 15m → 1h → 4h                     │
+      Binance off)  │  ResampleWorker: 5m → 15m                              │
                  └───────────────────────────┬─────────────────────────────┘
                                              │ source_observations (ws_bars)
                                              ▼
@@ -41,7 +41,7 @@ The engine **never holds exchange credentials and never places orders**.
                                              │
                                              ▼
                  ┌─────────────────────────────────────────────────────────┐
-                 │  orchestrator._run_pipeline (every INGEST_INTERVAL_MINS)  │
+                  │  orchestrator._run_pipeline (completed 5m triggers)       │
                  │   ingest → prune → regime eval → cutoff run →             │
                   │   compute HTF zones in memory →                          │
                  │   invoke_plugins_for_cutoff → outcome eval → health.json  │
@@ -54,9 +54,6 @@ The engine **never holds exchange credentials and never places orders**.
                  │   (format_discord_signal)  ← SIGNAL, not an order         │
                  └─────────────────────────────────────────────────────────┘
 
-   [TARGET] pm_sidecar (every 5m, if enabled)
-         reads positions_feed (executor) + strategy direction + HTF/swings/RR/5m TA
-         → emits pm_advice {hold|reduce|exit|near_tp} + one-liner → executor
 ```
 
 ---
@@ -67,10 +64,10 @@ The engine **never holds exchange credentials and never places orders**.
 | --- | --- |
 | `config.py` | Env-driven config, SQLite schemas (`init_db`), **static-universe loader** (`load_static_symbols`, `expand_perp_symbols`), WS toggles. |
 | `orchestrator.py` | Main loop. `_run_pipeline()` runs ingest → scanner → prune → confluence alerts → regime evaluator → cutoff → feature materialization → plugins → outcome eval → `health.json`. |
-| `scanner.py` + `two_pool_discovery.py` | Hourly two-pool discovery (`ignition`, `continuation`). Ranks eligible Binance perps by volume/OI/price action. Seeds `deep_backfill_jobs`. |
+| `symbol_rotation.py` | Publishes the versioned performance-ranked subscription feed with a static-universe fallback. |
 | `strategy_plugins.py` | Plugin **registry + invocation**. `StrategyPlugin` dataclass, `STRATEGY_ENABLED_IDS`, `invoke_plugins_for_cutoff()` (failure-isolated). |
-| `strategy_v2_context.py` | Shared TA context: `load_preferred_15m_bars`, `resample_ohlcv`, `ema_last`, `atr_last`, `structure_bias_4h`, `zone_bias_4h`, `compute_htf_zones`, `compression_ok`, `zone_stack_and_ltf_scores`, `has_active_event`. |
-| `structure_zones.py` | **HTF FVG + Order Block** detection (`detect_fvg`, `detect_order_blocks`, `compute_atr`) on resampled 1h/4h. Advisory zones. |
+| `strategy_v2_context.py` | Shared TA context: direct cutoff-bound 1h/4h loading, auxiliary 15m resampling, `ema_last`, `atr_last`, `structure_bias_4h`, `zone_bias_4h`, `compute_htf_zones`, `compression_ok`, `zone_stack_and_ltf_scores`, `has_active_event`. |
+| `structure_zones.py` | **HTF FVG + Order Block** detection (`detect_fvg`, `detect_order_blocks`, `compute_atr`) on caller-supplied cutoff-bound 1h/4h bars. Advisory zones. |
 | `confluence_scoring.py` | `weighted_confluence`, `proximity_score`, `confidence_from_confluence` → uncalibrated `confidence`. |
 | `analyze.py` | Broad TA profiling (VWAP/VA, EMA, HVN/LVN, RSI) used by confluence alerts. |
 | `accumulation_evaluator.py`, `alpha_evaluator.py`, `regime_signal.py`, `regime_evaluator.py`, `outcome_evaluator.py` | Legacy + v2 evaluators and regime/outcome scoring. |
@@ -79,11 +76,9 @@ The engine **never holds exchange credentials and never places orders**.
 | `signal_publisher.py` | Persists outbox → `alpha_events`, delivers to Telegram/Discord, retries (lease), routes research note. |
 | `discord_transport.py`, `discord_format.py` | Discord webhook transport + markdown formatters (`format_discord_signal`). |
 | `execution_adapter.py` | Disabled-by-default bot-inbox writer (bybit/bybit-test/mexc/propr). Never orders. |
-| `ingest_coinalyze.py`, `ingest_deribit.py`, `ingest_venue_agg_failover.py` | **Current** REST ingestion + CA rate-limit shaping/failover. **[TARGET] replaced by `ws_gateway`.** |
-| `binance_oi_rotation_scanner.py` + `binance_oi_rotation_worker.py` + `binance_oi_prune.py` | Existing **rotated-symbol** pattern (membership TTL ~36h, hard prune, static-membership skip). Analog for the rotation feed. |
+| `ws_gateway.py` | Sole market writer: Bybit public 5m stream, recent execution backfill, and auxiliary 15m resampling. |
 | `llm_client.py` + `research_*.py` | Provider-neutral bounded LLM client + research coordinator (advisory only today). |
-| `backfill.py`, `bootstrap_trend_history.py` | Warm 14-day history for newly selected symbols. |
-| `specs/` | ADR-style specs, including `ws-ingestion.md` **[TARGET]** and `llm-position-sidecar.md` **[TARGET]**. |
+| `specs/` | ADR-style specs, including the direct HTF and event-driven evaluation contracts. |
 | `symbols/static_universe.json` | **Persistent static universe** (approved CRYPTO snapshot, 97 bases). Version-controlled. |
 
 ---
@@ -93,9 +88,9 @@ The engine **never holds exchange credentials and never places orders**.
 Split by ownership to preserve single-writer discipline.
 
 **Market data (`MARKET_DB_PATH`, gateway-owned):**
-- `source_observations` — the canonical bar store: `asset, native_symbol, interval, source, source_end, payload_json`. Holds 5m/15m (and HTF resampled) bars. Historical 1m rows may remain but are no longer written or read by the engine.
-- `source_request_log` — ingestion rate-limit/freshness log (CA/OM circuits).
-- `universe_snapshots`, `broad_discovery_snapshots`, `discovery_watchlist_history`, `deep_backfill_jobs` — point-in-time discovery + durable backfill.
+- `source_observations` — the canonical execution bar store: `asset, native_symbol, interval, source, source_end, payload_json`. Holds streamed 5m and auxiliary 15m bars. Native 1h/4h setup bars live in the regime-owned database. Historical 1m/HTF-derived rows may remain but are no longer written or read by the engine.
+- `source_request_log` — ingestion rate-limit/freshness log.
+- `universe_snapshots`, `broad_discovery_snapshots`, `discovery_watchlist_history` — point-in-time discovery and subscription-feed records.
 - `regime_signals`, `confluence_alerts`, `scanner_history`, `brain_outputs`, `option_chains`, `alpha_candidates` — research/regime records.
 
 **Analyst state (`ANALYST_DB_PATH`, orchestrator-owned):**
@@ -105,11 +100,8 @@ Split by ownership to preserve single-writer discipline.
 - `alpha_events` — authoritative persisted events (dedupe_key PK). `status ∈ active|expired|invalidated`.
 - `alpha_event_status_history`, `alpha_confidence_observations`, `signal_deliveries` (per-channel attempt/retry), `execution_deliveries`, `research_requests/artifacts/evidence/run_metrics`, `pipeline_runs`.
 
-**Rotation (`BINANCE_OI_DB_PATH`, dedicated worker-owned):** `binance_oi_rotation_*` tables — the existing rotated-symbol infrastructure (analog for the new rotation feed).
-
-**[TARGET] new tables for the sidecar:**
-- `positions_feed` — executor-written, read-only to PM: `position_id, symbol, side, entry, size, opened_at, strategy_id, current_pnl`.
-- `pm_advice` — `advice_id, position_id, strategy_id, action(hold|reduce|exit|near_tp), confidence, reason, observed_at, htf_bias, rr`.
+**Rotation:** the symbol-rotation worker owns its versioned performance feed;
+it is not part of the market or analyst database.
 
 ---
 
@@ -118,7 +110,7 @@ Split by ownership to preserve single-writer discipline.
 Driven by `orchestrator._run_pipeline()` → `strategy_plugins.invoke_plugins_for_intervals()` (per-interval; legacy single-cutoff `invoke_plugins_for_cutoff` retained for tests).
 
 1. **Cutoff.** `completed_cycle_for(now, interval)` → the most recent completed boundary for each `EVAL_INTERVALS` member (5m/15m); `_ensure_cutoff_run_finalized()` marks `cutoff_runs.status='finalized'`. Plugins require a finalized cutoff (bar-safety: only completed bars, `source_end < cutoff`).
-2. **Feature materialization.** For the active universe, `structure_zones` computes FVG/OB on resampled 1h/4h in memory; only a lightweight count is written to `feature_snapshots`.
+2. **Feature materialization.** For the active universe, `structure_zones` computes FVG/OB on direct regime-owned 1h/4h bars in memory; only a lightweight count is written to `feature_snapshots`.
 3. **Plugin invocation.** `load_enabled_plugins()` returns plugins whose id is in `STRATEGY_ENABLED_IDS`. Each `p.run(cutoff_id, snapshot)` is executed in a try/except — **failures are isolated** and reported per-plugin, never aborting the cycle.
 4. **Event production.** Each plugin emits trade-intent dicts; `alpha_outbox.write_event()` stamps `alpha_id` (uuid5), `dedupe_key` (sha256 of `strategy_id|asset|direction|observed_at`), and enforces the `data_purity` gate (mixed strategies require `pure_ca`).
 5. **Confidence.** `confluence_scoring.weighted_confluence` → `confidence ∈ [0,1]`, `confidence_status='uncalibrated'` (not a calibrated probability).
@@ -179,13 +171,9 @@ when the executor selects limit, the submitted limit price.
 Enable: `INTENT_DELIVERY_ENABLED=true` and point `INTENT_INBOX` at the
 executor's `INTENT_INBOX` (e.g. `/home/ubuntu/bybit-executor/data/intents`).
 
-The PM sidecar reads executor 1m snapshots and exports the executor's *PM Decision
-Contract* (`POSITION_DECISION_DIR` files: `HOLD`/`REDUCE`/`EXIT`/`NEAR_TP`). A PM
-`HOLD` is an ordinary no-op and cannot veto another decision. `REDUCE`, `EXIT`,
-and `NEAR_TP` require the configured confidence threshold; none can override the
-protective SL or fixed TP. The initial TP is supplied by the producer: an explicit
-strategy target wins, otherwise the producer supplies a 2R target. The executor
-remains strategy-dumb but safety-authoritative.
+Position management is handled by the standalone PM and executor repositories.
+This repository only publishes the validated intent and its producer-owned target;
+the executor remains strategy-dumb but safety-authoritative.
 
 ---
 
@@ -197,10 +185,8 @@ remains strategy-dumb but safety-authoritative.
   - `config.load_static_symbols()` reads it (env override `STATIC_SYMBOLS`, or
     `STATIC_SYMBOLS_PATH`).
   - `config.expand_perp_symbols(base, venue)` → `BTCUSDT` perps for Bybit/Binance.
-- **Rotation [TARGET].** `WS_SYMBOL_SOURCE ∈ {static, rotated, both}`. The existing
-  `binance_oi_rotation_*` machinery (membership TTL ~36h, hard prune, static-membership
-  skip, ADR-013) is the proven pattern to feed *rotated* symbols into the eval
-  universe when enabled.
+- **Rotation.** The symbol-rotation worker publishes a versioned performance feed;
+  `ws_gateway` consumes it and falls back to the static universe when necessary.
 - **Capacity.** 97 symbols × (5m kline + markPrice) ≈ 194 streams — well within
   Bybit's sharded-pool and Binance's 1024-stream limits (see `specs/ws-ingestion.md`).
 
@@ -208,14 +194,11 @@ remains strategy-dumb but safety-authoritative.
 
 ## 7. Market-data ingestion — current implementation
 
-`ws_gateway` is the live market-data owner; CoinAnalyze and venue-aggregate
-ingestion are not live defaults. `specs/ws-ingestion.md` documents the active
-path:
+`ws_gateway` is the live market-data owner. `specs/ws-ingestion.md` documents the active path:
 - `WS_BYBIT_ENABLED=true` (default), `WS_BINANCE_ENABLED=false`.
-- Stream **5m kline + markPrice**; **resample 15m/1h/4h locally from the 5m base** via
-  `strategy_v2_context.resample_ohlcv`. Matches the "higher TF is resampled" rule while
-  keeping 5m as the direct evaluation feed.
-- Seed a short warm window from REST, then maintain it via WS.
+- Stream **5m kline + markPrice**; derive only the auxiliary 15m frame locally.
+- Seed the execution window from REST, then maintain it via WS. Native 1h/4h
+  history is fetched and owned by the regime-session worker.
 - Stamp `source`/`data_purity` so the existing emit gate and `_get_bar_purity`
   keep working unchanged.
 
@@ -226,10 +209,11 @@ path:
 - **Eval timeframes:** 5m, 15m — 5m is streamed and 15m is locally resampled; plugins run on each
   via `invoke_plugins_for_intervals` (`config.EVAL_INTERVALS`). Each interval gets its own
   finalized `cutoff_runs` row and a snapshot carrying `eval_interval`.
-- **HTF context:** 1h and 4h are **resampled** from the 5m base (never streamed), and feed
-  plugins only as enrichment (zones/bias), not as standalone eval timeframes.
+- **HTF context:** 1h and 4h are loaded from the regime-owned direct REST cache,
+  bounded by the exact evaluation cutoff. They feed plugins as setup context,
+  not as standalone eval timeframes.
 - Helpers in `strategy_v2_context`:
-  - `resample_ohlcv(bars, every)` — generic group-by-dynamic resample.
+  - `resample_ohlcv(bars, every)` — derives the auxiliary 15m frame from 5m.
   - `structure_bias_4h(bars_4h)` — `close vs EMA48_4h → long|short|missing`.
   - `zone_bias_4h(zones, ref_close, atr_4h)` — nearest active 4h FVG/OB → bias.
   - `resolve_bias(structure, zone)` — agree-or-abstain combiner.
@@ -246,7 +230,7 @@ path:
   window in `detect_order_blocks`) and exposed as **advisory swing levels** — scored
   through the same confluence machinery (`zone_stack_and_ltf_scores`, bias
   resolution) and surfaced in `feature_snapshot`/in-memory contexts. They never gate
-  emission on their own; they enrich structure bias and feed PM-sidecar RR. No
+  emission on their own; they enrich structure bias used by downstream PM context. No
   standalone swing module is required.
 - Zones (and swing levels) are **advisory** (support/neutral/contradict); they
   never gate emission alone — only contribute to confluence score.
@@ -304,26 +288,7 @@ the same advisory model.
 
 ---
 
-## 12. LLM position-management sidecar [TARGET]
-
-`specs/llm-position-sidecar.md`. Emit-only:
-
-- Toggle `PM_SIDECAR_ENABLED=false` to disable (default on for this deployment).
-- **Cadence:** every 5m.
-- **Inputs (read-only):** `positions_feed` (executor-written) + active trade-intent
-  + HTF bias + swings + RR + 5m TA.
-- **Output:** `pm_advice` with exactly one of `{hold, reduce, exit, near_tp}` + a
-  one-line reason. On LLM timeout/error → emit `hold` (do-no-harm).
-- **Confidence:** `hold` needs no confidence; `reduce`, `exit`, and `near_tp`
-  require the configured minimum confidence.
-- **NEAR_TP:** executor-owned one-time reduction when the venue mark is within
-  five ticks of immutable original TP, using current quantity and protection state.
-- **Boundary preserved:** reads positions, writes only advice; no credentials, no
-  order placement — same discipline as the existing execution adapter.
-
----
-
-## 13. Retention / tiered prune
+## 12. Retention / tiered prune
 
 Online retention runs every six hours on each database owner's writer connection.
 Deletes are bounded batches with short commits and passive checkpoints. Full file
@@ -336,17 +301,15 @@ not run in a live worker. The installed compaction schedule is Sunday at
 | 5m / 15m (resampled) | 30 / 90 days | main evaluation horizon |
 | HTF 1h / 4h bars | 365 days | regime and strategy context |
 | `structure_zones` | no persisted rows | recomputed from bars when needed |
-| `positions_feed` / `pm_advice` | 30 days | audit only |
-
 The emit-gate (`data_purity`) and `cutoff_runs` finalization must remain intact
 through pruning.
 
 ---
 
-## 14. Safety & boundaries (carry-over, non-negotiable)
+## 13. Safety & boundaries (carry-over, non-negotiable)
 
 - Single writer per DB (`MARKET_DB_PATH` gateway, `ANALYST_DB_PATH` orchestrator,
-  `BINANCE_OI_DB_PATH` rotation worker). Never duplicate writers.
+  `REGIME_DB_PATH` regime worker). Never duplicate writers.
 - Evaluators read **only** local warmed data; they never call external market APIs
   and never write raw market data.
 - `confidence` is uncalibrated research output, not a trade probability.
@@ -356,13 +319,12 @@ through pruning.
 
 ---
 
-## 15. Config reference (key knobs)
+## 14. Config reference (key knobs)
 
 | Env | Default | Purpose |
 | --- | --- | --- |
 | `STATIC_SYMBOLS_PATH` | `symbols/static_universe.json` | Persistent static universe. |
 | `STATIC_SYMBOLS` | "" | Comma override of the universe. |
-| `WS_SYMBOL_SOURCE` | `static` | `static`\|`rotated`\|`both`. |
 | `WS_BYBIT_ENABLED` | `true` | Primary public WS source. |
 | `WS_BINANCE_ENABLED` | `false` | Opt-in WS source. |
 | `WS_STREAM_TIMEFRAMES` | `5m` | Base streamed TF (15m resampled from 5m). |
@@ -372,16 +334,11 @@ through pruning.
 | `DISCORD_ALPHA_WEBHOOK_URL` | "" | Signal delivery channel. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | "" | Telegram mirror. |
 | `LLM_RESEARCH_ENABLED` | `false` | Advisory research note (today). |
-| `PM_SIDECAR_ENABLED` **[TARGET]** | `false` | LLM position-management sidecar. |
-| `PM_CADENCE_MINUTES` **[TARGET]** | `5` | Sidecar decision tick. |
-| `PM_DECISION_VALIDITY_MINUTES` | `5` | Decision expiry. |
-| `PM_ACTION_CONFIDENCE` | `0.70` | Minimum confidence for action-bearing PM decisions. |
-| `FUTURES_RETENTION_DAYS` | `365` | Base prune window (extend to tiered). |
-| `INGEST_INTERVAL_MINS` | `15` | Orchestrator loop interval. |
+| `EXECUTION_BACKFILL_HOURS` | `24` | Completed 5m execution seed window. |
 
 ---
 
-## 16. Build order (recommended)
+## 15. Build order (recommended)
 
 1. **Static universe** — ✅ done (`symbols/static_universe.json` + `config` loaders).
 2. **WS ingestion** — `ws_gateway.py` (ConnectionPool/StreamRouter/IngestBuffer) +
@@ -392,7 +349,7 @@ through pruning.
 4. **5m/15m eval timeframes** ✅ — `completed_cycle_for` + `load_bars_for_interval` in
     `strategy_v2_context`; v2 plugins honor `snapshot["eval_interval"]`;
     `invoke_plugins_for_intervals` runs each `EVAL_INTERVALS` member with its own cutoff.
-    HTF (1h/4h) stays resampled-from-5m enrichment only.
+     HTF (1h/4h) comes from the regime-owned direct REST cache.
 5. **Trade-intent → Discord** — confirm `format_discord_signal` carries the intent;
    (already wired; verify fields).
  6. **Active/inactive flag** ✅ — `STRATEGY_ACTIVE_IDS` (env allowlist; empty = all enabled) +
@@ -401,27 +358,20 @@ through pruning.
      evaluators** (research-only plugins outside the active set)
      are **retired** — kept registered but defaulted to `inactive` so they no longer evaluate; they can
     be re-activated via the flag. Hard-deletion of the legacy code is a separate, optional step.
- 7. **LLM PM sidecar** ✅ — `pm_sidecar.py` + `positions_feed`/`pm_advice` tables. Emit-only
-    `hold|exit|reduce` + ≤120-char reason on a 5m-cutoff cadence; reads `positions_feed`
-    + trade-intent + HTF bias (`structure_bias_4h`) + swings (`market_structure` pivots) +
-    RR + 5m TA; falls back to `hold` on any LLM error/timeout. `PM_SIDECAR_ENABLED=true`.
-    One advice per position per cutoff (deterministic `advice_id` dedupe). (`specs/llm-position-sidecar.md`)
- 8. **Tiered prune** ✅ — `prune_db` now deletes `source_observations` per interval via
+ 7. **Tiered prune** ✅ — `prune_db` now deletes `source_observations` per interval via
      `config.PRUNE_INTERVAL_DAYS` (5m=30d, 15m=90d, 1h/4h=365d; `0` disables a tier).
     Uncovered intervals fall back to the legacy `futures_retention_days`.
- 9. **Rotation feed** ✅ (disabled by default) — `rotation_feed.py` exports active
-    `binance_oi_rotation_watchlist_history` members to `BINANCE_OI_ROTATION_FEED_PATH`;
-    `ws_gateway.load_rotated_bases()` consumes it when `WS_SYMBOL_SOURCE=rotated|both`.
-    Gated by `ROTATION_FEED_ENABLED=false`.
+  9. **Performance rotation** ✅ — the symbol-rotation worker publishes the
+     versioned feed consumed by `ws_gateway`; the gateway retains static symbols
+     as the deterministic fallback.
 
 ---
 
-## 17. Open items
+## 16. Open items
 
 - **Count:** the approved CRYPTO snapshot currently yields **97** bases, not 150.
   Working set = 97 unless the universe is extended.
 - **Swing levels** are enrichment inside `structure_zones` (scored like FVG/OB), not
   a standalone detector.
 - **Binance WS** off by default; enable only after Bybit path is proven.
-- **PM sidecar** requires the executor to publish `positions_feed`; define that
-  contract with the approved universe owner.
+- **Standalone PM** owns position-management decisions in its separate repository.

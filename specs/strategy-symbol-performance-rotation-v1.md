@@ -123,9 +123,6 @@ upstream subscription universe and does not alter strategy code or
 symbol-account-strategy policy. See
 `specs/sticky-symbol-watchlist-and-scope-router-v1.md`.
 
-This feature must not reuse or infer from `ROTATION_FEED_ENABLED`, which
-controls the separate Binance OI feed.
-
 ## Performance Source
 
 The rotation plugin must obtain performance for all approved symbols without

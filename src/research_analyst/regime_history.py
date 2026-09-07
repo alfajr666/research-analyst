@@ -245,14 +245,14 @@ def _history_config(interval: str) -> tuple[str, str, int, int, int, int]:
     if interval == "1h":
         return (
             "regime_1h_bars", "regime_1h_backfill_jobs", REGIME_1H_INTERVAL_MS,
-            max(REGIME_1H_FETCH_DAYS, int(getattr(config, "HYBRID_HTF_1H_FETCH_DAYS", REGIME_1H_FETCH_DAYS))),
-            max(REGIME_1H_RETAIN_DAYS, int(getattr(config, "HYBRID_HTF_1H_RETAIN_DAYS", REGIME_1H_RETAIN_DAYS))),
+            max(REGIME_1H_FETCH_DAYS, int(getattr(config, "DIRECT_HTF_1H_FETCH_DAYS", REGIME_1H_FETCH_DAYS))),
+            max(REGIME_1H_RETAIN_DAYS, int(getattr(config, "DIRECT_HTF_1H_RETAIN_DAYS", REGIME_1H_RETAIN_DAYS))),
             REGIME_1H_READINESS_BARS,
         )
     return (
         "regime_4h_bars", "regime_4h_backfill_jobs", REGIME_4H_INTERVAL_MS,
-        max(REGIME_4H_FETCH_DAYS, int(getattr(config, "HYBRID_HTF_4H_FETCH_DAYS", REGIME_4H_FETCH_DAYS))),
-        max(REGIME_4H_RETAIN_DAYS, int(getattr(config, "HYBRID_HTF_4H_RETAIN_DAYS", REGIME_4H_RETAIN_DAYS))),
+        max(REGIME_4H_FETCH_DAYS, int(getattr(config, "DIRECT_HTF_4H_FETCH_DAYS", REGIME_4H_FETCH_DAYS))),
+        max(REGIME_4H_RETAIN_DAYS, int(getattr(config, "DIRECT_HTF_4H_RETAIN_DAYS", REGIME_4H_RETAIN_DAYS))),
         REGIME_4H_READINESS_BARS,
     )
 

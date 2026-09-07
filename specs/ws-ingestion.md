@@ -20,8 +20,9 @@ canonical bases (e.g. `BTC`); `config.expand_perp_symbols(base, venue)` maps the
   `STATIC_SYMBOLS_PATH`).
 - The approved snapshot yields **97 bases** (not 150). To reach 150, extend the JSON —
   do not invent symbols. The file records `count` and `cap_target` for audit.
-- `WS_SYMBOL_SOURCE` selects the eval universe: `static` (approved list), `rotated`
-  (rotation feed only), or `both` (union).
+- The symbol-rotation worker publishes the active performance feed. The gateway
+  consumes that feed and falls back to the approved static universe when it is
+  unavailable or not ready.
 
 ## Defaults
 
@@ -29,14 +30,12 @@ canonical bases (e.g. `BTC`); `config.expand_perp_symbols(base, venue)` maps the
 | --- | --- | --- |
 | `WS_BYBIT_ENABLED` | `true` | Primary public source (Bybit V5). |
 | `WS_BINANCE_ENABLED` | `false` | Opt-in, off by default. |
-| `WS_SYMBOL_SOURCE` | `static` | `static` \| `rotated` \| `both`; static from `symbols/static_universe.json`. |
-| `WS_STREAM_TIMEFRAMES` | `5m` | 5m kline + markPrice streamed; canonical 15m/1h/4h bars resampled from 5m locally. The engine may seed strategy 1h/4h history from regime-owned direct REST data. |
+| `WS_STREAM_TIMEFRAMES` | `5m` | 5m kline + markPrice streamed; the auxiliary 15m frame is derived from 5m. Strategy 1h/4h history comes from regime-owned direct REST data. |
 | `WS_MARKPRICE_ENABLED` | `true` | markPrice @1s for live state / funding context. |
 
-Streaming 5m kline + markPrice matches the strategy-facing "higher TF is
-resampled" rule (15m/1h/4h are derived from the 5m base), and keeps stream
-counts low (see capacity below). The regime worker's direct REST 4h cache is
-separate and does not add a WebSocket topic.
+Streaming 5m kline + markPrice keeps stream counts low (see capacity below).
+The regime worker's direct REST 1h/4h cache is separate and does not add a
+WebSocket topic.
 
 ## Capacity (no exhaustion risk)
 

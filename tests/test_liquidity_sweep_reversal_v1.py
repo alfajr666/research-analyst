@@ -16,7 +16,7 @@ from strategies.v2.liquidity_sweep_reversal_v1 import (
 )
 from strategy_plugins import KNOWN_STRATEGIES, load_enabled_plugins
 import config
-from strategy_v2_context import has_active_event
+from strategy_v2_context import has_active_event, resample_ohlcv
 
 
 def _cutoff_from(bars: pl.DataFrame) -> datetime:
@@ -95,7 +95,10 @@ class TestLsrV1(unittest.TestCase):
         bars = _grind_bars_for_sweep()
         cutoff = _cutoff_from(bars)
         cfg = _loose_cfg(sweep_max_atr=2.0, bos_window=20)
-        ev = evaluate_symbol(bars, asset="BTC", symbol="BTC/USDT:USDT", cutoff=cutoff, cfg=cfg)
+        ev = evaluate_symbol(
+            bars, bars_1h=resample_ohlcv(bars, "1h"), bars_4h=resample_ohlcv(bars, "4h"),
+            asset="BTC", symbol="BTC/USDT:USDT", cutoff=cutoff, cfg=cfg,
+        )
         self.assertIsNotNone(ev)
         self.assertEqual(ev["strategy_id"], STRATEGY_ID)
         self.assertEqual(ev["setup_class"], "liquidity_reversal")
@@ -125,7 +128,10 @@ class TestLsrV1(unittest.TestCase):
         bars = _grind_bars_for_sweep()
         cutoff = _cutoff_from(bars)
         cfg = _loose_cfg(sweep_max_atr=2.0, bos_window=20)
-        ev = evaluate_symbol(bars, asset="BTC", symbol="BTC", cutoff=cutoff, cfg=cfg)
+        ev = evaluate_symbol(
+            bars, bars_1h=resample_ohlcv(bars, "1h"), bars_4h=resample_ohlcv(bars, "4h"),
+            asset="BTC", symbol="BTC", cutoff=cutoff, cfg=cfg,
+        )
         self.assertIsNotNone(ev)
 
         with tempfile.TemporaryDirectory() as td:

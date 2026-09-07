@@ -25,7 +25,6 @@ from strategy_v2_context import (
     load_btc_15m,
     prior_base_expansion_fail,
     prior_range_ratio,
-    resample_ohlcv,
     resolve_bias,
     snapshot_zones_for_asset,
     structure_bias_4h,
@@ -181,6 +180,8 @@ def _prior_impulse_quality(bars_1h, n: int, p: int) -> float:
 def evaluate_symbol(
     bars_15m,
     *,
+    bars_1h=None,
+    bars_4h=None,
     asset: str,
     symbol: str,
     cutoff: datetime,
@@ -193,8 +194,8 @@ def evaluate_symbol(
     if bars_15m.is_empty() or not last_completed_bar_fresh(bars_15m, cutoff):
         return None
 
-    bars_1h = resample_ohlcv(bars_15m, "1h")
-    bars_4h = resample_ohlcv(bars_15m, "4h")
+    if bars_1h is None or bars_4h is None:
+        return None
     need = cfg.n + cfg.p
     if bars_1h.height < max(need, 20) or bars_4h.height < 48:
         return None
@@ -364,6 +365,8 @@ def evaluate(
     gated: list[dict] = []
     for symbol, asset in symbols:
         bars = load_bars_for_interval(conn, symbol, eval_interval, cutoff)
+        bars_1h = load_bars_for_interval(conn, symbol, "1h", cutoff)
+        bars_4h = load_bars_for_interval(conn, symbol, "4h", cutoff)
         zones = snapshot_zones_for_asset(snapshot, asset)
         extras = (snapshot.get("feature_snapshots") or {}).get(asset) or {}
         vp = extras.get("vp")
@@ -372,6 +375,8 @@ def evaluate(
             feature_extras["vp_proximity"] = vp["proximity"]
         cand = evaluate_symbol(
             bars,
+            bars_1h=bars_1h,
+            bars_4h=bars_4h,
             asset=asset,
             symbol=symbol,
             cutoff=cutoff,

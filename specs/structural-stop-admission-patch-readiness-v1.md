@@ -75,7 +75,7 @@ The principal implementation seams are:
 | Candidate invocation | `src/research_analyst/strategy_plugins.py` | Must attach per-asset freshness, ATR provenance, and structural context. |
 | Existing admission | `src/research_analyst/trade_admission.py` | Remains authoritative for current hard gates. |
 | Alpha and intent handoff | `src/research_analyst/alpha_outbox.py`, `intent_outbox.py` | Must revalidate and preserve the original stop. |
-| PM context | `src/research_analyst/pm_sidecar.py` | Must consume the originating immutable plan. |
+| PM context | standalone-llm-pm | Consumes the originating immutable plan outside this repository. |
 
 The existing admission specification remains authoritative for current geometry,
 RR, ATR, expiry, freshness, and identity rules. This patch adds a new policy;
@@ -356,7 +356,7 @@ At `alpha_outbox.write_event()` and any compatibility adapter boundary:
 - distinguish selection, alpha persistence, bus publication, executor acceptance,
   and execution.
 
-The PM sidecar must receive the originating immutable plan, including:
+The standalone PM must receive the originating immutable plan, including:
 
 - exact intent identity;
 - original direction and entry;

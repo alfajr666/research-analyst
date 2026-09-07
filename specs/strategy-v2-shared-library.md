@@ -184,7 +184,7 @@ Do not extract thesis-specific retrace/extension math into a god-module.
 ## Config layout
 
 Independent env prefixes (grilled): `ACC_V2_*`, `IGN_V2_*`, `CONT_V2_*`,
-`RSI_RECLAIM_*`, **`LSR_V1_*`**. Plus global `LLM_BOOST_CAP` (delivery-order only).
+`RSI_RECLAIM_*`, **`LSR_V1_*`**.
 
 LSR must also be listed in `PRICE_STRUCTURE_STRATEGY_IDS` (with accumulation +
 rsi-reclaim) so `alpha_outbox.write_event` allows the OHLCV-only path.
@@ -211,7 +211,6 @@ rsi-reclaim) so `alpha_outbox.write_event` allows the OHLCV-only path.
 | bos_window | — | — | — | — | **8** |
 | stop buf ATR | — | — | — | — | **0.15** |
 | `WEIGHT_PROFILE` | — | — | `balanced` (`early`\|`balanced`\|`confirmed`) |
-| `LLM_BOOST_CAP` | 0.10 (global) | | |
 
 Also locked (not env): EMA inv band 1.5%, target 1.5R, horizon 4h, zone bins 0.25/0.75 ATR.
 

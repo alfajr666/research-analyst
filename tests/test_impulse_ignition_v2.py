@@ -8,7 +8,7 @@ import polars as pl
 
 import config
 from strategies.v2.impulse_ignition_v2 import IgnV2Config, STRATEGY_ID, evaluate_symbol
-from strategy_v2_context import has_active_event
+from strategy_v2_context import has_active_event, resample_ohlcv
 
 
 def _coil_bars(
@@ -93,6 +93,8 @@ class ImpulseIgnitionV2Tests(unittest.TestCase):
         )
         event = evaluate_symbol(
             bars,
+            bars_1h=resample_ohlcv(bars, "1h"),
+            bars_4h=resample_ohlcv(bars, "4h"),
             asset="SOL",
             symbol="SOLUSDT_PERP.A",
             cutoff=cutoff,

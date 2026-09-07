@@ -272,35 +272,8 @@ def prune_analyst_db(
         ),
         max_batches=max_batches,
     )
-    deleted["deep_backfill_jobs"] = _delete(
-        conn,
-        "deep_backfill_jobs",
-        "updated_at < ? AND status NOT IN ('pending', 'running')",
-        (_limit(now, getattr(config, "ANALYST_DISCOVERY_RETENTION_DAYS", 90)),),
-        max_batches=max_batches,
-    )
     conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
     return deleted
-
-
-def prune_pm_advice_db(
-    conn: Any,
-    now: datetime | None = None,
-    *,
-    max_batches: int | None = None,
-) -> dict[str, int]:
-    """Prune only the PM-owned advice ledger on its owner connection."""
-    if not _exists(conn, "pm_advice"):
-        return {"pm_advice": 0}
-    deleted = _delete(
-        conn,
-        "pm_advice",
-        "cutoff_at < ?",
-        (_limit(_utc(now), getattr(config, "ANALYST_PM_RETENTION_DAYS", 30)),),
-        max_batches=max_batches,
-    )
-    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-    return {"pm_advice": deleted}
 
 
 def prune_regime_db(
@@ -315,8 +288,8 @@ def prune_regime_db(
     direct_retention = {
         "regime_scores": ("cutoff_at", "REGIME_SCORE_RETENTION_DAYS"),
         "regime_gate_decisions": ("cutoff_at", "REGIME_GATE_RETENTION_DAYS"),
-        "regime_1h_bars": ("source_end", "HYBRID_HTF_1H_RETAIN_DAYS"),
-        "regime_4h_bars": ("source_end", "HYBRID_HTF_4H_RETAIN_DAYS"),
+        "regime_1h_bars": ("source_end", "DIRECT_HTF_1H_RETAIN_DAYS"),
+        "regime_4h_bars": ("source_end", "DIRECT_HTF_4H_RETAIN_DAYS"),
     }
     for table, (column, setting) in direct_retention.items():
         deleted[table] = _delete(

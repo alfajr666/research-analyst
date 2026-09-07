@@ -202,13 +202,23 @@ def assess_db_coverage(
     max_age_seconds: float | None = None,
 ) -> CoverageResult:
     """Load and assess source observations for one asset without writing."""
+    boundary = _floor_boundary(_utc(cutoff), INTERVAL_SECONDS[interval])
+    required_from = boundary - timedelta(
+        seconds=INTERVAL_SECONDS[interval] * (expected_bars - 1)
+    )
     try:
         rows = conn.execute(
             """SELECT source_end, source, payload_json
                  FROM source_observations
-                WHERE asset = ? AND interval = ? AND source_end <= ?
+                WHERE asset = ? AND interval = ?
+                  AND datetime(source_end) >= datetime(?)
+                  AND datetime(source_end) <= datetime(?)
                 ORDER BY source_end ASC""",
-            (str(asset).upper(), interval, _utc(cutoff) + timedelta(milliseconds=1)),
+            (
+                str(asset).upper(), interval,
+                required_from.isoformat().replace("+00:00", "Z"),
+                (_utc(cutoff) + timedelta(milliseconds=1)).isoformat().replace("+00:00", "Z"),
+            ),
         ).fetchall()
     except Exception:
         return assess_coverage(

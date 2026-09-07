@@ -408,7 +408,7 @@ It must not:
 - reduce an existing position;
 - cancel an existing order;
 - modify executor protection;
-- suppress PM sidecar evaluation;
+ - suppress standalone PM evaluation;
 - rewrite an already published candidate or intent.
 
 Open-position lifecycle remains executor-owned.
@@ -640,6 +640,6 @@ then switch to `off` after checking the service health and cutoff audit.
 - No second live market-data writer.
 - No static session-to-regime mapping.
 - No strategy-family hard switch based only on session.
-- No position flattening or PM-sidecar changes.
+- No position flattening or standalone-PM policy changes.
 - No strategy-owned sizing or leverage logic.
 - No live enforcement before out-of-sample validation.

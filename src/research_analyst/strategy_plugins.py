@@ -19,8 +19,9 @@ from entry_policy import annotate_candidate
 from trade_admission import canonical_asset, resolve
 from structural_stop import build_structural_contexts
 from strategy_v2_context import (
-    completed_cycle_for, hybrid_htf_context, hybrid_htf_context_active,
-    hybrid_htf_context_evaluation_cutoff, hybrid_htf_provenance,
+    completed_cycle_for,
+    direct_htf_context, direct_htf_context_active,
+    direct_htf_context_evaluation_cutoff, direct_htf_provenance,
     get_shared_computation_context,
     load_bars_for_interval, shared_computation_context,
     shared_computation_context_active, shared_computation_stats,
@@ -586,26 +587,22 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                              require_finalized: bool, snapshot: dict | None = None,
                              market_db_path: str | Path | None = None) -> Dict[str, object]:
     """Run active plugins against one finalized cutoff. Failures isolated."""
-    if (getattr(config, "HYBRID_HTF_ENABLED", True)
-            and getattr(config, "HYBRID_HTF_MODE", "shadow") != "off"):
-        try:
-            cutoff = _cutoff_from_id(cutoff_id, now)
-        except (TypeError, ValueError):
-            # Preserve the original finalized-cutoff error for malformed IDs.
-            pass
-        else:
-            if (not hybrid_htf_context_active()
-                    or hybrid_htf_context_evaluation_cutoff() != cutoff):
-                htf_cutoff = completed_cycle_for(cutoff, "5m")
-                with hybrid_htf_context(
-                    market_db_path or (snapshot or {}).get("market_db_path") or config.MARKET_DB_PATH,
-                    getattr(config, "REGIME_DB_PATH", None), htf_cutoff,
-                    evaluation_cutoff=cutoff,
-                ):
-                    return _run_plugins_for_cutoff(
-                        db_path, cutoff_id, now, require_finalized, snapshot=snapshot,
-                        market_db_path=market_db_path,
-                    )
+    try:
+        cutoff = _cutoff_from_id(cutoff_id, now)
+    except (TypeError, ValueError):
+        # Preserve the original finalized-cutoff error for malformed IDs.
+        pass
+    else:
+        if (not direct_htf_context_active()
+                or direct_htf_context_evaluation_cutoff() != cutoff):
+            with direct_htf_context(
+                getattr(config, "REGIME_DB_PATH", None), cutoff,
+                evaluation_cutoff=cutoff,
+            ):
+                return _run_plugins_for_cutoff(
+                    db_path, cutoff_id, now, require_finalized, snapshot=snapshot,
+                    market_db_path=market_db_path,
+                )
     results: Dict[str, object] = {}
     conn = config.get_db_connection(read_only=True, db_path=db_path)
     try:
@@ -640,20 +637,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     else:
         attempted_symbols, feed_metadata = subscription_assets(cutoff)
     regime_scope = snapshot.get("regime_scope") or {}
-    warmup_metadata = {}
-    if getattr(config, "DEEP_WARMUP_GATE_ENABLED", False):
-        from warmup import ready_assets
-        shared_context = get_shared_computation_context()
-        market_conn = shared_context.market_conn if shared_context is not None else config.get_db_connection(
-            read_only=True, db_path=snapshot["market_db_path"]
-        )
-        try:
-            attempted_symbols, warmup_metadata = ready_assets(market_conn, attempted_symbols, cutoff)
-        finally:
-            if shared_context is None:
-                market_conn.close()
     snapshot["attempted_symbols"] = len(attempted_symbols)
-    snapshot["warmup"] = warmup_metadata
     snapshot["subscription_feed_id"] = feed_metadata.get("feed_id")
     snapshot["effective_universe_version"] = feed_metadata.get(
         "effective_universe_version", feed_metadata.get("feed_id", "unknown")
@@ -690,9 +674,6 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                     else "regime session: family has no active assets"
                 )
                 results[p.id] = {"skipped": reason}
-                continue
-            if getattr(config, "DEEP_WARMUP_GATE_ENABLED", False) and not plugin_symbols:
-                results[p.id] = {"skipped": "deep warmup: no ready assets"}
                 continue
             computation_context = get_shared_computation_context()
             if computation_context is not None:
@@ -739,10 +720,10 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                 # materialized features must never replace it.
                 ev.setdefault("feature_snapshot", {})
                 ev["feature_snapshot"] = dict(ev["feature_snapshot"])
-                if hybrid_htf_context_active():
+                if direct_htf_context_active():
                     for interval in ("1h", "4h"):
                         load_bars_for_interval(None, ev.get("asset", ""), interval, cutoff)
-                htf_provenance = hybrid_htf_provenance(ev.get("asset", ""))
+                htf_provenance = direct_htf_provenance(ev.get("asset", ""))
                 if htf_provenance:
                     ev["engine_htf_provenance"] = htf_provenance
                 try:

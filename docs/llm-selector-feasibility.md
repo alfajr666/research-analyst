@@ -130,7 +130,7 @@ paths (`src/research_analyst/strategy_plugins.py:574-596`,
 |---|---|---|
 | Decision unit | Current wall-clock context | Completed 5m `cutoff_id` and immutable snapshot |
 | Selection target | Logical option families, expanded to variants | Registered perpetual strategy IDs or an explicitly defined family catalog |
-| Context | BTC/ETH option-implied plus chart/enrichment data | Bybit market observations, 5m bars, resampled 15m/1h/4h, zones, and strategy features |
+| Context | BTC/ETH option-implied plus chart/enrichment data | Bybit market observations, 5m bars, auxiliary 15m, direct 1h/4h regime history, zones, and strategy features |
 | Cadence | Poll every 5m, select at most every 15m | Consume every 5m trigger; recompute selection every 15m by default and reuse it in intervening cutoffs |
 | Failure | Keep last state or rule fallback | Keep last persisted valid selection, otherwise deterministic allowlist/rule set; never block admission indefinitely |
 | Authority | Activation proposal through in-process bus | Per-cutoff evaluation filter only; operator states remain separate |
@@ -164,7 +164,7 @@ pool with the gateway.
 |---|---:|
 | `research-analyst-ws` | 153 MB RSS, 0.5% CPU in `oxmgr status`; healthy |
 | `research-analyst-orchestrator` | 136 MB RSS, 42.1% instantaneous CPU in `oxmgr status`; likely cycle-dependent |
-| `research-analyst-pm-sidecar` | 122 MB RSS, 0.0% CPU in `oxmgr status`; healthy |
+| analyst PM sidecar | Retired; position management moved to `standalone-llm-pm` |
 | Gateway health | 34 subscribed symbols, 12 reported active connections, zero reconnects |
 | Analyst DB | 663 MB `data/analyst.sqlite3` |
 | Market DB | 550 MB `data/market.sqlite3` |
@@ -229,10 +229,8 @@ For this analyst:
 - a one-stage score-only design gives 4 logical calls/hour;
 - evaluating the selector on every 5m trigger would raise the two-stage rate to
   24 logical calls/hour and is not recommended;
-- existing PM calls are separate: approximately one call per managed open
-  position per 5m cycle, with one retry allowed
-  (`src/research_analyst/pm_sidecar.py:366-397`,
-  `src/research_analyst/config.py:445-450`).
+- position-management calls are owned by the separate `standalone-llm-pm`
+  service and are outside this analyst's selector budget.
 
 The selector's model calls must therefore have an independent bounded timeout,
 retry budget, and queue policy. A failed selector must immediately reuse the
@@ -359,5 +357,5 @@ empty active set, or if model output mutates persistent plugin state.
 - Analyst plugin/admission seam: `src/research_analyst/strategy_plugins.py`
 - Analyst market-data ownership: `src/research_analyst/ws_gateway.py`
 - Analyst trigger contract: `specs/event-driven-5m-evaluation.md`
-- Analyst PM boundary: `specs/llm-position-sidecar.md`
+- Position-management boundary: separate `standalone-llm-pm` repository
 - Runtime measurements: `data/health.json`, `data/ws_health.json`, `oxmgr status`, `pm2 list`, `du`, and `ss -Htanp` captured on 2026-09-02

@@ -40,8 +40,8 @@ row-level results.
 - Vectorizable portions of FVG and order-block detection.
 - Vectorizable regime-score inputs and reversal-gate inputs.
 - Strategy feature columns for current and tested legacy plugins.
-- PM-sidecar numerical context, using the same shared kernels where contracts
-  permit.
+- Standalone-PM numerical context is outside this repository's computation
+  migration.
 - Unit, parity, integration, replay, lookahead, and end-to-end validation.
 
 ### Remains Python
@@ -180,12 +180,11 @@ row-level results.
 - Keep strategy IDs and versions unchanged until parity and replay validation
   pass.
 
-### Phase 6: Admission and PM context
+### Phase 6: Admission context
 
 - Move only numerical structural ATR/bar-validity columns into Polars.
 - Keep admission proofs, selected-zone policy, and fingerprints in Python.
-- Make PM-sidecar TA consume the shared feature kernel rather than its own RSI
-  and StochRSI implementation.
+- Keep standalone-PM TA implementation and validation in its own repository.
 
 ### Phase 7: Rollout and removal
 

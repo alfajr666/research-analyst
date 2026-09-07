@@ -1,13 +1,16 @@
-# LLM Position-Management Sidecar Spec (Locked ADR)
+# Retired: LLM Position-Management Sidecar Spec (Locked ADR)
+
+This analyst-local sidecar was retired in favor of the standalone-llm-pm
+service. The historical contract is preserved here for audit reference.
 
 ## Status
 
 Locked design. This document supersedes the mechanical-veto design in
-`specs/mechanical-exit-sidecar-v1.md`. Runtime changes are a follow-up
+`specs/archive/mechanical-exit-sidecar-v1.md`. Runtime changes are a follow-up
 implementation task and must preserve this contract.
 
 The detailed implementation blueprint is
-`specs/pm-sidecar-llm-only-v1.md`.
+`specs/archive/pm-sidecar-llm-only-v1.md`.
 
 ## Goal
 

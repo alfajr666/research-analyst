@@ -33,8 +33,7 @@ def _alpha_event(**over):
 
 
 class IntentBuildTests(unittest.TestCase):
-    def test_deployment_defaults_enable_pm_sidecar(self):
-        self.assertTrue(config.PM_SIDECAR_ENABLED)
+    def test_deployment_defaults_select_bybit_hyro(self):
         self.assertEqual(config.INTENT_EXCHANGE_ID, "bybit")
         self.assertEqual(config.INTENT_ACCOUNT_ID, "hyro")
 
