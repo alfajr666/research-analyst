@@ -74,7 +74,8 @@ ResampleWorker (separate tick loop)
   `strategy_plugins._get_bar_purity` works unchanged.
 - Derived (15m/1h/4h) bars stamped `source='resampled'`,
   `data_purity` inherited from the 5m parent's purity.
-- HTF swing/FVG/OB detectors (`structure_zones`) read the resampled 1h/4h table.
+- HTF swing/FVG/OB detectors (`structure_zones`) read the resampled 1h/4h bars
+  into memory. They do not require a persisted zone table.
 
 ## Tiered retention (prune TTL)
 
@@ -85,7 +86,7 @@ tiered prune (extends existing `prune_db`):
 | --- | --- | --- |
 | Raw 1m bars | 7–14 days | only builds 5m/15m + short-term microstructure |
 | 5m / 15m (resampled) | 30–90 days | main eval horizon |
-| HTF 1h / 4h + zones | 180+ days / indefinite | swing/FVG/OB context is long-lived |
+| HTF 1h / 4h bars | 365 days | regime and strategy context; zones are recomputed in memory |
 | `ws_gap_fill_log`, connection health | 30 days | ops audit |
 
 Nightly `VACUUM` retained.

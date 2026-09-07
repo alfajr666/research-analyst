@@ -117,9 +117,11 @@ rotating count must be a positive even number. The split is always equal:
 
 The permanent symbols are removed from the ranking pool before selecting the
 rotating sides, so they cannot consume rotating slots or be removed by ranking.
-When `SYMBOL_ROTATION_ENABLED=false`, the subscription universe is all 92
-approved symbols. This setting controls the upstream subscription universe and
-does not alter strategy code or symbol-account-strategy policy.
+When `SYMBOL_ROTATION_ENABLED=false`, the subscription universe is the approved
+universe passed through the sticky watchlist cap. This setting controls the
+upstream subscription universe and does not alter strategy code or
+symbol-account-strategy policy. See
+`specs/sticky-symbol-watchlist-and-scope-router-v1.md`.
 
 This feature must not reuse or infer from `ROTATION_FEED_ENABLED`, which
 controls the separate Binance OI feed.
@@ -208,7 +210,7 @@ The current startup-only `select_universe()` path must be replaced or extended
 with a supervisor that:
 
 1. Loads a valid feed before opening heavy WebSocket subscriptions.
-2. Uses all 92 when rotation is disabled.
+2. Uses the capped approved universe when rotation is disabled.
 3. Reconciles subscriptions at each feed version change.
 4. Cancels streams for removed symbols and starts streams for added symbols.
 5. Does not block WebSocket reads while computing or loading a feed.
@@ -275,7 +277,7 @@ number.
    44 or 64 subscriptions respectively.
 3. Permanent BTC, ETH, PAXG, and QQQUSDT are present in every non-empty feed.
 4. Rotation is recalculated only at four-hour UTC boundaries.
-5. Rotation disabled produces all 92 approved subscription symbols.
+5. Rotation disabled produces the deterministically capped approved universe.
 6. Every active strategy evaluates every subscribed symbol without local symbol
    filtering.
 7. Compact candidates for SOL are rejected for the Hyro account while compact
@@ -305,8 +307,8 @@ number.
 
 ### Subscription supervisor integration tests
 
-- Feed version changes reconcile 92 to 30, 30 to 40, and 40 to 60.
-- Rotation disabled reconciles to all 92.
+- Feed version changes reconcile the effective capped universe at each boundary.
+- Rotation disabled reconciles to the deterministically capped approved universe.
 - Repeated feed versions do not duplicate streams.
 - Refresh failure retains the previous feed.
 - Expiry falls back to the permanent symbols.
@@ -331,7 +333,7 @@ number.
    can proceed through symbol-account-strategy admission.
 6. Change the rotating count to 40 and publish the next boundary feed.
 7. Assert the gateway reconciles to 44 and the probe sees all 44.
-8. Disable rotation and assert reconciliation to all 92.
+8. Disable rotation and assert reconciliation to the configured cap.
 9. Expire the feed and assert visible permanent-only fallback.
 10. Replay the same feed and cutoff and assert no duplicate subscriptions,
     alpha events, or intents.

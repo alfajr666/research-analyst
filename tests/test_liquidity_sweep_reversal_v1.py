@@ -49,7 +49,7 @@ def _grind_bars_for_sweep(n: int = 16 * 24 * 4) -> pl.DataFrame:
     for j in range(20):
         ts = day_d_start + timedelta(minutes=15 * j)
         if j == 5:  # sweep
-            o, h, l, c = 99.0, 99.3, 98.8, 99.7  # low < 99.5 pdl , close > pdl
+            o, h, l, c = 99.0, 99.8, 98.8, 99.7  # low < 99.5 pdl , close > pdl
         elif j == 19:  # BOS last
             o, h, l, c = 99.8, 101.8, 99.6, 101.6  # > pivot 101.5
         else:
@@ -61,7 +61,8 @@ def _grind_bars_for_sweep(n: int = 16 * 24 * 4) -> pl.DataFrame:
         pad = []
         for k in range(n - len(rows)):
             ts = start - timedelta(minutes=15 * (n - len(rows) - k))
-            o, h, l, c = 105.0 - k * 0.01, 105.1, 104.8, 104.9
+            o, c = 105.0 - k * 0.01, 104.9
+            h, l = max(o, c) + 0.1, min(o, c) - 0.1
             pad.append({"timestamp": ts, "open": o, "high": h, "low": l, "close": c, "volume": 1000.0, "open_interest": 1e6, "funding_rate": 0.0001})
         bars = pl.DataFrame(pad + rows, strict=False)
     return bars.sort("timestamp")

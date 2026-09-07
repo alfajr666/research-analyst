@@ -140,9 +140,11 @@ def test_enforced_regime_scope_filters_each_plugin_by_asset_family(monkeypatch, 
     )
     seen_assets = []
     seen_by_plugin = {}
+    scopes_by_plugin = {}
     writes = []
 
     def run_plugin(_cutoff_id, snapshot):
+        scopes_by_plugin["failed-break-v3"] = snapshot["strategy_scope"]
         seen_assets.extend(asset for _, asset in evaluation_symbols(None, cutoff, snapshot))
         seen_by_plugin["failed-break-v3"] = list(seen_assets)
         return [{
@@ -160,6 +162,7 @@ def test_enforced_regime_scope_filters_each_plugin_by_asset_family(monkeypatch, 
         }]
 
     def run_mean_plugin(_cutoff_id, snapshot):
+        scopes_by_plugin["bb-rsi-meanrev-v1"] = snapshot["strategy_scope"]
         seen_by_plugin["bb-rsi-meanrev-v1"] = [
             asset for _, asset in evaluation_symbols(None, cutoff, snapshot)
         ]
@@ -210,3 +213,6 @@ def test_enforced_regime_scope_filters_each_plugin_by_asset_family(monkeypatch, 
     assert result["failed-break-v3"]["emitted"] == 1
     assert result["bb-rsi-meanrev-v1"]["emitted"] == 0
     assert result["_attempted_symbols"] == 2
+    assert scopes_by_plugin["failed-break-v3"]["allowed_assets"] == ["SOL"]
+    assert scopes_by_plugin["bb-rsi-meanrev-v1"]["allowed_assets"] == ["ETH"]
+    assert scopes_by_plugin["failed-break-v3"]["scope_contract_version"] == "strategy-scope-v1"

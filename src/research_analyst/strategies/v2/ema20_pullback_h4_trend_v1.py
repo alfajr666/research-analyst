@@ -2,7 +2,8 @@
 from datetime import timedelta, timezone
 from zoneinfo import ZoneInfo
 import config
-from strategy_v2_context import cutoff_from_id, ema_last, atr_last, evaluation_symbols, has_active_event, load_bars_for_interval
+from strategy_features import build_feature_frame
+from strategy_v2_context import cutoff_from_id, evaluation_symbols, get_shared_computation_context, has_active_event, load_bars_for_interval, strategy_market_connection
 
 STRATEGY_ID = "ema20-pullback-h4-trend-v1"
 
@@ -19,10 +20,12 @@ def _session_passes(timestamp, cutoff):
         return False
     return 15 <= local.hour < 23
 
-def evaluate_symbol(bars, bars4, *, asset, symbol, cutoff, direction):
+def evaluate_symbol(bars, bars4, *, asset, symbol, cutoff, direction, features=None, features4=None):
     if bars.height < 25 or bars4.height < 200: return None
-    r=bars.row(-1,named=True); p=bars.row(-2,named=True); close=float(r["close"]); e20=ema_last(bars["close"].to_list(),20); atr=atr_last(bars,14)
-    e50=ema_last(bars4["close"].to_list(),50); e200=ema_last(bars4["close"].to_list(),200)
+    features = features if features is not None else build_feature_frame(bars, ema={"ema_20": 20}, atr={"atr_14": 14})
+    features4 = features4 if features4 is not None else build_feature_frame(bars4, ema={"ema_50": 50, "ema_200": 200})
+    r=bars.row(-1,named=True); p=bars.row(-2,named=True); close=float(r["close"]); e20=features["ema_20"][-1]; atr=features["atr_14"][-1]
+    e50=features4["ema_50"][-1]; e200=features4["ema_200"][-1]
     if not all(x and x>0 for x in (e20,atr,e50,e200)): return None
     long=direction=="long"; regime=float(bars4["close"][-1])>e200 and e50>e200 if long else float(bars4["close"][-1])<e200 and e50<e200
     pattern=float(r["low"])<=e20 and close>e20 and close>float(r["open"]) and float(p["close"])<float(p["open"]) and close>=float(p["open"]) if long else float(r["high"])>=e20 and close<e20 and close<float(r["open"]) and float(p["close"])>float(p["open"]) and close<=float(p["open"])
@@ -31,14 +34,28 @@ def evaluate_symbol(bars, bars4, *, asset, symbol, cutoff, direction):
     ts=r["timestamp"].replace(tzinfo=timezone.utc) if r["timestamp"].tzinfo is None else r["timestamp"]
     return {"schema_version":1,"strategy_id":STRATEGY_ID,"asset":asset.upper(),"direction":direction,"setup_class":"ema20_pullback_h4_trend","phase":"long_pullback" if long else "short_pullback","observed_at":ts.isoformat(),"valid_until":(ts+timedelta(minutes=5)).isoformat(),"horizon_minutes":5,"confidence":0.5,"confidence_status":"uncalibrated","entry_condition":{"type":"limit_at_ema20_pullback","price":close},"entry_price":close,"invalidation_price":stop,"targets":[target],"feature_snapshot":{"source_symbol":symbol,"ema20_1h":e20,"atr14_1h":atr,"close_4h":float(bars4["close"][-1]),"ema50_4h":e50,"ema200_4h":e200,"swing_extreme":swing,"current_bullish":long and close > float(r["open"]),"previous_bearish":long and float(p["close"]) < float(p["open"]),"session_passed":True,"cutoff":cutoff.isoformat() if cutoff else None}}
 def run_plugin(cutoff_id,snapshot):
-    cutoff=cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now")); conn=config.get_db_connection(read_only=True,db_path=snapshot.get("market_db_path"))
+    cutoff=cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now")); conn, owns_conn = strategy_market_connection(snapshot.get("market_db_path"))
     try:
         out=[]
         if cutoff.minute != 0:
             return out
         for symbol, a in evaluation_symbols(conn, cutoff, snapshot):
-            b=load_bars_for_interval(conn,symbol,"1h",cutoff); h=load_bars_for_interval(conn,symbol,"4h",cutoff); e= evaluate_symbol(b,h,asset=a,symbol=symbol,cutoff=cutoff,direction="long") or evaluate_symbol(b,h,asset=a,symbol=symbol,cutoff=cutoff,direction="short")
+            b = load_bars_for_interval(conn, symbol, "1h", cutoff)
+            h = load_bars_for_interval(conn, symbol, "4h", cutoff)
+            context = get_shared_computation_context()
+            features = context.features(symbol, "1h", {"ema": {"ema_20": 20}, "atr": {"atr_14": 14}}) if context else None
+            features4 = context.features(symbol, "4h", {"ema": {"ema_50": 50, "ema_200": 200}}) if context else None
+            e = evaluate_symbol(
+                b, h, asset=a, symbol=symbol, cutoff=cutoff, direction="long",
+                features=features, features4=features4,
+            ) or evaluate_symbol(
+                b, h, asset=a, symbol=symbol, cutoff=cutoff, direction="short",
+                features=features, features4=features4,
+            )
             if e and not has_active_event(STRATEGY_ID, a, e["direction"], now=cutoff):
-                e["input_snapshot_id"]=cutoff_id; out.append(e)
+                e["input_snapshot_id"] = cutoff_id
+                out.append(e)
         return out
-    finally: conn.close()
+    finally:
+        if owns_conn:
+            conn.close()

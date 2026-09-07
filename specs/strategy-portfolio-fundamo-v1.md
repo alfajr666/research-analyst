@@ -116,8 +116,9 @@ admission later rejects.
 
 ## Acceptance criteria
 
-- A complete run attempts all 92 subscribed assets when rotation is disabled
-  and the configured top-gainer/top-loser count when rotation is enabled.
+- A complete run attempts all assets in the configured effective universe when
+  rotation is disabled and the configured top-gainer/top-loser watchlist when
+  rotation is enabled.
 - No new strategy intent contains `account_id=hyro`.
 - Retired dual-zone v1 IDs cannot be enabled accidentally as live plugins.
 - An admission rejection is observable and does not cause the strategy to alter

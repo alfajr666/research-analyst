@@ -1,5 +1,4 @@
 import json
-import hashlib
 import time
 import sys
 import os
@@ -9,7 +8,7 @@ from uuid import uuid4
 from datetime import datetime, timezone, timedelta
 import config
 from alpha_outbox import OUTBOX_DIR
-from db_maintenance import prune_analyst_db, vacuum_sqlite
+from db_maintenance import prune_analyst_db
 
 def _get_or_create_cutoff_run(cutoff_at: datetime, interval: str = "5m") -> str:
     cutoff_id = f"{interval}:{cutoff_at.isoformat().replace('+00:00', 'Z')}"
@@ -57,16 +56,15 @@ LAST_EVALUATION_OBSERVABILITY = {}
 DAEMON_MODE = False
 _RAW_BATCH_LOCK = threading.Lock()
 _LAST_ANALYST_MAINTENANCE = 0.0
-_LAST_ANALYST_VACUUM = 0.0
 
 
 def _maybe_prune_analyst_db() -> None:
     """Prune analyst snapshots and aged terminal ledgers periodically."""
-    global _LAST_ANALYST_MAINTENANCE, _LAST_ANALYST_VACUUM
+    global _LAST_ANALYST_MAINTENANCE
     if not getattr(config, "DB_MAINTENANCE_ENABLED", True):
         return
     current = time.monotonic()
-    interval = max(60, int(getattr(config, "DB_MAINTENANCE_INTERVAL_SECONDS", 3600)))
+    interval = max(60, int(getattr(config, "DB_MAINTENANCE_INTERVAL_SECONDS", 21600)))
     if current - _LAST_ANALYST_MAINTENANCE < interval:
         return
     _LAST_ANALYST_MAINTENANCE = current
@@ -74,13 +72,6 @@ def _maybe_prune_analyst_db() -> None:
     try:
         connection = config.get_db_connection(db_path=config.ANALYST_DB_PATH)
         result = prune_analyst_db(connection)
-        deleted = sum(result.values())
-        vacuum_interval = max(
-            interval, int(getattr(config, "DB_MAINTENANCE_VACUUM_INTERVAL_SECONDS", 86400))
-        )
-        if deleted and current - _LAST_ANALYST_VACUUM >= vacuum_interval:
-            vacuum_sqlite(connection)
-            _LAST_ANALYST_VACUUM = current
         print(f"Analyst database maintenance: {result}", flush=True)
     except Exception as exc:
         print(f"Analyst database maintenance failed: {exc}", file=sys.stderr, flush=True)
@@ -152,14 +143,8 @@ def prune_db(conn, futures_retention_days: int, auxiliary_retention_days: int = 
         conn.commit()
         print(f"  Pruned: {res_opt} option chains, {res_fut} source_observation rows.")
         
-        # Vacuum database to reclaim disk space (only once a day between 00:00 and 01:00 UTC)
-        now_utc = datetime.now(timezone.utc)
-        if now_utc.hour == 0:
-            print("  Running daily SQLite VACUUM to reclaim space...")
-            conn.execute("VACUUM;")
-            print("  Database vacuum completed.")
-        else:
-            print("  Skipping SQLite VACUUM (runs daily at 00:00 UTC).")
+        # File compaction is deliberately offline; this legacy helper only
+        # performs retention and must not block the live market writer.
     except Exception as e:
         print(f"Error during database pruning: {e}", file=sys.stderr)
 
@@ -412,6 +397,7 @@ def _summarize_interval_results(results, symbols, feed_metadata):
         "strategy_evaluations": sum(
             item.get("attempted_symbols", 0) for item in strategy_summary.values()
         ),
+        "strategy_scopes": results.get("_strategy_scopes", {}),
     }
 
 
@@ -423,8 +409,7 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
     print(f"==========================================")
     
     # The gateway owns all market-database writes and schema initialization.
-    # The orchestrator only initializes/updates its analyst database.
-    config.init_analyst_db()
+    # run_pipeline initializes the analyst schema once before entering here.
     _maybe_prune_analyst_db()
 
     print("Market pruning is owned by ws_gateway; analyst retention ran in this process.")
@@ -463,7 +448,6 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         # Regime enforcement scopes each plugin by family. Feature materialization
         # still covers the full subscription universe so one inactive family does
         # not remove an asset needed by another family.
-        evaluation_assets = list(assets)
         print(
             f"Regime-session gate mode={regime_scope['mode']} "
             f"ready={len(regime_scope.get('allowed_assets', assets))} "
@@ -472,95 +456,11 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
             f"families={{{', '.join(f'{k}:{len(v)}' for k, v in regime_scope.get('family_assets', {}).items())}}}"
         )
 
-        # Materialize v2 features (per spec step 5): bars/TA implied, labeled approx VP, FVG/OB zones, unavailable
-        try:
-            feat_conn = config.get_db_connection(read_only=False, db_path=config.ANALYST_DB_PATH)
-            nowf = datetime.now(timezone.utc)
-            # Use the same engine-owned HTF source contract as plugin invocation.
-            from strategy_v2_context import hybrid_htf_context, load_bars_for_interval
-            market_conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
-            try:
-                with hybrid_htf_context(
-                    config.MARKET_DB_PATH,
-                    config.REGIME_DB_PATH,
-                    completed_cycle_for(cutoff_at, "5m"),
-                    evaluation_cutoff=cutoff_at,
-                ):
-                    bars_by_asset = {
-                        asset: (
-                            load_bars_for_interval(market_conn, asset, "1h", cutoff_at),
-                            load_bars_for_interval(market_conn, asset, "4h", cutoff_at),
-                        )
-                        for asset in evaluation_assets
-                    }
-            finally:
-                market_conn.close()
-
-            # Compute FVG / Order Blocks on 1h + 4h for each asset (advisory)
-            try:
-                import polars as pl
-                from structure_zones import detect_fvg, detect_order_blocks, compute_atr
-            except Exception:
-                pl = None
-
-            zone_rows = []
-            for asset, frames in bars_by_asset.items():
-                if not pl:
-                    continue
-                for tf, df in zip(("1h", "4h"), frames):
-                    try:
-                        if df.height < 5:
-                            continue
-                        atr = compute_atr(df)
-                        fvgs = detect_fvg(df, atr=atr, tf=tf) or []
-                        obs = detect_order_blocks(df, atr=atr, tf=tf) or []
-                        for z in (fvgs + obs):
-                            kid = f"{z.get('type', 'zone')}_{tf}"
-                            low = z.get("low")
-                            high = z.get("high")
-                            created_at = z.get("created_at") or z.get("end") or nowf
-                            evidence = z.get("source_evidence_ids") or []
-                            identity = json.dumps(
-                                [cutoff_id, asset, kid, z.get("direction"), created_at, low, high],
-                                sort_keys=True, default=str,
-                            )
-                            zone_id = "zone-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
-                            zone_rows.append((
-                                zone_id,
-                                cutoff_id, asset, kid, z.get("direction"), z.get("gap") or 0.0,
-                                low, high, z.get("state", "active"),
-                                json.dumps(evidence), "uncalibrated", created_at
-                            ))
-                    except Exception:
-                        pass
-
-            if zone_rows:
-                for zr in zone_rows:
-                    feat_conn.execute("""
-                        INSERT OR IGNORE INTO structure_zones
-                        (zone_id, cutoff_id, asset, kind, direction, strength, low, high, state, source_evidence_ids, confidence_status, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, zr)
-                # also surface summary in feature_snapshots (distinct approx label per spec)
-                for asset in assets:
-                    asset_zone_count = sum(1 for row in zone_rows if row[2] == asset)
-                    feat_conn.execute("""
-                        INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
-                        VALUES (?, ?, ?, 'fvg_ob_zones', 'v1', ?, ?)
-                    """, (f"feat-{cutoff_id}-zones-{asset}", cutoff_id, asset, nowf, json.dumps({"zones": asset_zone_count})))
-
-            # Distinct approximate VP derived from candles.
-            for asset in assets:
-                feat_conn.execute("""
-                    INSERT OR IGNORE INTO feature_snapshots (snapshot_id, cutoff_id, asset, feature_set, version, computed_at, payload_json)
-                    VALUES (?, ?, ?, 'coinalyze_candle_distributed_volume_profile_v1', 'v1', ?, ?)
-                """, (f"feat-{cutoff_id}-vp-{asset}", cutoff_id, asset, nowf, json.dumps({"poc": 100.2, "note": "approximate from candles, not native VP"})))
-
-            feat_conn.commit()
-            feat_conn.close()
-            print(f"Features materialized for {cutoff_id} (zones computed: {len(zone_rows) if 'zone_rows' in locals() else 0})")
-        except Exception as fe:
-            print(f"Feature mat err: {fe}")
+        # Numerical frames and zones are transient outputs of the shared
+        # computation context. Persisting an all-universe advisory materialization
+        # here duplicated plugin/admission work and created a large recomputable
+        # feature-snapshot backlog.
+        print("Shared Polars computation deferred to plugin evaluation context.")
 
         from strategy_plugins import invoke_plugins_for_intervals, ensure_plugin_states
         ensure_plugin_states(config.ANALYST_DB_PATH)
@@ -571,6 +471,11 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
             eval_intervals=eval_intervals,
             cutoff_at=cutoff_at,
             regime_scope=regime_scope,
+            effective_universe={
+                "assets": list(assets),
+                "metadata": dict(feed_metadata),
+                "cutoff_at": cutoff_at,
+            },
         )
         symbols = assets
         strategies = list(config.STRATEGY_ENABLED_IDS)
@@ -585,6 +490,7 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
             "symbols_evaluated": max((item["symbols_evaluated"] for item in per_interval.values()), default=0),
             "strategy_evaluations": actual_evaluations,
             "feed_id": feed_metadata.get("feed_id"),
+            "effective_universe_version": feed_metadata.get("effective_universe_version"),
             "fallback_reason": feed_metadata.get("fallback_reason"),
             "regime_session": regime_scope,
             "signals_emitted": sum(v.get("emitted", 0) for interval in per_interval.values() for v in interval["strategies"].values()),

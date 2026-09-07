@@ -4,9 +4,11 @@ from __future__ import annotations
 from datetime import timedelta, timezone
 
 import config
+from polars_indicators import strict_pivot_indices, vwma_last
+from strategy_features import build_feature_frame
 from strategy_v2_context import (
     cutoff_from_id, evaluation_symbols, has_active_event, last_completed_bar_fresh,
-    load_bars_for_interval, stoch_rsi, wilder_atr, wilder_rsi,
+    get_shared_computation_context, load_bars_for_interval, strategy_market_connection,
 )
 from strategies.v2.dual_zone_follower_v2 import _dmi_adx
 
@@ -18,14 +20,11 @@ def _confirmed_divergence(bars, rsi, lookback: int, direction: str) -> bool:
     if bars.height < lookback + 10:
         return False
     start = max(2, bars.height - lookback)
-    lows, highs = [], []
-    for index in range(start, bars.height - 2):
-        low_window = [float(value) for value in bars["low"][index - 2:index + 3]]
-        high_window = [float(value) for value in bars["high"][index - 2:index + 3]]
-        if float(bars["low"][index]) == min(low_window) and rsi[index] is not None:
-            lows.append(index)
-        if float(bars["high"][index]) == max(high_window) and rsi[index] is not None:
-            highs.append(index)
+    pivot_highs, pivot_lows = strict_pivot_indices(bars, 2, 2, strict=False)
+    lows = [index for index in pivot_lows
+            if start <= index < bars.height - 2 and rsi[index] is not None]
+    highs = [index for index in pivot_highs
+             if start <= index < bars.height - 2 and rsi[index] is not None]
     if direction == "long" and len(lows) >= 2:
         first, second = lows[-2:]
         return float(bars["low"][second]) < float(bars["low"][first]) and rsi[second] > rsi[first]
@@ -36,28 +35,36 @@ def _confirmed_divergence(bars, rsi, lookback: int, direction: str) -> bool:
 
 
 def _vwma(bars, length: int) -> float | None:
-    if bars.height < length:
-        return None
-    tail = bars.tail(length)
-    volume = sum(float(value) for value in tail["volume"].to_list())
-    return sum(float(price) * float(vol) for price, vol in zip(tail["close"].to_list(), tail["volume"].to_list())) / volume if volume > 0 else None
+    return vwma_last(bars, length)
 
 
-def evaluate_symbol(bars5, bars1h, bars4h, bars15m, *, asset: str, symbol: str, cutoff) -> dict | None:
+def evaluate_symbol(bars5, bars1h, bars4h, bars15m, *, asset: str, symbol: str, cutoff,
+                    features4=None, features1=None, features5=None, features15=None) -> dict | None:
     if any(frame.is_empty() for frame in (bars5, bars1h, bars4h, bars15m)):
         return None
     if not last_completed_bar_fresh(bars5, cutoff) or bars5["timestamp"][-1] > cutoff:
         return None
-    closes4 = [float(value) for value in bars4h["close"].to_list()]
-    rsi4 = wilder_rsi(closes4, config.MTF_EXHAUSTION_RSI_LENGTH)
-    dmi = _dmi_adx(bars1h, 14, 14)
-    rsi1 = wilder_rsi([float(value) for value in bars1h["close"].to_list()], config.MTF_EXHAUSTION_RSI_LENGTH)
-    raw, k, d = stoch_rsi([float(value) for value in bars5["close"].to_list()], 14, 14, 3, 3)
+    features4 = features4 if features4 is not None else build_feature_frame(
+        bars4h, rsi={"rsi4": config.MTF_EXHAUSTION_RSI_LENGTH},
+    )
+    features1 = features1 if features1 is not None else build_feature_frame(
+        bars1h, rsi={"rsi1": config.MTF_EXHAUSTION_RSI_LENGTH},
+    )
+    features5 = features5 if features5 is not None else build_feature_frame(
+        bars5, stoch={"stoch": (14, 14, 3, 3)}, atr={"atr": config.MTF_EXHAUSTION_ATR_LENGTH},
+    )
+    features15 = features15 if features15 is not None else build_feature_frame(
+        bars15m, vwma={"vwma": 96},
+    )
+    rsi4 = features4["rsi4"].to_list()
+    dmi = _dmi_adx(bars1h, 14, 14, symbol=symbol, interval="1h")
+    rsi1 = features1["rsi1"].to_list()
+    raw, k, d = (features5[name].to_list() for name in ("stoch_raw", "stoch_k", "stoch_d"))
     if dmi is None or rsi1[-1] is None or any(value is None for value in (raw[-1], k[-1], k[-2], d[-1], d[-2])):
         return None
     row = bars5.row(-1, named=True)
     entry = float(row["close"])
-    atr = wilder_atr(bars5, config.MTF_EXHAUSTION_ATR_LENGTH)
+    atr = features5["atr"][-1]
     if atr is None or atr <= 0:
         return None
     long_signal = _confirmed_divergence(bars4h, rsi4, config.MTF_EXHAUSTION_DIVERGENCE_LOOKBACK, "long") and rsi1[-1] < 30 and dmi[0] < config.MTF_EXHAUSTION_MAX_ADX and k[-2] <= d[-2] and k[-1] > d[-1] and k[-1] < 20
@@ -66,7 +73,7 @@ def evaluate_symbol(bars5, bars1h, bars4h, bars15m, *, asset: str, symbol: str, 
         return None
     direction = "long" if long_signal else "short"
     stop = entry - config.MTF_EXHAUSTION_ATR_STOP_MULTIPLIER * atr if direction == "long" else entry + config.MTF_EXHAUSTION_ATR_STOP_MULTIPLIER * atr
-    vwap = _vwma(bars15m, 96)
+    vwap = features15["vwma"][-1]
     timestamp = row["timestamp"]
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
@@ -90,20 +97,28 @@ def evaluate_symbol(bars5, bars1h, bars4h, bars15m, *, asset: str, symbol: str, 
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
     cutoff = cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now"))
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
+    conn, owns_conn = strategy_market_connection(snapshot.get("market_db_path"))
     try:
         events = []
         for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
+            context = get_shared_computation_context()
+            features4 = context.features(symbol, "4h", {"rsi": {"rsi4": config.MTF_EXHAUSTION_RSI_LENGTH}}) if context else None
+            features1 = context.features(symbol, "1h", {"rsi": {"rsi1": config.MTF_EXHAUSTION_RSI_LENGTH}}) if context else None
+            features5 = context.features(symbol, "5m", {"stoch": {"stoch": (14, 14, 3, 3)}, "atr": {"atr": config.MTF_EXHAUSTION_ATR_LENGTH}}) if context else None
+            features15 = context.features(symbol, "15m", {"vwma": {"vwma": 96}}) if context else None
             event = evaluate_symbol(
                 load_bars_for_interval(conn, symbol, "5m", cutoff),
                 load_bars_for_interval(conn, symbol, "1h", cutoff),
                 load_bars_for_interval(conn, symbol, "4h", cutoff),
                 load_bars_for_interval(conn, symbol, "15m", cutoff),
                 asset=asset, symbol=symbol, cutoff=cutoff,
+                features4=features4, features1=features1,
+                features5=features5, features15=features15,
             )
             if event and not has_active_event(STRATEGY_ID, asset, event["direction"], now=cutoff):
                 event["input_snapshot_id"] = cutoff_id
                 events.append(event)
         return events
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()

@@ -7,12 +7,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import config
+from strategy_features import build_feature_frame, cached_feature_frame
 from strategy_v2_context import (
     cutoff_from_id,
     ema_series,
     evaluation_symbols,
     has_active_event,
     load_bars_for_interval,
+    strategy_market_connection,
     wilder_atr,
     wilder_rsi,
 )
@@ -121,14 +123,17 @@ def _near_ema26(close: float, ema26: float) -> bool:
     )
 
 
-def _find_setup(bars, direction: str) -> dict[str, Any] | None:
+def _find_setup(bars, direction: str, features=None) -> dict[str, Any] | None:
     if bars.height < 2:
         return None
     opens = [float(value) for value in bars["open"].to_list()]
     highs = [float(value) for value in bars["high"].to_list()]
     lows = [float(value) for value in bars["low"].to_list()]
     closes = [float(value) for value in bars["close"].to_list()]
-    ema26 = ema_series(closes, config.EMA7_26_CROSS_SLOW_EMA)
+    ema26 = (
+        features[f"ema_{config.EMA7_26_CROSS_SLOW_EMA}"].to_list()
+        if features is not None else ema_series(closes, config.EMA7_26_CROSS_SLOW_EMA)
+    )
     last_index = bars.height - 1
     first_index = max(0, last_index - config.EMA7_26_CROSS_SETUP_LOOKBACK)
     for index in range(last_index - 1, first_index - 1, -1):
@@ -158,7 +163,8 @@ def _cross_direction(fast, slow) -> str | None:
     return None
 
 
-def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime) -> dict | None:
+def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime,
+                    features5m=None) -> dict | None:
     """Evaluate one completed 5m cutoff using confirmed 1h trend data."""
     cutoff = _utc(cutoff)
     bars5m = _at_cutoff(bars5m, cutoff)
@@ -177,6 +183,8 @@ def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime
         bars1h,
         config.EMA7_26_CROSS_ADX_LENGTH,
         config.EMA7_26_CROSS_ADX_SMOOTHING,
+        symbol=symbol,
+        interval="1h",
     )
     try:
         dmi_valid = dmi is not None and len(dmi) == 3 and all(math.isfinite(float(value)) for value in dmi)
@@ -186,10 +194,16 @@ def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime
         return None
 
     closes = [float(value) for value in bars5m["close"].to_list()]
-    fast = ema_series(closes, config.EMA7_26_CROSS_FAST_EMA)
-    slow = ema_series(closes, config.EMA7_26_CROSS_SLOW_EMA)
-    rsi = _rsi_series(closes)
-    atr = wilder_atr(bars5m, config.EMA7_26_CROSS_ATR_LENGTH)
+    if features5m is None:
+        fast = ema_series(closes, config.EMA7_26_CROSS_FAST_EMA)
+        slow = ema_series(closes, config.EMA7_26_CROSS_SLOW_EMA)
+        rsi = _rsi_series(closes)
+        atr = wilder_atr(bars5m, config.EMA7_26_CROSS_ATR_LENGTH)
+    else:
+        fast = features5m[f"ema_{config.EMA7_26_CROSS_FAST_EMA}"].to_list()
+        slow = features5m[f"ema_{config.EMA7_26_CROSS_SLOW_EMA}"].to_list()
+        rsi = features5m[f"rsi_{config.EMA7_26_CROSS_RSI_LENGTH}"].to_list()
+        atr = features5m[f"atr_{config.EMA7_26_CROSS_ATR_LENGTH}"][-1]
     if (
         len(rsi) < 1
         or fast[-1] is None
@@ -210,7 +224,7 @@ def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime
         config.EMA7_26_CROSS_ENTRY_RSI_MIN <= rsi[-1] <= config.EMA7_26_CROSS_ENTRY_RSI_MAX
     ):
         return None
-    setup = _find_setup(bars5m, direction)
+    setup = _find_setup(bars5m, direction, features5m)
     if setup is None:
         return None
 
@@ -316,20 +330,48 @@ def evaluate_exit(bars5m, *, side: str, cutoff: datetime) -> dict | None:
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
     cutoff = cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now"))
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
+    conn, owns_conn = strategy_market_connection(snapshot.get("market_db_path"))
     try:
         events = []
         for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
+            bars5m = load_bars_for_interval(conn, symbol, "5m", cutoff)
+            bars1h = load_bars_for_interval(conn, symbol, "1h", cutoff)
+            features5m = cached_feature_frame(
+                snapshot,
+                f"ema7-cross-v1:{asset}:{cutoff.isoformat()}:5m",
+                bars5m,
+                lambda frame: build_feature_frame(
+                    frame,
+                    ema={
+                        f"ema_{config.EMA7_26_CROSS_FAST_EMA}": config.EMA7_26_CROSS_FAST_EMA,
+                        f"ema_{config.EMA7_26_CROSS_SLOW_EMA}": config.EMA7_26_CROSS_SLOW_EMA,
+                    },
+                    rsi={f"rsi_{config.EMA7_26_CROSS_RSI_LENGTH}": config.EMA7_26_CROSS_RSI_LENGTH},
+                    atr={f"atr_{config.EMA7_26_CROSS_ATR_LENGTH}": config.EMA7_26_CROSS_ATR_LENGTH},
+                ),
+                asset=asset,
+                interval="5m",
+                cutoff=cutoff,
+                feature_spec={
+                    "ema": {
+                        f"ema_{config.EMA7_26_CROSS_FAST_EMA}": config.EMA7_26_CROSS_FAST_EMA,
+                        f"ema_{config.EMA7_26_CROSS_SLOW_EMA}": config.EMA7_26_CROSS_SLOW_EMA,
+                    },
+                    "rsi": {f"rsi_{config.EMA7_26_CROSS_RSI_LENGTH}": config.EMA7_26_CROSS_RSI_LENGTH},
+                    "atr": {f"atr_{config.EMA7_26_CROSS_ATR_LENGTH}": config.EMA7_26_CROSS_ATR_LENGTH},
+                },
+            )
             event = evaluate_symbol(
-                load_bars_for_interval(conn, symbol, "5m", cutoff),
-                load_bars_for_interval(conn, symbol, "1h", cutoff),
+                bars5m, bars1h,
                 asset=asset,
                 symbol=symbol,
                 cutoff=cutoff,
+                features5m=features5m,
             )
             if event and not has_active_event(STRATEGY_ID, asset, event["direction"], now=cutoff):
                 event["input_snapshot_id"] = cutoff_id
                 events.append(event)
         return events
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()

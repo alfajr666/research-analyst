@@ -6,6 +6,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
+from polars_indicators import ols_slope, strict_pivot_indices
 from strategy_v2_context import wilder_rsi
 
 
@@ -49,22 +50,14 @@ def _source_ids(bars: Any, index: int) -> list[str]:
 
 
 def _pivots(bars: Any, rsi: Sequence[float | None]) -> tuple[list[int], list[int]]:
-    highs = _column_values(bars, "high")
-    lows = _column_values(bars, "low")
-    high_pivots = []
-    low_pivots = []
-    for index in range(FRACTAL_RADIUS, min(len(highs), len(lows), len(rsi)) - FRACTAL_RADIUS):
-        if not _finite(rsi[index]) or not _finite(highs[index]) or not _finite(lows[index]):
-            continue
-        before_high = highs[index - FRACTAL_RADIUS:index]
-        after_high = highs[index + 1:index + FRACTAL_RADIUS + 1]
-        before_low = lows[index - FRACTAL_RADIUS:index]
-        after_low = lows[index + 1:index + FRACTAL_RADIUS + 1]
-        if all(float(highs[index]) > float(value) for value in (*before_high, *after_high)):
-            high_pivots.append(index)
-        if all(float(lows[index]) < float(value) for value in (*before_low, *after_low)):
-            low_pivots.append(index)
-    return high_pivots, low_pivots
+    high_candidates, low_candidates = strict_pivot_indices(
+        bars, FRACTAL_RADIUS, FRACTAL_RADIUS,
+    )
+    valid = {index for index, value in enumerate(rsi) if _finite(value)}
+    return (
+        [index for index in high_candidates if index in valid],
+        [index for index in low_candidates if index in valid],
+    )
 
 
 def _latest_divergence(bars: Any, rsi: Sequence[float | None]) -> dict[str, Any]:
@@ -108,12 +101,7 @@ def _latest_divergence(bars: Any, rsi: Sequence[float | None]) -> dict[str, Any]
 
 
 def _ols_slope(values: Sequence[float]) -> float | None:
-    if len(values) < 2 or not all(_finite(value) for value in values):
-        return None
-    x_mean = (len(values) - 1) / 2
-    y_mean = sum(float(value) for value in values) / len(values)
-    denominator = sum((index - x_mean) ** 2 for index in range(len(values)))
-    return sum((index - x_mean) * (float(value) - y_mean) for index, value in enumerate(values)) / denominator
+    return ols_slope(values)
 
 
 def reversal_gate(

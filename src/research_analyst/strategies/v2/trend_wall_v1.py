@@ -4,9 +4,11 @@ from __future__ import annotations
 from datetime import timedelta, timezone
 
 import config
+import polars as pl
+from strategy_features import build_feature_frame
 from strategy_v2_context import (
     cutoff_from_id, evaluation_symbols, has_active_event, last_completed_bar_fresh,
-    load_bars_for_interval, wilder_atr, wilder_rsi,
+    load_bars_for_interval,
 )
 from strategies.v2.dual_zone_follower_v2 import _dmi_adx
 
@@ -23,21 +25,34 @@ def evaluate_symbol(bars15, bars1h, *, asset: str, symbol: str, cutoff, executio
     dmi = _dmi_adx(bars1h, 14, 14)
     if dmi is None:
         return None
-    closes1 = [float(value) for value in bars1h["close"].to_list()]
-    from strategy_v2_context import ema_last
-    wall, ema7, ema26 = ema_last(closes1, config.TREND_WALL_EMA_LENGTH), ema_last(closes1, 7), ema_last(closes1, 26)
+    features1 = build_feature_frame(
+        bars1h,
+        ema={
+            "wall": config.TREND_WALL_EMA_LENGTH,
+            "ema7": 7,
+            "ema26": 26,
+        },
+    )
+    features15 = build_feature_frame(bars15, rsi={"rsi": 14})
+    features_execution = build_feature_frame(
+        execution_bars if execution_bars is not None else bars15,
+        atr={"atr": config.TREND_WALL_ATR_LENGTH},
+    )
+    wall, ema7, ema26 = (features1[name][-1] for name in ("wall", "ema7", "ema26"))
     if None in (wall, ema7, ema26) or wall <= 0 or ema7 <= 0 or ema26 <= 0 or bars15.height < 2:
         return None
-    closes15 = [float(value) for value in bars15["close"].to_list()]
-    rsi = wilder_rsi(closes15, 14)
-    execution_bars = execution_bars if execution_bars is not None else bars15
-    atr = wilder_atr(execution_bars, config.TREND_WALL_ATR_LENGTH)
+    rsi = features15["rsi"].to_list()
+    atr = features_execution["atr"][-1]
     if rsi[-1] is None or rsi[-2] is None or atr is None or atr <= 0:
         return None
-    volumes = [float(value) for value in bars15["volume"].to_list()]
-    if len(volumes) < 20 or sum(volumes[-20:]) <= 0:
+    volume_frame = bars15.select(
+        pl.col("volume").cast(pl.Float64).rolling_sum(20, min_samples=20).alias("volume_sum"),
+    )
+    volume_sum = volume_frame["volume_sum"][-1]
+    volume = float(signal["volume"] or 0.0)
+    if volume_sum is None or volume_sum <= 0:
         return None
-    volume_ratio = volumes[-1] / (sum(volumes[-20:]) / 20)
+    volume_ratio = volume / (float(volume_sum) / 20)
     close, low, high = float(signal["close"]), float(signal["low"]), float(signal["high"])
     near_wall = abs(close - wall) / wall <= config.TREND_WALL_WALL_PROXIMITY
     long_signal = close > wall and near_wall and low <= wall and ema7 > ema26 and dmi[0] > config.TREND_WALL_ADX_MIN and rsi[-1] > rsi[-2] and rsi[-1] < 40 and volume_ratio > 0.5

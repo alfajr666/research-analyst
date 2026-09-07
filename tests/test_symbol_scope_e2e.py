@@ -78,7 +78,7 @@ class SymbolScopeE2ETests(unittest.TestCase):
         ]
         write_feed(build_feed(records, boundary, generated_at=boundary))
 
-    def test_rotating_plugin_runs_30_when_enabled_and_92_when_disabled(self):
+    def test_rotating_plugin_runs_30_when_enabled_and_capped_when_disabled(self):
         from strategies.v2 import dual_zone_follower_v2
         self._publish_test_feed()
 
@@ -95,8 +95,8 @@ class SymbolScopeE2ETests(unittest.TestCase):
             all_events = dual_zone_follower_v2.run_plugin("cutoff-full", snapshot)
 
         self.assertEqual(len(selected_events), 34)
-        self.assertEqual(len(all_events), 92)
-        self.assertEqual(evaluate.call_count, 126)
+        self.assertEqual(len(all_events), 80)
+        self.assertEqual(evaluate.call_count, 114)
         self.assertNotIn("JUNK", {event["asset"] for event in selected_events + all_events})
 
     def test_feed_supervisor_reconciles_and_falls_back_to_feed_symbols(self):
@@ -132,13 +132,14 @@ class SymbolScopeE2ETests(unittest.TestCase):
 
         config.SYMBOL_ROTATION_ENABLED = False
         full, disabled_metadata = subscription_state(next_boundary + timedelta(minutes=1))
-        self.assertEqual(len(full), 92)
+        self.assertEqual(len(full), 80)
         self.assertEqual(disabled_metadata["status"], "disabled")
 
         config.SYMBOL_ROTATION_ENABLED = True
         expired, fallback = subscription_state(next_boundary + timedelta(hours=5))
-        self.assertEqual(expired, ["BTC", "ETH", "PAXG", "QQQ"])
-        self.assertEqual(fallback["status"], "fallback")
+        self.assertEqual(len(expired), 44)
+        self.assertEqual(fallback["status"], "degraded")
+        self.assertEqual(fallback["effective_universe_version"], second_feed["effective_universe_version"])
 
     def test_compact_plugin_receives_the_upstream_scope_in_both_modes(self):
         from strategies.compact import bb_rsi_meanrev_v1
@@ -155,8 +156,8 @@ class SymbolScopeE2ETests(unittest.TestCase):
             disabled_events = bb_rsi_meanrev_v1.run_plugin("compact-disabled", snapshot)
 
         self.assertEqual(len(enabled_events), 34)
-        self.assertEqual(len(disabled_events), 92)
-        self.assertEqual(evaluate.call_count, 126)
+        self.assertEqual(len(disabled_events), 80)
+        self.assertEqual(evaluate.call_count, 114)
 
 
 if __name__ == "__main__":

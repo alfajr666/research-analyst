@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-09-06
+**Last reviewed:** 2026-09-07
 
 Research Analyst is a read-and-decide market research service. It consumes
 public market data, evaluates versioned strategy plugins, records auditable
@@ -13,10 +13,10 @@ that an intent was filled.
 ```text
 Bybit public tickers
   -> symbol-rotation worker
-  -> versioned performance feed
+  -> versioned sticky performance feed
   -> ws_gateway
        Bybit public WS: completed 1m + 5m bars
-       startup/re-entry REST backfill
+       startup/re-entry REST backfill for missing streamed intervals
        local 5m -> 15m/1h/4h resampling
        -> data/market.sqlite3
        -> durable 1m/5m evaluation triggers
@@ -91,10 +91,31 @@ Closed bars may arrive with an end timestamp one millisecond before the
 boundary, such as `14:44:59.999` for the `14:45` bar. The resampler normalizes
 that representation before exact bucket matching.
 
-The performance rotation feed refreshes every four hours. It contains 30
-rotating assets, normally 15 gainers and 15 losers, plus permanent `BTC`,
-`ETH`, `PAXG`, and `QQQ`. Fresh open-position assets are carried into the
-subscription set when needed.
+The performance rotation feed refreshes at four-hour UTC boundaries and normally
+selects 30 rotating assets, 15 gainers and 15 losers, plus permanent `BTC`,
+`ETH`, `PAXG`, and `QQQ`. Those selections are persisted in a sticky watchlist:
+the default individual TTL is 72 hours and the hard effective-universe cap is 80
+symbols including permanents. A stale or missing feed does not refresh entries;
+unexpired entries remain usable, while expired entries are removed. If no
+non-permanent entries remain, the effective universe contains permanents only.
+Fresh open-position assets may be carried into gateway subscriptions for lifecycle
+context, but are not silently added to evaluator scopes.
+
+## Watchlist And Scope Routing
+
+The gateway and evaluator consume the same cutoff-bound effective-universe
+version. The gateway reconciles live subscriptions and backfills only newly
+added symbols. The evaluator materializes features for the full effective
+universe, then the scope router supplies each plugin with an immutable asset
+list containing the feed identity, universe version, evaluation cutoff, and
+regime-scope provenance.
+
+Strategies remain source-blind: they do not read watchlist configuration,
+rotation state, regime state, or account policy. In `REGIME_SESSION_MODE=enforce`,
+the router additionally restricts each plugin to its active market family. The
+account-symbol policy remains a downstream admission gate. The current 1m/5m
+market-data and strategy contract is unchanged, and Binance OI rotation remains
+separate. See `specs/sticky-symbol-watchlist-and-scope-router-v1.md`.
 
 Canonical asset names are preserved throughout the pipeline. For example,
 `ANKRUSDT` maps to `ANKR` and `MARSCOINUSDT` maps to `MARSCOIN`; bare asset
@@ -265,22 +286,22 @@ See `specs/structural-sl-admission-v2.md` for the normative contract.
 ### Raw Discord Batch Status
 
 The raw-signal Discord batch is an observation-only view of strategy candidates.
-Each row shows the hard admission gate and a bounded reason:
+Each row is a raw strategy emission:
 
 ```text
-asset  side   strategy                 gate    reason
-NIULAI SHORT  bb-rsi-meanrev-v1        FAIL    symbol-account policy
-BTC    LONG   failed-break-v3          PASS    -
+asset  side   strat                    desc
+AZTEC  SHORT  williams-fractal-scalp-v1 PASS
+TRIA   LONG   williams-fractal-scalp-v1 PASS
 ```
 
-The compact display intentionally uses only two gate values:
-
-- `PASS`: hard admission passed;
-- `FAIL`: hard admission failed or was not finalized when the batch was rendered.
-
-`PASS` does not mean selected, delivered, filled, or executed. Score, clash, and
-executor-delivery statuses remain in `raw_signal_status_history` for audit and
-operational views. The batch never delays or changes intent delivery.
+The batch includes every raw candidate emitted by the evaluated strategy
+plugins. `PASS` means only that the strategy emitted the signal; it does not mean
+admission passed, scoring selected it, delivery succeeded, or execution occurred.
+`+ N more signal evaluations` counts additional emitted candidates. `skipped N
+symbols (observed)` counts symbols actually evaluated by a raw-signal plugin that
+emitted no candidate. Symbols excluded by cadence, scope, or missing required
+datasets are not counted as failed evaluations. Admission, score, clash, and
+executor-delivery states remain in `raw_signal_status_history`.
 
 ## Intent Delivery
 
@@ -341,6 +362,19 @@ definition is also in `ops/oxfile.toml`.
 For a deployment of explicitly approved code, restart only services importing
 the changed modules. Verify fresh cutoff logs, restart counts, market freshness,
 regime persistence, pipeline completion, publisher state, and PM decisions.
+
+Database retention runs online every six hours on each database owner's writer
+connection. It deletes in small committed batches and never runs `VACUUM` in a
+worker. Schedule the offline compaction job during a low-activity UTC window:
+
+```cron
+30 4 * * 0 /home/ubuntu/research-analyst/scripts/compact_databases.sh
+```
+
+The compaction job stops the research-analyst services, verifies they are down,
+backs up and compacts `market.sqlite3`, `analyst.sqlite3`, and `regime.sqlite3`,
+runs integrity checks, and restarts only services that were active before the
+job. It does not touch the Binance OI database or executor databases.
 
 ## Setup And Verification
 

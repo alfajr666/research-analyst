@@ -6,12 +6,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import config
+from strategy_features import build_feature_frame, cached_feature_frame
 from strategy_v2_context import (
     cutoff_from_id,
     ema_series,
     evaluation_symbols,
     has_active_event,
     load_bars_for_interval,
+    strategy_market_connection,
     stoch_rsi,
     wilder_atr,
     wilder_rsi,
@@ -82,12 +84,16 @@ def _crossed_down(k: list[float | None], d: list[float | None]) -> bool:
     return all(value is not None for value in (k[-2], d[-2], k[-1], d[-1])) and k[-2] >= d[-2] and k[-1] < d[-1]
 
 
-def _structure(bars5):
+def _structure(bars5, features=None):
     count = config.EMA9_ADX_STRUCTURE_BARS
     if bars5.height < count:
         return None
-    closes = [float(value) for value in bars5["close"].to_list()]
-    emas = ema_series(closes, config.EMA9_ADX_EMA_LENGTH)
+    source = features if features is not None else bars5
+    closes = [float(value) for value in source["close"].to_list()]
+    if features is None:
+        emas = ema_series(closes, config.EMA9_ADX_EMA_LENGTH)
+    else:
+        emas = source[f"ema_{config.EMA9_ADX_EMA_LENGTH}"].to_list()
     window = list(zip(closes[-count:], emas[-count:]))
     if any(ema is None for _, ema in window):
         return None
@@ -103,7 +109,7 @@ def _structure(bars5):
 
 
 def evaluate_symbol(bars1m, bars5m, bars1h, *, asset: str, symbol: str,
-                    cutoff: datetime) -> dict | None:
+                    cutoff: datetime, features1m=None, features5m=None) -> dict | None:
     """Evaluate one completed 1m cutoff without mutating strategy state."""
     cutoff = _utc(cutoff)
     bars1m = _at_cutoff(bars1m, cutoff)
@@ -119,19 +125,30 @@ def evaluate_symbol(bars1m, bars5m, bars1h, *, asset: str, symbol: str,
         bars1h,
         config.EMA9_ADX_ADX_LENGTH,
         config.EMA9_ADX_ADX_LENGTH,
+        symbol=symbol,
+        interval="1h",
     )
     if dmi is None or dmi[0] <= config.EMA9_ADX_ADX_MIN:
         return None
 
     closes1m = [float(value) for value in bars1m["close"].to_list()]
-    raw1m, k1m, d1m = _stoch_values(closes1m)
-    ema1m = ema_series(closes1m, config.EMA9_ADX_EMA_LENGTH)[-1]
+    if features1m is None:
+        raw1m, k1m, d1m = _stoch_values(closes1m)
+        ema1m = ema_series(closes1m, config.EMA9_ADX_EMA_LENGTH)[-1]
+    else:
+        raw1m = features1m["stoch_raw"].to_list()
+        k1m = features1m["stoch_k"].to_list()
+        d1m = features1m["stoch_d"].to_list()
+        ema1m = features1m[f"ema_{config.EMA9_ADX_EMA_LENGTH}"][-1]
     if (len(k1m) < 2 or len(d1m) < 2 or ema1m is None
             or any(value is None for value in (k1m[-2], d1m[-2], k1m[-1], d1m[-1]))):
         return None
 
-    structure = _structure(bars5m)
-    atr5m = wilder_atr(bars5m, config.EMA9_ADX_ATR_LENGTH)
+    structure = _structure(bars5m, features5m)
+    if features5m is None:
+        atr5m = wilder_atr(bars5m, config.EMA9_ADX_ATR_LENGTH)
+    else:
+        atr5m = features5m[f"atr_{config.EMA9_ADX_ATR_LENGTH}"][-1]
     if structure is None or atr5m is None or atr5m <= 0:
         return None
 
@@ -187,7 +204,10 @@ def evaluate_symbol(bars1m, bars5m, bars1h, *, asset: str, symbol: str,
             "adx_1h": dmi[0],
             "+di_1h": dmi[1],
             "-di_1h": dmi[2],
-            "rsi_1m": _rsi_series(closes1m)[-1],
+            "rsi_1m": (
+                features1m[f"rsi_{config.EMA9_ADX_RSI_LENGTH}"][-1]
+                if features1m is not None else _rsi_series(closes1m)[-1]
+            ),
             "stochrsi_raw_1m": raw1m[-1],
             "stochrsi_k_1m": k1m[-1],
             "stochrsi_d_1m": d1m[-1],
@@ -288,21 +308,72 @@ def evaluate_exit(bars1m, bars5m, *, side: str, opened_at: datetime,
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
     cutoff = cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now"))
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
+    conn, owns_conn = strategy_market_connection(snapshot.get("market_db_path"))
     try:
         events = []
         for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
+            bars1m = load_bars_for_interval(conn, symbol, "1m", cutoff)
+            bars5m = load_bars_for_interval(conn, symbol, "5m", cutoff)
+            bars1h = load_bars_for_interval(conn, symbol, "1h", cutoff)
+            feature_prefix = f"ema9-adx-v1:{asset}:{cutoff.isoformat()}"
+            features1m = cached_feature_frame(
+                snapshot,
+                f"{feature_prefix}:1m",
+                bars1m,
+                lambda frame: build_feature_frame(
+                    frame,
+                    ema={f"ema_{config.EMA9_ADX_EMA_LENGTH}": config.EMA9_ADX_EMA_LENGTH},
+                    rsi={f"rsi_{config.EMA9_ADX_RSI_LENGTH}": config.EMA9_ADX_RSI_LENGTH},
+                    stoch={"stoch": (
+                        config.EMA9_ADX_RSI_LENGTH,
+                        config.EMA9_ADX_STOCH_LENGTH,
+                        config.EMA9_ADX_K_LENGTH,
+                        config.EMA9_ADX_D_LENGTH,
+                    )},
+                ),
+                asset=asset,
+                interval="1m",
+                cutoff=cutoff,
+                feature_spec={
+                    "ema": {f"ema_{config.EMA9_ADX_EMA_LENGTH}": config.EMA9_ADX_EMA_LENGTH},
+                    "rsi": {f"rsi_{config.EMA9_ADX_RSI_LENGTH}": config.EMA9_ADX_RSI_LENGTH},
+                    "stoch": {"stoch": (
+                        config.EMA9_ADX_RSI_LENGTH,
+                        config.EMA9_ADX_STOCH_LENGTH,
+                        config.EMA9_ADX_K_LENGTH,
+                        config.EMA9_ADX_D_LENGTH,
+                    )},
+                },
+            )
+            features5m = cached_feature_frame(
+                snapshot,
+                f"{feature_prefix}:5m",
+                bars5m,
+                lambda frame: build_feature_frame(
+                    frame,
+                    ema={f"ema_{config.EMA9_ADX_EMA_LENGTH}": config.EMA9_ADX_EMA_LENGTH},
+                    atr={f"atr_{config.EMA9_ADX_ATR_LENGTH}": config.EMA9_ADX_ATR_LENGTH},
+                ),
+                asset=asset,
+                interval="5m",
+                cutoff=cutoff,
+                feature_spec={
+                    "ema": {f"ema_{config.EMA9_ADX_EMA_LENGTH}": config.EMA9_ADX_EMA_LENGTH},
+                    "atr": {f"atr_{config.EMA9_ADX_ATR_LENGTH}": config.EMA9_ADX_ATR_LENGTH},
+                },
+            )
             event = evaluate_symbol(
-                load_bars_for_interval(conn, symbol, "1m", cutoff),
-                load_bars_for_interval(conn, symbol, "5m", cutoff),
-                load_bars_for_interval(conn, symbol, "1h", cutoff),
+                bars1m, bars5m, bars1h,
                 asset=asset,
                 symbol=symbol,
                 cutoff=cutoff,
+                features1m=features1m,
+                features5m=features5m,
             )
             if event and not has_active_event(STRATEGY_ID, asset, event["direction"], now=cutoff):
                 event["input_snapshot_id"] = cutoff_id
                 events.append(event)
         return events
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()

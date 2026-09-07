@@ -33,7 +33,7 @@ import polars as pl
 import config
 from strategy_v2_context import load_bars_for_interval, resample_ohlcv
 from evaluation_trigger import publish as publish_evaluation_trigger
-from db_maintenance import prune_market_db, vacuum_sqlite
+from db_maintenance import prune_market_db
 
 
 MARKET_KIND = "usdt_perp"
@@ -42,6 +42,7 @@ BINANCE_WS_URL = "wss://fstream.binance.com/stream"
 
 # How far back the resample window looks when building derived TFs from 5m.
 RESAMPLE_LOOKBACK_MIN = int(os.getenv("WS_RESAMPLE_LOOKBACK_MIN", "1440"))  # 24h of 5m
+RESAMPLE_REPAIR_MIN = int(os.getenv("WS_RESAMPLE_REPAIR_MIN", "30"))
 
 # Streamed base timeframes -> exchange-specific tokens.
 STREAMED_TFS = [t.strip() for t in os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").split(",") if t.strip()]
@@ -49,11 +50,13 @@ WS_MESSAGE_TIMEOUT_SECONDS = 90
 WS_STALE_SECONDS = int(os.getenv("WS_STALE_SECONDS", "180"))
 _STARTED_MONOTONIC = time.monotonic()
 _LAST_MARKET_MAINTENANCE = 0.0
-_LAST_MARKET_VACUUM = 0.0
+_RESAMPLE_STATE: Dict[tuple[str, str, str], datetime] = {}
 _HEALTH = {
     "last_message_at": None, "last_bar_at": None, "active_connections": 0,
     "reconnect_count": 0, "last_error": None, "subscribed_count": 0,
-    "feed_id": None, "fallback_state": None, "warmup": {},
+    "feed_id": None, "effective_universe_version": None,
+    "fallback_state": None, "warmup": {}, "subscribed_symbols": [],
+    "topic_count": 0, "last_backfill": {},
 }
 
 
@@ -185,7 +188,10 @@ def select_universe() -> List[str]:
         metadata = dict(metadata)
         metadata["position_carryover_symbols"] = sorted(carryover)
     _HEALTH["subscribed_count"] = len(bases)
+    _HEALTH["subscribed_symbols"] = sorted(bases)
+    _HEALTH["topic_count"] = len(bases) * len(STREAMED_TFS)
     _HEALTH["feed_id"] = metadata.get("feed_id")
+    _HEALTH["effective_universe_version"] = metadata.get("effective_universe_version")
     _HEALTH["fallback_state"] = metadata.get("fallback_reason")
     return sorted(set(b.strip().upper() for b in bases if b and b.strip()))
 
@@ -225,12 +231,15 @@ class SubscriptionSupervisor:
         if not desired:
             desired = list(self.bases)
         next_feed = feed or {}
-        changed = desired != self.bases or next_feed.get("feed_id") != self.feed.get("feed_id")
+        identity = next_feed.get("effective_universe_version") or next_feed.get("feed_id")
+        previous_identity = self.feed.get("effective_universe_version") or self.feed.get("feed_id")
+        changed = desired != self.bases or identity != previous_identity
         result = {
             "changed": changed,
             "added": sorted(set(desired) - set(self.bases)),
             "removed": sorted(set(self.bases) - set(desired)),
             "feed_id": next_feed.get("feed_id"),
+            "effective_universe_version": next_feed.get("effective_universe_version"),
         }
         if changed:
             self.bases[:] = desired
@@ -474,7 +483,62 @@ def _refresh_deep_backfill_jobs(symbols: List[str]) -> dict[str, str]:
         conn.close()
 
 
-def backfill_via_rest(provider: str, symbols: List[str], hours: int) -> int:
+def _backfill_candidates(symbols: List[str], cutoff: datetime | None = None) -> List[str]:
+    """Return symbols missing complete, fresh history for any streamed interval."""
+    from market_coverage import assess_db_coverage
+    from warmup import ready_assets
+
+    cutoff = cutoff or datetime.now(timezone.utc).replace(
+        minute=datetime.now(timezone.utc).minute // 5 * 5,
+        second=0,
+        microsecond=0,
+    )
+    conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
+    try:
+        ready, details = ready_assets(conn, symbols, cutoff)
+        _HEALTH["warmup"] = details
+        ready_set = set(ready)
+        candidates = [symbol for symbol in symbols if symbol not in ready_set]
+        interval_minutes = {"1m": 1, "5m": 5, "15m": 15}
+        for symbol in symbols:
+            if symbol in candidates:
+                continue
+            for interval in STREAMED_TFS:
+                if interval == "5m":
+                    continue
+                minutes = interval_minutes.get(interval)
+                if minutes is None:
+                    candidates.append(symbol)
+                    break
+                expected = max(2, min(1000, int(config.WS_BACKFILL_HOURS) * 60 // minutes))
+                coverage = assess_db_coverage(
+                    conn,
+                    asset=symbol,
+                    interval=interval,
+                    cutoff=cutoff,
+                    expected_bars=expected,
+                    max_age_seconds=float(getattr(config, "DATA_FRESHNESS_MAX_SECONDS", 600)),
+                )
+                if coverage.status != "covered":
+                    candidates.append(symbol)
+                    break
+        return candidates
+    finally:
+        conn.close()
+
+
+def _record_backfill(provider: str, symbols: List[str], rows: int, started: float) -> None:
+    _HEALTH["last_backfill"] = {
+        "provider": provider,
+        "symbols": list(symbols),
+        "symbol_count": len(symbols),
+        "rows": rows,
+        "duration_seconds": round(max(0.0, time.monotonic() - started), 3),
+    }
+
+
+def backfill_via_rest(provider: str, symbols: List[str], hours: int,
+                      emit_row=None) -> int:
     """Seed recent 1m + 5m history via paginated REST backfill."""
     source = config.BYBIT_WS_SOURCE if provider == "bybit" else config.BINANCE_WS_SOURCE
     venue = provider
@@ -512,7 +576,8 @@ def backfill_via_rest(provider: str, symbols: List[str], hours: int) -> int:
                                 "source_start_ms": int(row[0]), "source_end_ms": int(row[0]) + (300000 if tf == "5m" else 60000),
                                 "confirm": 1,
                             }
-                            _queue_row(bar_record_to_row(rec, source, venue, "backfill"))
+                            row = bar_record_to_row(rec, source, venue, "backfill")
+                            emit_row(row) if emit_row is not None else _queue_row(row)
                             written += 1
                     else:
                         remaining = max(2, hours * 60 // (5 if tf == "5m" else 1))
@@ -541,11 +606,13 @@ def backfill_via_rest(provider: str, symbols: List[str], hours: int) -> int:
                                 "source_start_ms": int(row[0]), "source_end_ms": int(row[6]),
                                 "confirm": 1,
                             }
-                            _queue_row(bar_record_to_row(rec, source, venue, "backfill"))
+                            row = bar_record_to_row(rec, source, venue, "backfill")
+                            emit_row(row) if emit_row is not None else _queue_row(row)
                             written += 1
                 except Exception as e:
                     print(f"[backfill] {provider} {sym} {tf} failed: {e}")
-    flush_pending()
+    if emit_row is None:
+        flush_pending()
     return written
 
 
@@ -599,8 +666,16 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
     _get_bar_purity treat them as pure.
     """
     written = 0
-    start = now - timedelta(minutes=RESAMPLE_LOOKBACK_MIN)
+    now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+    window_start = now - timedelta(minutes=RESAMPLE_LOOKBACK_MIN)
     for asset in bases:
+        latest_base = conn.execute(
+            """SELECT MAX(source_end) FROM source_observations
+               WHERE asset=? AND interval='5m' AND source_end <= ?""",
+            (asset, now),
+        ).fetchone()[0]
+        if latest_base is None:
+            continue
         bars = load_bars_for_interval(
             conn, asset, "5m", now,
             lookback_days=max(1, RESAMPLE_LOOKBACK_MIN // 1440),
@@ -615,14 +690,35 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
             """SELECT COUNT(*), SUM(source_start = source_end)
                FROM source_observations
               WHERE asset=? AND interval='5m' AND source_end <= ? AND source_end >= ?""",
-            (asset, now, start),
+            (asset, now, window_start),
         ).fetchone()
         if stamped and stamped[0] and stamped[0] == stamped[1]:
             df = df.with_columns((pl.col("timestamp") + pl.duration(minutes=5)).alias("timestamp"))
         for every in ("15m", "1h", "4h"):
-            res = resample_ohlcv(df, every)
+            state_key = (asset, every, ws_source)
+            previous = _RESAMPLE_STATE.get(state_key)
+            start = (
+                now - timedelta(minutes=RESAMPLE_LOOKBACK_MIN)
+                if previous is None else
+                max(
+                    now - timedelta(minutes=RESAMPLE_LOOKBACK_MIN),
+                    previous - timedelta(minutes=RESAMPLE_REPAIR_MIN),
+                )
+            )
+            # Include the preceding bucket so the first repaired bucket has a
+            # complete source window, then replace only affected derived rows.
+            source_start = start - timedelta(minutes={"15m": 15, "1h": 60, "4h": 240}[every])
+            source_df = df.filter(pl.col("timestamp") >= source_start)
+            res = resample_ohlcv(source_df, every)
             if res.is_empty():
                 continue
+            affected_start = res["timestamp"][0]
+            conn.execute(
+                """DELETE FROM source_observations
+                   WHERE asset=? AND interval=? AND source=? AND venue='derived'
+                     AND source_end >= ? AND source_end <= ?""",
+                (asset, every, ws_source, affected_start, now),
+            )
             for t, o, h, l, c, v, provenance, purity in zip(
                 res["timestamp"].to_list(), res["open"].to_list(), res["high"].to_list(),
                 res["low"].to_list(), res["close"].to_list(), res["volume"].to_list(),
@@ -645,6 +741,7 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
                 }
                 _PENDING.append(row)
                 written += 1
+            _RESAMPLE_STATE[state_key] = _row_timestamp(latest_base)
     if _PENDING:
         _executemany_rows(conn, _PENDING.copy())
         _PENDING.clear()
@@ -653,23 +750,18 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
 
 def _maybe_prune_market(conn, now: datetime) -> None:
     """Run market retention on the gateway's single writer connection."""
-    global _LAST_MARKET_MAINTENANCE, _LAST_MARKET_VACUUM
+    global _LAST_MARKET_MAINTENANCE
     if not getattr(config, "DB_MAINTENANCE_ENABLED", True):
         return
     current = time.monotonic()
-    interval = max(60, int(getattr(config, "DB_MAINTENANCE_INTERVAL_SECONDS", 3600)))
+    interval = max(60, int(getattr(config, "DB_MAINTENANCE_INTERVAL_SECONDS", 21600)))
     if current - _LAST_MARKET_MAINTENANCE < interval:
         return
     _LAST_MARKET_MAINTENANCE = current
     try:
+        # Each batch is committed independently so a large backlog cannot hold
+        # one long write lock. Drain the backlog so ingestion remains bounded.
         result = prune_market_db(conn, now)
-        deleted = sum(result.values())
-        vacuum_interval = max(
-            interval, int(getattr(config, "DB_MAINTENANCE_VACUUM_INTERVAL_SECONDS", 86400))
-        )
-        if deleted and current - _LAST_MARKET_VACUUM >= vacuum_interval:
-            vacuum_sqlite(conn)
-            _LAST_MARKET_VACUUM = current
         print(f"Market database maintenance: {result}", flush=True)
     except Exception as exc:
         print(f"Market database maintenance failed: {exc}", file=sys.stderr, flush=True)
@@ -683,15 +775,40 @@ async def writer_task(queue: asyncio.Queue, bases: List[str], ws_source: str) ->
         while True:
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=1.0)
+                if isinstance(item, dict) and item.get("_writer_command"):
+                    try:
+                        if item["_writer_command"] == "ensure_backfill_jobs":
+                            from warmup import ensure_backfill_jobs
+                            result = ensure_backfill_jobs(conn, item["symbols"])
+                        elif item["_writer_command"] == "refresh_backfill_jobs":
+                            from warmup import ensure_backfill_jobs, ready_assets, refresh_backfill_jobs
+                            ensure_backfill_jobs(conn, item["symbols"], now=item["now"])
+                            _, details = ready_assets(conn, item["symbols"], item["cutoff"])
+                            _HEALTH["warmup"] = details
+                            result = refresh_backfill_jobs(
+                                conn, item["symbols"], item["cutoff"], now=item["now"]
+                            )
+                        else:
+                            raise ValueError(f"unknown writer command: {item['_writer_command']}")
+                        item["future"].set_result(result)
+                    except Exception as exc:
+                        item["future"].set_exception(exc)
+                    finally:
+                        queue.task_done()
+                    continue
                 batch.append(item)
                 if len(batch) >= 500:
                     _executemany_rows(conn, batch)
                     _publish_base_triggers(batch)
+                    for _ in batch:
+                        queue.task_done()
                     batch.clear()
             except asyncio.TimeoutError:
                 if batch:
                     _executemany_rows(conn, batch)
                     _publish_base_triggers(batch)
+                    for _ in batch:
+                        queue.task_done()
                     batch.clear()
                 if time.monotonic() - last_resample >= 60:
                     resample_and_persist(conn, bases, datetime.now(timezone.utc), ws_source)
@@ -700,6 +817,8 @@ async def writer_task(queue: asyncio.Queue, bases: List[str], ws_source: str) ->
     finally:
         if batch:
             _executemany_rows(conn, batch)
+            for _ in batch:
+                queue.task_done()
         resample_and_persist(conn, bases, datetime.now(timezone.utc), ws_source)
         conn.close()
 
@@ -799,26 +918,62 @@ async def _run(provider: str, bases: List[str], queue: asyncio.Queue, source: st
         await _binance_conn(streams, queue, source)
 
 
+async def _writer_command(queue: asyncio.Queue, command: str, symbols: List[str],
+                          *, cutoff: datetime | None = None,
+                          now: datetime | None = None) -> Any:
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    queue.put_nowait({
+        "_writer_command": command,
+        "symbols": list(symbols),
+        "cutoff": cutoff,
+        "now": now or datetime.now(timezone.utc),
+        "future": future,
+    })
+    return await future
+
+
 async def _supervise_provider(provider: str, supervisor: SubscriptionSupervisor,
                               queue: asyncio.Queue, source: str) -> None:
     """Keep live streams aligned with the current durable feed version."""
     stream_task = asyncio.create_task(_run(provider, supervisor.bases, queue, source))
     # Each provider owns its observed feed version even when the symbol list is
     # shared, so Bybit reconciliation cannot hide a Binance update.
-    observed_feed_id = supervisor.feed.get("feed_id")
+    observed_feed_id = supervisor.feed.get("effective_universe_version") or supervisor.feed.get("feed_id")
     try:
         while True:
             await asyncio.sleep(5)
             desired, feed = subscription_state()
-            if desired == supervisor.bases and feed.get("feed_id") == observed_feed_id:
+            current_identity = feed.get("effective_universe_version") or feed.get("feed_id")
+            if desired == supervisor.bases and current_identity == observed_feed_id:
                 continue
             result = supervisor.reconcile(desired, feed)
-            observed_feed_id = feed.get("feed_id")
+            observed_feed_id = current_identity
             if result["added"]:
-                _ensure_deep_backfill_jobs(result["added"])
+                await _writer_command(queue, "ensure_backfill_jobs", result["added"])
                 deep_hours = max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS)
-                await asyncio.to_thread(backfill_via_rest, provider, result["added"], deep_hours)
-                _refresh_deep_backfill_jobs(result["added"])
+                backfill_symbols = _backfill_candidates(result["added"])
+                loop = asyncio.get_running_loop()
+                if backfill_symbols:
+                    started = time.monotonic()
+                    written = await asyncio.to_thread(
+                        backfill_via_rest,
+                        provider,
+                        backfill_symbols,
+                        deep_hours,
+                        lambda row: loop.call_soon_threadsafe(queue.put_nowait, row),
+                    )
+                    _record_backfill(provider, backfill_symbols, written, started)
+                await queue.join()
+                cutoff = datetime.now(timezone.utc).replace(
+                    minute=datetime.now(timezone.utc).minute // 5 * 5,
+                    second=0,
+                    microsecond=0,
+                )
+                await _writer_command(
+                    queue, "refresh_backfill_jobs", result["added"],
+                    cutoff=cutoff,
+                )
             print(
                 f"[ws_gateway] reconcile feed={result['feed_id']} "
                 f"added={len(result['added'])} removed={len(result['removed'])} "
@@ -828,7 +983,10 @@ async def _supervise_provider(provider: str, supervisor: SubscriptionSupervisor,
             await asyncio.gather(stream_task, return_exceptions=True)
             stream_task = asyncio.create_task(_run(provider, supervisor.bases, queue, source))
             _HEALTH["subscribed_count"] = len(supervisor.bases)
+            _HEALTH["subscribed_symbols"] = list(supervisor.bases)
+            _HEALTH["topic_count"] = len(supervisor.bases) * len(STREAMED_TFS)
             _HEALTH["feed_id"] = supervisor.feed.get("feed_id")
+            _HEALTH["effective_universe_version"] = supervisor.feed.get("effective_universe_version")
             _HEALTH["fallback_state"] = supervisor.feed.get("fallback_reason")
     finally:
         stream_task.cancel()
@@ -843,18 +1001,26 @@ async def run_async() -> None:
         return
     print(f"[ws_gateway] universe={len(bases)} symbols; bybit={config.WS_BYBIT_ENABLED} binance={config.WS_BINANCE_ENABLED}; streamed TFs={STREAMED_TFS}")
     _HEALTH["subscribed_count"] = len(bases)
+    _HEALTH["subscribed_symbols"] = list(bases)
+    _HEALTH["topic_count"] = len(bases) * len(STREAMED_TFS)
     _HEALTH["feed_id"] = feed.get("feed_id")
+    _HEALTH["effective_universe_version"] = feed.get("effective_universe_version")
     _HEALTH["fallback_state"] = feed.get("fallback_reason")
 
     _ensure_deep_backfill_jobs(bases)
     _refresh_deep_backfill_jobs(bases)
+    backfill_symbols = _backfill_candidates(bases)
 
     if config.WS_BYBIT_ENABLED:
-        n = backfill_via_rest("bybit", bases, max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS))
+        started = time.monotonic()
+        n = backfill_via_rest("bybit", backfill_symbols, max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS))
+        _record_backfill("bybit", backfill_symbols, n, started)
         print(f"[ws_gateway] bybit backfill wrote {n} bars")
         _refresh_deep_backfill_jobs(bases)
     if config.WS_BINANCE_ENABLED:
-        n = backfill_via_rest("binance", bases, max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS))
+        started = time.monotonic()
+        n = backfill_via_rest("binance", backfill_symbols, max(config.WS_BACKFILL_HOURS, config.DEEP_BACKFILL_HOURS))
+        _record_backfill("binance", backfill_symbols, n, started)
         print(f"[ws_gateway] binance backfill wrote {n} bars")
         _refresh_deep_backfill_jobs(bases)
 

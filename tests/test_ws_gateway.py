@@ -55,6 +55,39 @@ def test_gateway_keeps_fresh_open_position_after_rotation_drop(monkeypatch, tmp_
     assert wsg.select_universe() == ["BTC", "ETH", "SOL"]
 
 
+def test_backfill_candidates_skip_symbols_with_retained_ready_history(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from warmup import required_5m_bars
+
+    db = tmp_path / "market.sqlite3"
+    monkeypatch.setattr(config, "MARKET_DB_PATH", str(db))
+    config.init_market_db(db)
+    cutoff = datetime(2026, 9, 7, 12, 5, tzinfo=timezone.utc)
+    conn = config.get_db_connection(db_path=db)
+    try:
+        rows = []
+        for interval, count, minutes in (("5m", required_5m_bars(), 5), ("1m", 1000, 1)):
+            for index in range(count):
+                end = cutoff - timedelta(minutes=minutes * (count - index - 1))
+                rows.append((
+                    f"ready-{interval}-{index}", "bybit_ws", "bybit", "READYUSDT", "READY", "usdt_perp",
+                    interval, end - timedelta(minutes=minutes), end, end, "test",
+                    '{"open":100,"high":101,"low":99,"close":100,"volume":1}',
+                ))
+        conn.executemany(
+            """INSERT INTO source_observations
+               (observation_id, source, venue, native_symbol, asset, market_kind,
+                interval, source_start, source_end, retrieved_at, retrieval_kind, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert wsg._backfill_candidates(["READY", "COLD"], cutoff) == ["COLD"]
+
+
 def test_plan_binance_streams_single_conn():
     streams = wsg.plan_binance_streams(["BTC", "ETH"])
     assert "btcusdt@kline_1m" in streams

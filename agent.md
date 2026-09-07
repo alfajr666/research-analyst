@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-06
+**Last reviewed:** 2026-09-07
 
 ## Mission and boundaries
 
@@ -24,37 +24,56 @@ intent. Never call old multi-target adapters for the live compact path.
 
 Bybit public WS supplies confirmed 1m and 5m klines plus mark price. The gateway
 has one market SQLite writer. It locally resamples completed 5m data into 15m,
-1h, and 4h observations. Startup REST backfill is only a warm seed; CoinAnalyze
-and venue-aggregate ingestion are not live defaults. Binance is opt-in.
+1h, and 4h observations. Startup and re-entry REST backfill seeds missing
+streamed intervals through that same writer; CoinAnalyze and venue-aggregate
+ingestion are not live defaults. Binance is opt-in.
 
 Market and analyst databases are separate. Use read-only market connections from
 analyst code and never start duplicate writers.
 
 ## Live strategy set
 
-| ID | Evaluation |
-| --- | --- |
-| `failed-break-v3` | 5m with 15m/4h context |
-| `bb-rsi-meanrev-v1` | 5m |
-| `williams-fractal-scalp-v1` | 1m |
-| `ema9-continuation-stochrsi-v1` | 1m trigger, 5m setup |
+| ID | Cadence | Family | Route |
+| --- | --- | --- | --- |
+| `failed-break-v3` | 5m | reversal | Bybit Hyro |
+| `bb-rsi-meanrev-v1` | 5m | mean reversion | Bybit Hyro |
+| `williams-fractal-scalp-v1` | 1m | trend | Bybit Hyro |
+| `ema9-adx-stochrsi-state-v1` | 1m | trend | Bybit Hyro |
+| `dual-zone-follower-v2` | 5m | trend | Bybit Fundamo |
+| `dual-zone-short-follower-v2` | 5m | trend | Bybit Fundamo |
+| `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit Fundamo |
+| `gold-trend-ema-bb-stoch-v1` | 5m | trend | Bybit Fundamo |
+| `mtf-exhaustion-reversal-v1` | 5m | reversal | Bybit Fundamo |
+| `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Bybit Fundamo |
+| `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Bybit Fundamo |
 
 The approved policy universe remains `symbols/static_universe.json` and currently
-contains 92 Bybit-compatible bases. It is used for admission and when rotation is
-disabled; it is not the live performance-ranking pool. The four permanent
-subscription symbols are BTC, ETH, PAXG, and QQQUSDT. When enabled, the upstream
-rotation feed fetches all valid Bybit linear USDT tickers, selects the configured
-equal split of top 24h gainers and losers, and refreshes at fixed four-hour UTC
-boundaries. A missing or invalid snapshot falls back to the permanent symbols
-only. Fresh OPEN executor-position assets are added to the gateway subscription
-set so PM context is not lost during rotation.
+contains 92 Bybit-compatible bases. It remains the admission policy universe and
+performance-ranking pool, not an instruction to evaluate all 92 assets. The
+permanent subscription symbols are BTC, ETH, PAXG, and QQQUSDT (canonical asset
+`QQQ`). The upstream rotation feed selects the configured equal split of top 24h
+gainers and losers at fixed four-hour UTC boundaries, then maintains a durable
+sticky watchlist. The default watchlist TTL is 72 hours and the hard effective
+universe cap is 80 symbols, including permanents. A stale or missing feed may
+continue unexpired entries without refreshing them; expired entries are removed
+and the universe fails closed to permanents. Fresh OPEN executor-position assets
+may extend gateway market-data subscriptions for lifecycle context, but never
+extend the evaluator universe.
 Registration is controlled by
 `STRATEGY_ENABLED_IDS`; activation is also constrained by
 `STRATEGY_ACTIVE_IDS` and `plugin_states`. Registered v2 strategies are not
 implicitly live execution strategies.
 
-Trade intents are written to the shared executor inbox at
-`/home/ubuntu/bybit-executor/data/intents`. Do not create or use a second local intent
+The evaluator always materializes features for the cutoff-bound effective
+universe, then builds one immutable scope per plugin. Regime enforcement may
+restrict a scope by family, but strategies do not inspect rotation, watchlist,
+regime, or account policy. Account-symbol admission remains a downstream hard
+gate. The 1m market-data and strategy contract is unchanged, and Binance OI
+rotation remains separate.
+
+Trade intents are published through the shared SQLite intent bus configured by
+the absolute `INTENT_BUS_DB`. Legacy JSON inbox writing remains disabled unless
+explicitly enabled for compatibility. Do not create or use a second local intent
 inbox.
 
 ## Candidate lifecycle
@@ -107,12 +126,16 @@ daemon-thread side effect publishes committed candidates in fixed UTC 30-minute
 windows. It never reruns strategies, waits on Discord, changes admission, or
 delays the immediate executor intent path. Treat it as observation-only.
 
-The compact batch table contains `asset`, `side`, `strategy`, `gate`, and
-`reason`. The displayed gate has only two values: `PASS` means hard admission
-passed; `FAIL` means hard admission failed or was not finalized when the batch
-was rendered. The reason column explains failures. `PASS` does not mean that a
-candidate was selected, delivered, filled, or executed. Detailed score, clash,
-and executor-delivery states remain in `raw_signal_status_history`.
+The compact batch table contains `asset`, `side`, `strat`, and `desc`. It includes
+every raw candidate emitted by the evaluated strategy plugins, and each emitted
+row is displayed as `PASS` because it passed that strategy's own signal
+conditions. This is not an admission, score, clash, selection, delivery, fill,
+or execution result. The `+ N more signal evaluations` suffix counts additional
+emitted candidates. `skipped N symbols (observed)` counts symbols actually
+evaluated by a raw-signal plugin that emitted no candidate; symbols excluded by
+cadence, scope, or unavailable required datasets are not counted as failed.
+Admission, score, clash, and executor-delivery states remain in
+`raw_signal_status_history`.
 
 ## Operations and safety
 
@@ -136,12 +159,14 @@ raw-signal statuses, alpha outbox/ledger, executor inbox, snapshots, and PM
 decisions. Report advisory, selected, accepted, and filled as distinct states.
 
 For rotation-specific checks, inspect `data/symbol_rotation_feed.json` for the
-feed ID, UTC validity window, source timestamp, selected gainers/losers, and
-fallback reason. Inspect `data/ws_health.json` for the feed ID, subscribed
-count, fallback state, active connections, and last error. The expected live
-shape is 34 feed symbols plus any fresh open-position assets; a feed refresh is
-expected only at a four-hour UTC boundary, with a fresh startup bootstrap
-allowed inside the current window.
+feed ID, UTC validity window, source timestamp, selected gainers/losers, sticky
+entries, effective-universe version, freshness state, cap, and fallback reason.
+Inspect `data/ws_health.json` for the feed ID, effective-universe version,
+subscribed symbols and count, topic count, backfill summary, fallback state,
+active connections, and last error. A normal fresh rotation feed is typically
+34 symbols; the sticky effective universe may grow to the configured cap of 80
+until individual entries expire. Feed publication remains boundary-driven, but
+the evaluator and gateway use the same cutoff-bound effective state.
 
 ## Message contracts
 
@@ -153,7 +178,7 @@ allowed inside the current window.
 - **Research note:** optional `---` section with advisory verdict, thesis, and up
   to two limitations. It never changes deterministic signal fields.
 - **Raw signal batch:** exactly `📊 SIGNAL · research-analyst · 30m`, a UTC window,
-  a fenced fixed-width `asset / side / strategy / gate / reason` table with five
+  a fenced fixed-width `asset / side / strat / desc` table with five raw emitted
   rows, then `+ N more signal evaluations` and `skipped N symbols (observed)`.
 - **OI bar and multi-hour:** `OI ROTATION · Binance USDM` with ranked candidates,
   completion/window metadata, expiry where applicable, and the feed-only footer.

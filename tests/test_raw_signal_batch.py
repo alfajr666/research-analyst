@@ -2,7 +2,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
-from raw_signal_batch import capture, record_status, window_start, publish_once, render
+from raw_signal_batch import (
+    capture, record_evaluation_coverage, record_status, window_start, publish_once, render,
+)
 import orchestrator
 
 
@@ -46,27 +48,66 @@ def test_batch_claim_retry_does_not_duplicate_send(tmp_path, monkeypatch):
     assert transport.calls == 1
 
 
-def test_render_exposes_all_candidate_statuses_and_reason(monkeypatch):
+def test_batch_includes_raw_candidates_regardless_of_admission(tmp_path, monkeypatch):
+    db = Path(tmp_path) / "analyst.sqlite3"
+    monkeypatch.setattr(config, "ANALYST_DB_PATH", str(db))
+    monkeypatch.setattr(config, "RAW_SIGNAL_DISCORD_BATCH_ENABLED", True)
+    config.init_analyst_db(db)
+    raw_id = capture(_event(datetime(2026, 8, 29, 5, 40, tzinfo=timezone.utc)), db)
+    record_status(raw_id, hard_gate_status="fail", reason="invalid geometry", db_path=db)
+
+    class Transport:
+        calls = 0
+        def send(self, text):
+            self.calls += 1
+            return "ok"
+
+    transport = Transport()
+
+    assert publish_once(datetime(2026, 8, 29, 6, 0, tzinfo=timezone.utc), db, transport)
+    assert transport.calls == 1
+
+
+def test_batch_counts_only_evaluated_symbols_without_emissions(tmp_path, monkeypatch):
+    db = Path(tmp_path) / "analyst.sqlite3"
+    monkeypatch.setattr(config, "ANALYST_DB_PATH", str(db))
+    monkeypatch.setattr(config, "RAW_SIGNAL_DISCORD_BATCH_ENABLED", True)
+    config.init_analyst_db(db)
+    ts = datetime(2026, 8, 29, 5, 40, tzinfo=timezone.utc)
+    capture(_event(ts), db)
+    record_evaluation_coverage("demo", ts, ["BTC", "ETH"], {"BTC": 1}, db)
+
+    class Transport:
+        message = None
+        def send(self, text):
+            self.message = text
+            return "ok"
+
+    transport = Transport()
+
+    assert publish_once(datetime(2026, 8, 29, 6, 0, tzinfo=timezone.utc), db, transport)
+    assert "skipped 1 symbols (observed)" in transport.message
+
+
+def test_render_shows_all_raw_candidates_as_strategy_pass(monkeypatch):
     monkeypatch.setattr(config, "RAW_SIGNAL_DISCORD_BATCH_MINUTES", 30)
     rows = [(
         "raw-id", "candidate-id", "bb-rsi-meanrev-v1", "NIULAI", "short",
-        "2026-08-29T05:40:00Z", "{}", "fail",
-        "symbol-account policy: compact Hyro asset policy",
+        "2026-08-29T05:40:00Z", "{}", None,
     ), (
         "raw-id-2", "candidate-id-2", "demo", "BTC", "long",
-        "2026-08-29T05:41:00Z", "{}", "pass", None,
+        "2026-08-29T05:41:00Z", "{}", None,
     )]
 
     message = render(rows, datetime(2026, 8, 29, 5, 30, tzinfo=timezone.utc))
 
-    assert "strategy                 gate    reason" in message
-    assert "FAIL" in message
-    assert "PASS" in message
-    assert "compact Hyro asset policy" in message
-    assert "N/A" not in message
+    assert "strat                    desc" in message
+    assert "NIULAI" in message
+    assert "BTC" in message
+    assert message.count("PASS") == 2
 
 
-def test_render_fails_closed_for_unfinished_statuses(monkeypatch):
+def test_render_shows_raw_candidate_without_admission_status(monkeypatch):
     monkeypatch.setattr(config, "RAW_SIGNAL_DISCORD_BATCH_MINUTES", 30)
     rows = [(
         "raw-id", "candidate-id", "demo", "BTC", "long",
@@ -75,8 +116,8 @@ def test_render_fails_closed_for_unfinished_statuses(monkeypatch):
 
     message = render(rows, datetime(2026, 8, 29, 5, 30, tzinfo=timezone.utc))
 
-    assert "FAIL" in message
-    assert "admission not finalized" in message
+    assert "BTC" in message
+    assert "PASS" in message
 
 
 def test_raw_batch_publisher_failure_is_isolated(monkeypatch, capsys):

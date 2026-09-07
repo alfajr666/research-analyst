@@ -7,7 +7,12 @@ import sys
 
 import config
 from regime_history import init_regime_history_schema
-from strategy_v2_context import cutoff_from_id, hybrid_htf_context, load_bars_for_interval
+from strategy_v2_context import (
+    cutoff_from_id,
+    hybrid_htf_context,
+    load_bars_for_interval,
+    shared_computation_context,
+)
 
 
 UTC = timezone.utc
@@ -116,6 +121,40 @@ def test_engine_stitches_direct_seed_to_canonical_1h_tail(tmp_path, monkeypatch)
         assert details["handoff_at"] == handoff.isoformat()
         assert len(details["direct_bar_ids"]) == 4
         assert len(details["canonical_5m_observation_ids"]) == 12
+    finally:
+        market_conn.close()
+        regime_conn.close()
+
+
+def test_engine_extends_cached_hybrid_frame_across_cutoffs(tmp_path, monkeypatch):
+    market, regime, market_conn, regime_conn = _connections(tmp_path)
+    monkeypatch.setattr(config, "HYBRID_HTF_ENABLED", True, raising=False)
+    monkeypatch.setattr(config, "HYBRID_HTF_1H_SEED_BARS", 3, raising=False)
+    monkeypatch.setattr(config, "HYBRID_HTF_1H_RETAIN_DAYS", 1, raising=False)
+    try:
+        handoff = datetime(2026, 9, 4, 10, tzinfo=UTC)
+        first_cutoff = datetime(2026, 9, 4, 11, tzinfo=UTC)
+        second_cutoff = datetime(2026, 9, 4, 11, 5, tzinfo=UTC)
+        _insert_direct_bars(regime_conn, "ROTATED", "1h", handoff, 3)
+        _insert_5m_tail(market_conn, "ROTATED", handoff, 12)
+        _insert_5m_tail(market_conn, "ROTATED", first_cutoff, 1)
+
+        with hybrid_htf_context(market, regime, first_cutoff):
+            with shared_computation_context(market, first_cutoff) as first_shared:
+                first = load_bars_for_interval(
+                    market_conn, "ROTATED", "1h", first_cutoff
+                )
+                assert first_shared.stats["sequential_misses"] == 1
+
+        with hybrid_htf_context(market, regime, second_cutoff):
+            with shared_computation_context(market, second_cutoff) as second_shared:
+                second = load_bars_for_interval(
+                    market_conn, "ROTATED", "1h", second_cutoff
+                )
+                assert second_shared.stats["sequential_hits"] == 1
+
+        assert second.height == first.height
+        assert second["timestamp"].to_list()[-1] == first_cutoff
     finally:
         market_conn.close()
         regime_conn.close()

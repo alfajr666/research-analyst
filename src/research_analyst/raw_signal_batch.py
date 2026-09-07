@@ -41,6 +41,26 @@ def capture(event, db_path=None):
         print(f"raw signal capture error: {exc}")
         return None
 
+def record_evaluation_coverage(strategy_id, evaluated_at, evaluated_assets,
+                               emitted_counts, db_path=None):
+    """Best effort: record assets actually passed to a strategy plugin."""
+    assets = {str(asset).upper().strip() for asset in evaluated_assets if str(asset).strip()}
+    if not assets:
+        return
+    timestamp = _utc(evaluated_at).isoformat().replace("+00:00", "Z")
+    conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH)
+    try:
+        conn.executemany(
+            """INSERT OR REPLACE INTO raw_signal_evaluation_coverage
+               (strategy_id, asset, evaluated_at, emitted_count) VALUES (?, ?, ?, ?)""",
+            [(strategy_id, asset, timestamp, int(emitted_counts.get(asset, 0))) for asset in assets],
+        )
+        conn.commit()
+    except Exception as exc:
+        print(f"raw signal coverage error: {exc}")
+    finally:
+        conn.close()
+
 def record_status(raw_signal_id, *, hard_gate_status=None, score_status=None,
                   clash_status=None, executor_intent_status=None, reason=None, db_path=None):
     """Append a downstream status without rewriting the raw candidate."""
@@ -65,13 +85,11 @@ def render(rows, start, skipped_symbols=0):
     end = start + timedelta(minutes=config.RAW_SIGNAL_DISCORD_BATCH_MINUTES)
     lines = [f"📊 SIGNAL · research-analyst · {config.RAW_SIGNAL_DISCORD_BATCH_MINUTES}m",
              f"window {start:%H:%M}–{end:%H:%M} UTC", "```",
-             "asset  side   strategy                 gate    reason",
-             "─────  ─────  ───────────────────────  ───────  ────────────────────────────────────────────────────────────"]
+             "asset  side   strat                    desc",
+             "─────  ─────  ───────────────────────  ────"]
     for row in rows[:5]:
-        gate = "PASS" if row[7] == "pass" else "FAIL"
-        reason = row[8] or ("admission not finalized" if row[7] != "pass" else None)
         lines.append(
-            f"{row[3]:<5}  {row[4].upper():<5}  {row[2]:<23}  {gate:<7}  {_display_reason(reason)}"
+            f"{row[3]:<5}  {row[4].upper():<5}  {row[2]:<23}  PASS"
         )
     lines.append("```")
     remaining = max(0, len(rows) - 5)
@@ -93,25 +111,33 @@ def publish_once(now=None, db_path=None, transport=None):
             if batch[0] not in {"pending", "claimed"}:
                 return False
             rows = conn.execute("""SELECT r.raw_signal_id,r.candidate_id,r.strategy_id,r.asset,r.direction,
-                        r.observed_at,r.payload_json,h.hard_gate_status,h.reason
+                        r.observed_at,r.payload_json,NULL
                       FROM discord_signal_batch_members m JOIN raw_signals r ON r.raw_signal_id = m.raw_signal_id
-                      LEFT JOIN raw_signal_status_history h ON h.status_id = (
-                        SELECT status_id FROM raw_signal_status_history WHERE raw_signal_id=r.raw_signal_id
-                        ORDER BY recorded_at DESC LIMIT 1)
-                      WHERE m.window_start = ? ORDER BY r.observed_at,r.raw_signal_id""", (key,)).fetchall()
+                       WHERE m.window_start = ?
+                       ORDER BY r.observed_at,r.raw_signal_id""", (key,)).fetchall()
         else:
             rows = conn.execute("""SELECT r.raw_signal_id,r.candidate_id,r.strategy_id,r.asset,r.direction,
-                    r.observed_at,r.payload_json,h.hard_gate_status,h.reason
-                     FROM raw_signals r LEFT JOIN raw_signal_status_history h ON h.status_id = (
-                       SELECT status_id FROM raw_signal_status_history WHERE raw_signal_id=r.raw_signal_id
-                       ORDER BY recorded_at DESC LIMIT 1)
-                     WHERE r.observed_at < ? AND
+                    r.observed_at,r.payload_json,NULL
+                     FROM raw_signals r
+                      WHERE r.observed_at < ? AND
                        ((r.observed_at >= ? AND r.observed_at < ?) OR NOT EXISTS (
                           SELECT 1 FROM discord_signal_batch_members m
                           WHERE m.raw_signal_id = r.raw_signal_id
                         ))
                      ORDER BY r.observed_at,r.raw_signal_id""", (end.isoformat(), start.isoformat(), end.isoformat())).fetchall()
         if not rows: return False
+        evaluated_assets = {
+            row[0] for row in conn.execute(
+                """SELECT DISTINCT asset FROM raw_signal_evaluation_coverage
+                   WHERE evaluated_at >= ? AND evaluated_at < ?""",
+                (start.isoformat(), end.isoformat()),
+            ).fetchall()
+        }
+        emitted_assets = {
+            row[3] for row in rows
+            if start <= _utc(row[5]) < end
+        }
+        skipped_symbols = len(evaluated_assets - emitted_assets)
         now_s = now.isoformat()
         conn.execute("INSERT OR IGNORE INTO discord_signal_batches(window_start,window_end,status,candidate_count,message_count) VALUES (?, ?, 'pending', ?, 0)", (key, end.isoformat(), len(rows)))
         conn.commit()
@@ -137,9 +163,7 @@ def publish_once(now=None, db_path=None, transport=None):
         conn.commit()
     finally: conn.close()
     try:
-        observed_assets = {row[3] for row in rows}
-        skipped = len(set(config.load_static_symbols()) - observed_assets)
-        message = batch[2] if batch and batch[2] else render(rows, start, skipped)
+        message = batch[2] if batch and batch[2] else render(rows, start, skipped_symbols)
         if not (batch and batch[2]):
             conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH)
             conn.execute("UPDATE discord_signal_batches SET message_text=?,message_hash=? WHERE window_start=? AND status='claimed' AND claimed_by=?", (message, hashlib.sha256(message.encode()).hexdigest(), key, claim_id))

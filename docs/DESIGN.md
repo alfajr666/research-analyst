@@ -43,7 +43,7 @@ The engine **never holds exchange credentials and never places orders**.
                  ┌─────────────────────────────────────────────────────────┐
                  │  orchestrator._run_pipeline (every INGEST_INTERVAL_MINS)  │
                  │   ingest → prune → regime eval → cutoff run →             │
-                 │   materialize HTF zones (structure_zones) →               │
+                  │   compute HTF zones in memory →                          │
                  │   invoke_plugins_for_cutoff → outcome eval → health.json  │
                  └───────────────────────────┬─────────────────────────────┘
                                              │ alpha_outbox/*.json (trade intent)
@@ -95,13 +95,13 @@ Split by ownership to preserve single-writer discipline.
 **Market data (`MARKET_DB_PATH`, gateway-owned):**
 - `source_observations` — the canonical bar store: `asset, native_symbol, interval, source, source_end, payload_json`. Holds 1m/5m/15m (and HTF resampled) bars.
 - `source_request_log` — ingestion rate-limit/freshness log (CA/OM circuits).
-- `cutoff_runs` — `cutoff_id, cutoff_at, status (running|finalized)`, gates plugin runs.
-- `feature_snapshots` — materialized features per cutoff (`fvg_ob_zones`, `coinalyze_candle_distributed_volume_profile_v1`, `openmarket_htf_profile`, …).
-- `structure_zones` — HTF FVG/OB zones (`kind, direction, low, high, state, confidence_status`).
 - `universe_snapshots`, `broad_discovery_snapshots`, `discovery_watchlist_history`, `deep_backfill_jobs` — point-in-time discovery + durable backfill.
 - `regime_signals`, `confluence_alerts`, `scanner_history`, `brain_outputs`, `option_chains`, `alpha_candidates` — research/regime records.
 
 **Analyst state (`ANALYST_DB_PATH`, orchestrator-owned):**
+- `cutoff_runs` — `cutoff_id, cutoff_at, status (running|finalized)`, gates plugin runs.
+- `feature_snapshots` — lightweight materialized features per cutoff (`fvg_ob_zones`, `coinalyze_candle_distributed_volume_profile_v1`, …).
+- `structure_zones` — legacy compatibility table; no live rows are written or read.
 - `alpha_events` — authoritative persisted events (dedupe_key PK). `status ∈ active|expired|invalidated`.
 - `alpha_event_status_history`, `alpha_confidence_observations`, `signal_deliveries` (per-channel attempt/retry), `execution_deliveries`, `research_requests/artifacts/evidence/run_metrics`, `pipeline_runs`.
 
@@ -118,7 +118,7 @@ Split by ownership to preserve single-writer discipline.
 Driven by `orchestrator._run_pipeline()` → `strategy_plugins.invoke_plugins_for_intervals()` (per-interval; legacy single-cutoff `invoke_plugins_for_cutoff` retained for tests).
 
 1. **Cutoff.** `completed_cycle_for(now, interval)` → the most recent completed boundary for each `EVAL_INTERVALS` member (1m/5m/15m); `_ensure_cutoff_run_finalized()` marks `cutoff_runs.status='finalized'`. Plugins require a finalized cutoff (bar-safety: only completed bars, `source_end < cutoff`).
-2. **Feature materialization.** For the active universe, `structure_zones` computes FVG/OB on resampled 1h/4h; results written to `structure_zones` + `feature_snapshots`.
+2. **Feature materialization.** For the active universe, `structure_zones` computes FVG/OB on resampled 1h/4h in memory; only a lightweight count is written to `feature_snapshots`.
 3. **Plugin invocation.** `load_enabled_plugins()` returns plugins whose id is in `STRATEGY_ENABLED_IDS`. Each `p.run(cutoff_id, snapshot)` is executed in a try/except — **failures are isolated** and reported per-plugin, never aborting the cycle.
 4. **Event production.** Each plugin emits trade-intent dicts; `alpha_outbox.write_event()` stamps `alpha_id` (uuid5), `dedupe_key` (sha256 of `strategy_id|asset|direction|observed_at`), and enforces the `data_purity` gate (mixed strategies require `pure_ca`).
 5. **Confidence.** `confluence_scoring.weighted_confluence` → `confidence ∈ [0,1]`, `confidence_status='uncalibrated'` (not a calibrated probability).
@@ -245,7 +245,7 @@ path:
   computed inside `structure_zones` (already derived via the prior `swing_lookback`
   window in `detect_order_blocks`) and exposed as **advisory swing levels** — scored
   through the same confluence machinery (`zone_stack_and_ltf_scores`, bias
-  resolution) and surfaced in `feature_snapshot`/`structure_zones`. They never gate
+  resolution) and surfaced in `feature_snapshot`/in-memory contexts. They never gate
   emission on their own; they enrich structure bias and feed PM-sidecar RR. No
   standalone swing module is required.
 - Zones (and swing levels) are **advisory** (support/neutral/contradict); they
@@ -325,15 +325,18 @@ the same advisory model.
 
 ## 13. Retention / tiered prune
 
-`orchestrator.prune_db()` currently deletes `option_chains`, `brain_outputs`, and
-`source_observations` older than `FUTURES_RETENTION_DAYS` (365), with nightly
-`VACUUM`. **WS makes growth continuous**, so extend to a **tiered** TTL:
+Online retention runs every six hours on each database owner's writer connection.
+Deletes are bounded batches with short commits and passive checkpoints. Full file
+reclamation is a separate weekly offline compaction job, because `VACUUM` must
+not run in a live worker. The installed compaction schedule is Sunday at
+04:30 UTC (`30 4 * * 0`). **WS makes growth continuous**, so use tiered TTLs:
 
 | Data | Keep | Rationale |
 | --- | --- | --- |
-| Raw 1m bars | 7–14 days | builds 5m/15m + short-term microstructure |
-| 5m / 15m (resampled) | 30–90 days | main eval horizon |
-| HTF 1h / 4h + `structure_zones` | 180+ days / indefinite | swing/FVG/OB context |
+| Raw 1m bars | 7 days | builds 5m/15m + short-term microstructure |
+| 5m / 15m (resampled) | 30 / 90 days | main evaluation horizon |
+| HTF 1h / 4h bars | 365 days | regime and strategy context |
+| `structure_zones` | no persisted rows | recomputed from bars when needed |
 | `positions_feed` / `pm_advice` | 30 days | audit only |
 
 The emit-gate (`data_purity`) and `cutoff_runs` finalization must remain intact

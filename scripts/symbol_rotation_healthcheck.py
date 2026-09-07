@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "research_analyst"))
 
-from symbol_rotation import read_feed
+from symbol_rotation import _feed_valid, effective_state_at, read_feed
 
 
 FEED = Path(os.environ.get(
@@ -36,8 +36,18 @@ def process_running() -> bool:
 
 def feed_ready(now: datetime | None = None) -> bool:
     current = now or datetime.now(timezone.utc)
-    feed = read_feed(FEED, at=current)
-    return isinstance(feed, dict) and feed.get("status") in {"ready", "fallback"}
+    feed = read_feed(FEED, at=current, allow_expired=True)
+    if not isinstance(feed, dict):
+        return False
+    if feed.get("schema_version") == 1:
+        return _feed_valid(feed, current) and feed.get("status") in {"ready", "fallback"}
+    _, metadata = effective_state_at(feed, current)
+    status = metadata.get("status")
+    if status in {"ready", "degraded"}:
+        return True
+    if status == "permanent_fallback":
+        return _feed_valid(feed, current)
+    return False
 
 
 def main() -> int:

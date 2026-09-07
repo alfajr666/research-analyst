@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import config
+from polars_indicators import dmi_adx_series
 from strategy_v2_context import (
     cutoff_from_id,
     ema_series,
@@ -48,16 +49,15 @@ def _fresh_completed(bars, cutoff: datetime, max_age_seconds: float) -> bool:
 
 
 def _adx_series(bars1h):
-    values = [None] * bars1h.height
-    for index in range(config.EMA99_RETEST_ADX_LENGTH * 2 + config.EMA99_RETEST_ADX_SMOOTHING,
-                       bars1h.height):
-        dmi = _dmi_adx(
-            bars1h[: index + 1],
-            config.EMA99_RETEST_ADX_LENGTH,
-            config.EMA99_RETEST_ADX_SMOOTHING,
-        )
-        values[index] = dmi if dmi is not None else None
-    return values
+    values, plus_di, minus_di = dmi_adx_series(
+        bars1h,
+        config.EMA99_RETEST_ADX_LENGTH,
+        config.EMA99_RETEST_ADX_SMOOTHING,
+    )
+    return [
+        (value, plus_di, minus_di) if value is not None else None
+        for value in values
+    ]
 
 
 def _expand_adx_to_5m(bars5m, bars1h):

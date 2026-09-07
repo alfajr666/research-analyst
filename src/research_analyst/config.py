@@ -1,6 +1,8 @@
 import json
+import math
 import os
 import stat
+import warnings
 from datetime import date, datetime
 from pathlib import Path
 from typing import List
@@ -65,6 +67,7 @@ BINANCE_OI_DISCORD_SKIP_EMPTY = os.getenv("BINANCE_OI_DISCORD_SKIP_EMPTY", "true
 # Config Settings
 MARKET_DB_PATH = os.getenv("MARKET_DB_PATH", str(DEFAULT_DB_DIR / "market.sqlite3"))
 ANALYST_DB_PATH = os.getenv("ANALYST_DB_PATH", str(DEFAULT_DB_DIR / "analyst.sqlite3"))
+PM_ADVICE_DB_PATH = os.getenv("PM_ADVICE_DB_PATH", str(DEFAULT_DB_DIR / "pm-advice.sqlite3"))
 INGEST_INTERVAL_MINS = int(os.getenv("INGEST_INTERVAL_MINS", "5"))
 ENTRY_POLICY_MODE = os.getenv("ENTRY_POLICY_MODE", "shadow").strip().lower()
 ENTRY_POLICY_COOLDOWN_MINUTES = int(os.getenv("ENTRY_POLICY_COOLDOWN_MINUTES", "30"))
@@ -95,6 +98,9 @@ REGIME_SCORE_TRANSITION_WIDTH_MINUTES = int(os.getenv("REGIME_SCORE_TRANSITION_W
 REGIME_SCORE_TRANSITION_MIN_DISCOUNT = float(os.getenv("REGIME_SCORE_TRANSITION_MIN_DISCOUNT", "0.5"))
 REGIME_SCORE_REVERSAL_MIN_PRIOR_TREND = float(os.getenv("REGIME_SCORE_REVERSAL_MIN_PRIOR_TREND", "0.55"))
 REGIME_SCORE_REVERSAL_DECAY_MIN = float(os.getenv("REGIME_SCORE_REVERSAL_DECAY_MIN", "0.15"))
+REGIME_SCORE_RETENTION_DAYS = int(os.getenv("REGIME_SCORE_RETENTION_DAYS", "30"))
+REGIME_GATE_RETENTION_DAYS = int(os.getenv("REGIME_GATE_RETENTION_DAYS", "90"))
+REGIME_PROVENANCE_MAX_IDS = max(32, int(os.getenv("REGIME_PROVENANCE_MAX_IDS", "128")))
 REGIME_1H_FETCH_DAYS = int(os.getenv("REGIME_1H_FETCH_DAYS", "4"))
 REGIME_1H_RETAIN_DAYS = int(os.getenv("REGIME_1H_RETAIN_DAYS", "3"))
 REGIME_1H_READINESS_BARS = int(os.getenv("REGIME_1H_READINESS_BARS", "57"))
@@ -233,6 +239,8 @@ SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT = int(os.getenv("SYMBOL_ROTATION_ROTATING_
 SYMBOL_ROTATION_BAR_INTERVAL = os.getenv("SYMBOL_ROTATION_BAR_INTERVAL", "5m").strip()
 SYMBOL_ROTATION_FEED_PATH = Path(os.getenv("SYMBOL_ROTATION_FEED_PATH", str(DEFAULT_DB_DIR / "symbol_rotation_feed.json")))
 SYMBOL_ROTATION_SOURCE_MAX_AGE_HOURS = float(os.getenv("SYMBOL_ROTATION_SOURCE_MAX_AGE_HOURS", "6"))
+SYMBOL_ROTATION_WATCHLIST_TTL_HOURS = float(os.getenv("SYMBOL_ROTATION_WATCHLIST_TTL_HOURS", "72"))
+SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS = int(os.getenv("SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS", "80"))
 if SYMBOL_ROTATION_REFRESH_HOURS <= 0:
     raise ValueError("SYMBOL_ROTATION_REFRESH_HOURS must be positive")
 if SYMBOL_ROTATION_LOOKBACK_HOURS <= 0:
@@ -241,6 +249,19 @@ if SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT <= 0 or SYMBOL_ROTATION_ROTATING_SYMBOL
     raise ValueError("SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT must be a positive even number")
 if not SYMBOL_ROTATION_BAR_INTERVAL:
     raise ValueError("SYMBOL_ROTATION_BAR_INTERVAL must not be empty")
+if not math.isfinite(SYMBOL_ROTATION_SOURCE_MAX_AGE_HOURS) or SYMBOL_ROTATION_SOURCE_MAX_AGE_HOURS <= 0:
+    raise ValueError("SYMBOL_ROTATION_SOURCE_MAX_AGE_HOURS must be finite and positive")
+if not math.isfinite(SYMBOL_ROTATION_WATCHLIST_TTL_HOURS) or SYMBOL_ROTATION_WATCHLIST_TTL_HOURS <= 0:
+    raise ValueError("SYMBOL_ROTATION_WATCHLIST_TTL_HOURS must be positive")
+if SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS < 4:
+    raise ValueError("SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS must include four permanent symbols")
+if SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT > SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS - 4:
+    warnings.warn(
+        "SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT exceeds available sticky watchlist slots; "
+        "new selections will be deterministically truncated",
+        RuntimeWarning,
+        stacklevel=2,
+    )
 # WS provider toggles. Bybit is the default public source; Binance is opt-in/off.
 WS_BYBIT_ENABLED = os.getenv("WS_BYBIT_ENABLED", "true").lower() == "true"
 WS_BINANCE_ENABLED = os.getenv("WS_BINANCE_ENABLED", "false").lower() == "true"
@@ -621,13 +642,15 @@ PRUNE_INTERVAL_DAYS = {
 DB_MAINTENANCE_ENABLED = os.getenv("DB_MAINTENANCE_ENABLED", "true").lower() in (
     "1", "true", "yes", "on"
 )
-DB_MAINTENANCE_INTERVAL_SECONDS = int(os.getenv("DB_MAINTENANCE_INTERVAL_SECONDS", "3600"))
-DB_MAINTENANCE_VACUUM_INTERVAL_SECONDS = int(
-    os.getenv("DB_MAINTENANCE_VACUUM_INTERVAL_SECONDS", "86400")
-)
-MARKET_OPTION_RETENTION_DAYS = int(os.getenv("MARKET_OPTION_RETENTION_DAYS", "30"))
+DB_MAINTENANCE_INTERVAL_SECONDS = int(os.getenv("DB_MAINTENANCE_INTERVAL_SECONDS", "21600"))
+DB_MAINTENANCE_BATCH_SIZE = min(5000, max(100, int(os.getenv("DB_MAINTENANCE_BATCH_SIZE", "5000"))))
+DB_MAINTENANCE_YIELD_SECONDS = float(os.getenv("DB_MAINTENANCE_YIELD_SECONDS", "0.01"))
+MARKET_OPTION_RETENTION_DAYS = int(os.getenv("MARKET_OPTION_RETENTION_DAYS", "3"))
 MARKET_AUXILIARY_RETENTION_DAYS = int(os.getenv("MARKET_AUXILIARY_RETENTION_DAYS", "30"))
 MARKET_DAILY_SUMMARY_RETENTION_DAYS = int(os.getenv("MARKET_DAILY_SUMMARY_RETENTION_DAYS", "365"))
+MARKET_DISCOVERY_RETENTION_DAYS = int(os.getenv("MARKET_DISCOVERY_RETENTION_DAYS", "90"))
+MARKET_WATCHLIST_RETENTION_DAYS = int(os.getenv("MARKET_WATCHLIST_RETENTION_DAYS", "365"))
+MARKET_REGIME_RETENTION_DAYS = int(os.getenv("MARKET_REGIME_RETENTION_DAYS", "365"))
 ANALYST_SNAPSHOT_RETENTION_DAYS = int(os.getenv("ANALYST_SNAPSHOT_RETENTION_DAYS", "2"))
 ANALYST_CUTOFF_RETENTION_DAYS = int(os.getenv("ANALYST_CUTOFF_RETENTION_DAYS", "30"))
 ANALYST_PIPELINE_RETENTION_DAYS = int(os.getenv("ANALYST_PIPELINE_RETENTION_DAYS", "30"))
@@ -932,6 +955,8 @@ def init_market_db(db_path: str | Path | None = None):
 def init_analyst_db(db_path: str | Path | None = None):
     target = db_path or ANALYST_DB_PATH
     init_db(target, force_alpha=True)
+
+
     conn = get_db_connection(db_path=target)
     try:
         conn.execute("""CREATE TABLE IF NOT EXISTS cutoff_runs (
@@ -955,6 +980,12 @@ def init_analyst_db(db_path: str | Path | None = None):
             status_id TEXT PRIMARY KEY, raw_signal_id TEXT NOT NULL, hard_gate_status TEXT,
             score_status TEXT, clash_status TEXT, executor_intent_status TEXT, reason TEXT,
             recorded_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS raw_signal_evaluation_coverage (
+            strategy_id TEXT NOT NULL, asset TEXT NOT NULL, evaluated_at TEXT NOT NULL,
+            emitted_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (strategy_id, asset, evaluated_at))""")
+        conn.execute("""CREATE INDEX IF NOT EXISTS idx_raw_signal_coverage_evaluated_at
+            ON raw_signal_evaluation_coverage (evaluated_at, asset)""")
         policy_migration = "2026-09-04-entry-policy-observations"
         if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (policy_migration,)).fetchone() is None:
             conn.execute("""CREATE TABLE IF NOT EXISTS entry_policy_observations (
@@ -983,6 +1014,35 @@ def init_analyst_db(db_path: str | Path | None = None):
         conn.execute("""CREATE TABLE IF NOT EXISTS discord_signal_batch_members (
             window_start TEXT NOT NULL, raw_signal_id TEXT NOT NULL,
             PRIMARY KEY (window_start, raw_signal_id))""")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_pm_advice_db(db_path: str | Path | None = None):
+    """Initialize the PM-owned advice ledger in its dedicated database."""
+    target = str(db_path or PM_ADVICE_DB_PATH)
+    conn = get_db_connection(read_only=False, db_path=target)
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pm_advice (
+                advice_id VARCHAR PRIMARY KEY,
+                position_id VARCHAR NOT NULL,
+                strategy_id VARCHAR NOT NULL,
+                asset VARCHAR NOT NULL,
+                action VARCHAR NOT NULL CHECK (action IN ('hold', 'exit', 'reduce', 'near_tp', 'update_stop')),
+                reason VARCHAR,
+                htf_bias VARCHAR,
+                rr DOUBLE,
+                confidence DOUBLE,
+                proposed_action VARCHAR,
+                proposed_confidence DOUBLE,
+                normalization_reason VARCHAR,
+                cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL
+            );
+        """)
         conn.commit()
     finally:
         conn.close()
@@ -1537,6 +1597,7 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                 );
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_src_obs_range ON source_observations (asset, interval, source_end);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_source_observations_retention ON source_observations (interval, source_end);")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS cutoff_runs (
@@ -1596,8 +1657,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                     created_at TIMESTAMP WITH TIME ZONE
                 );
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_zones_cut ON structure_zones (cutoff_id, asset);")
-        
         # Keep the two service stores physically independent even though the
         # schema declarations above share this compact initialization routine.
         owned = ANALYST_SCHEMA_TABLES if is_alpha else MARKET_SCHEMA_TABLES

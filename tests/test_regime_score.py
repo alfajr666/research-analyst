@@ -1,8 +1,17 @@
 from datetime import datetime, timedelta, timezone
+import math
 
 import polars as pl
+import pytest
 
-from regime_score import market_data_from_bars, regime_score, regime_score_for_asset
+from polars_indicators import dmi_adx, realized_volatility
+from regime_score import (
+    _provenance_tail,
+    _source_observation_ids,
+    market_data_from_bars,
+    regime_score,
+    regime_score_for_asset,
+)
 from strategy_v2_context import _asset_from_symbol
 
 
@@ -105,6 +114,88 @@ def test_market_data_adapter_uses_one_asset_and_no_cross_asset_proxy():
     assert data["adx_4h"] is not None
     assert data["realized_vol_recent"] is not None
     assert "btc_spx_correlation" not in data
+
+
+def test_polars_dmi_adx_matches_reference_smoothing_contract():
+    bars = pl.DataFrame({
+        "high": [100.0 + index * 0.7 + (index % 3) for index in range(90)],
+        "low": [98.0 + index * 0.7 - (index % 2) for index in range(90)],
+        "close": [99.0 + index * 0.7 + ((index % 4) - 1.5) for index in range(90)],
+    })
+    length = 14
+    smoothing = 14
+    highs, lows, closes = (bars[column].to_list() for column in ("high", "low", "close"))
+    true_ranges = []
+    plus_moves = []
+    minus_moves = []
+    for index in range(1, len(closes)):
+        true_ranges.append(max(
+            highs[index] - lows[index],
+            abs(highs[index] - closes[index - 1]),
+            abs(lows[index] - closes[index - 1]),
+        ))
+        up = highs[index] - highs[index - 1]
+        down = lows[index - 1] - lows[index]
+        plus_moves.append(up if up > down and up > 0 else 0.0)
+        minus_moves.append(down if down > up and down > 0 else 0.0)
+    atr = sum(true_ranges[:length])
+    plus = sum(plus_moves[:length])
+    minus = sum(minus_moves[:length])
+    dx = []
+    plus_di = minus_di = None
+    for index in range(length, len(true_ranges)):
+        atr = atr - atr / length + true_ranges[index]
+        plus = plus - plus / length + plus_moves[index]
+        minus = minus - minus / length + minus_moves[index]
+        plus_di = 100 * plus / atr if atr else 0.0
+        minus_di = 100 * minus / atr if atr else 0.0
+        denominator = plus_di + minus_di
+        dx.append(100 * abs(plus_di - minus_di) / denominator if denominator else 0.0)
+    expected_adx = [sum(dx[:smoothing]) / smoothing]
+    for value in dx[smoothing:]:
+        expected_adx.append((expected_adx[-1] * (smoothing - 1) + value) / smoothing)
+
+    actual_adx, actual_plus_di, actual_minus_di = dmi_adx(bars, length, smoothing)
+
+    assert actual_adx == pytest.approx(expected_adx, abs=1e-12)
+    assert actual_plus_di == pytest.approx(plus_di, abs=1e-12)
+    assert actual_minus_di == pytest.approx(minus_di, abs=1e-12)
+
+
+def test_polars_realized_volatility_matches_squared_log_return_contract():
+    closes = [100.0, 101.0, 99.5, 100.25, 102.0, 101.5, 103.0, 104.5, 103.25]
+    bars = pl.DataFrame({"close": closes})
+    returns = [math.log(closes[index] / closes[index - 1]) for index in range(1, len(closes))]
+    window = 3
+
+    recent, prior = realized_volatility(bars, window)
+
+    assert recent == pytest.approx(math.sqrt(sum(value * value for value in returns[-window:])))
+    assert prior == pytest.approx(math.sqrt(sum(value * value for value in returns[-window * 2:-window])))
+
+
+def test_score_provenance_is_limited_to_the_volatility_input_window():
+    bars = pl.DataFrame({
+        "source_observation_ids": [[f"obs-{index}"] for index in range(100)],
+    })
+
+    identifiers = _source_observation_ids(_provenance_tail(bars, 25))
+
+    assert len(identifiers) == 25
+    assert identifiers[0] == "obs-75"
+    assert identifiers[-1] == "obs-99"
+
+
+def test_score_provenance_cap_keeps_the_latest_identifiers():
+    bars = pl.DataFrame({
+        "source_observation_ids": [[f"obs-{index}"] for index in range(200)],
+    })
+
+    identifiers = _source_observation_ids(bars, limit=128)
+
+    assert len(identifiers) == 128
+    assert identifiers[0] == "obs-72"
+    assert identifiers[-1] == "obs-199"
 
 
 def test_score_without_regime_history_connection_fails_closed(monkeypatch):

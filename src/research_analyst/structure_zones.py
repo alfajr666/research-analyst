@@ -41,9 +41,14 @@ def detect_fvg(bars: pl.DataFrame, atr: float | None = None, min_gap_mult: float
     if atr is None or atr <= 0:
         return []
     min_gap = min_gap_mult * atr
-    bars = bars.sort("timestamp")
-    fvgs: List[Dict] = []
-    rows = bars.to_dicts()
+    ordered = bars.sort("timestamp")
+    indexed = ordered.with_row_index("created_index").with_columns(
+        (pl.col("low").cast(pl.Float64) - pl.col("high").cast(pl.Float64).shift(2)).alias("bullish_gap"),
+        (pl.col("low").cast(pl.Float64).shift(2) - pl.col("high").cast(pl.Float64)).alias("bearish_gap"),
+        pl.col("timestamp").shift(2).alias("two_back_timestamp"),
+        pl.col("high").cast(pl.Float64).shift(2).alias("two_back_high"),
+        pl.col("low").cast(pl.Float64).shift(2).alias("two_back_low"),
+    )
 
     def evidence_for(items: List[Dict]) -> List[str]:
         return sorted({
@@ -53,43 +58,47 @@ def detect_fvg(bars: pl.DataFrame, atr: float | None = None, min_gap_mult: float
             if item_id
         })
 
-    for i in range(2, len(rows)):
-        prev_high = float(rows[i-2]["high"])
-        curr_low = float(rows[i]["low"])
-        gap = curr_low - prev_high
-        if gap > min_gap:
-            fvgs.append({
-                "type": "fvg",
-                "direction": "bullish",
-                "timeframe": tf,
-                "created_index": i,
-                "source_evidence_ids": evidence_for(rows[i-2:i+1]),
-                "start": rows[i-2]["timestamp"],
-                "end": rows[i]["timestamp"],
-                "low": prev_high,
-                "high": curr_low,
-                "gap": gap,
-                "state": "active",
-                "created_at": rows[i]["timestamp"],
-            })
-        prev_low = float(rows[i-2]["low"])
-        curr_high = float(rows[i]["high"])
-        gap = prev_low - curr_high
-        if gap > min_gap:
-            fvgs.append({
-                "type": "fvg",
-                "direction": "bearish",
-                "timeframe": tf,
-                "created_index": i,
-                "source_evidence_ids": evidence_for(rows[i-2:i+1]),
-                "start": rows[i-2]["timestamp"],
-                "end": rows[i]["timestamp"],
-                "low": curr_high,
-                "high": prev_low,
-                "gap": gap,
-                "state": "active",
-                "created_at": rows[i]["timestamp"],
-            })
+    bullish = indexed.filter(pl.col("bullish_gap") > min_gap).select(
+        "created_index",
+        pl.lit(0).alias("direction_order"),
+        pl.lit("bullish").alias("direction"),
+        pl.col("two_back_timestamp").alias("start"),
+        pl.col("timestamp").alias("end"),
+        pl.col("two_back_high").alias("low"),
+        pl.col("low").cast(pl.Float64).alias("high"),
+        pl.col("bullish_gap").alias("gap"),
+    )
+    bearish = indexed.filter(pl.col("bearish_gap") > min_gap).select(
+        "created_index",
+        pl.lit(1).alias("direction_order"),
+        pl.lit("bearish").alias("direction"),
+        pl.col("two_back_timestamp").alias("start"),
+        pl.col("timestamp").alias("end"),
+        pl.col("high").cast(pl.Float64).alias("low"),
+        pl.col("two_back_low").alias("high"),
+        pl.col("bearish_gap").alias("gap"),
+    )
+    candidates = pl.concat([bullish, bearish], how="vertical_relaxed").sort(
+        ["created_index", "direction_order"]
+    )
+    rows = ordered.to_dicts()
+    fvgs: List[Dict] = []
+    for candidate in candidates.to_dicts():
+        index = int(candidate["created_index"])
+        fvgs.append({
+            "type": "fvg",
+            "direction": candidate["direction"],
+            "timeframe": tf,
+            "created_index": index,
+            "source_evidence_ids": evidence_for(rows[index - 2:index + 1]),
+            "start": candidate["start"],
+            "end": candidate["end"],
+            "low": float(candidate["low"]),
+            "high": float(candidate["high"]),
+            "gap": float(candidate["gap"]),
+            "state": "active",
+            "created_at": candidate["end"],
+        })
     # Lifecycle is evaluated only by bars after the FVG exists. A future bar
     # cannot retroactively change the state of a zone before its creation.
     for f in fvgs:
@@ -132,61 +141,76 @@ def detect_order_blocks(bars: pl.DataFrame, atr: float | None = None, swing_look
         atr = compute_atr(bars)
     if atr is None or atr <= 0:
         return []
-    bars = bars.sort("timestamp")
+    ordered = bars.sort("timestamp")
     min_disp = 1.5 * atr
-    rows = bars.to_dicts()
+    indexed = ordered.with_row_index("created_index").with_columns(
+        pl.col("high").cast(pl.Float64).shift(1).rolling_max(
+            swing_lookback, min_samples=swing_lookback,
+        ).alias("previous_swing_high"),
+        pl.col("low").cast(pl.Float64).shift(1).rolling_min(
+            swing_lookback, min_samples=swing_lookback,
+        ).alias("previous_swing_low"),
+        pl.col("open").cast(pl.Float64).shift(1).alias("opposing_open"),
+        pl.col("close").cast(pl.Float64).shift(1).alias("opposing_close"),
+        pl.col("low").cast(pl.Float64).shift(1).alias("opposing_low"),
+        pl.col("high").cast(pl.Float64).shift(1).alias("opposing_high"),
+        pl.col("timestamp").shift(1).alias("opposing_timestamp"),
+    )
+    base = indexed.filter(
+        (pl.col("high").cast(pl.Float64) - pl.col("low").cast(pl.Float64) >= min_disp)
+        & (pl.col("created_index") >= swing_lookback)
+    )
+    bullish = base.filter(
+        (pl.col("close").cast(pl.Float64) > pl.col("previous_swing_high"))
+        & (pl.col("opposing_close") <= pl.col("opposing_open"))
+    ).select(
+        "created_index",
+        pl.lit(0).alias("direction_order"),
+        pl.lit("bullish").alias("direction"),
+        pl.col("opposing_low").alias("low"),
+        pl.col("opposing_high").alias("high"),
+        pl.col("opposing_open").alias("opposing_open"),
+        pl.col("opposing_timestamp").alias("start"),
+        pl.col("timestamp").alias("end"),
+    )
+    bearish = base.filter(
+        (pl.col("close").cast(pl.Float64) < pl.col("previous_swing_low"))
+        & (pl.col("opposing_close") >= pl.col("opposing_open"))
+    ).select(
+        "created_index",
+        pl.lit(1).alias("direction_order"),
+        pl.lit("bearish").alias("direction"),
+        pl.col("opposing_low").alias("low"),
+        pl.col("opposing_high").alias("high"),
+        pl.col("opposing_open").alias("opposing_open"),
+        pl.col("opposing_timestamp").alias("start"),
+        pl.col("timestamp").alias("end"),
+    )
+    candidates = pl.concat([bullish, bearish], how="vertical_relaxed").sort(
+        ["created_index", "direction_order"]
+    )
+    rows = ordered.to_dicts()
     obs: List[Dict] = []
-    for i in range(swing_lookback , len(rows)):
-        disp_high = float(rows[i]["high"])
-        disp_low = float(rows[i]["low"])
-        disp_close = float(rows[i]["close"])
-        swing_highs = [float(r["high"]) for r in rows[i-swing_lookback:i]]
-        swing_lows = [float(r["low"]) for r in rows[i-swing_lookback:i]]
-        prev_swing_high = max(swing_highs) if swing_highs else 0
-        prev_swing_low = min(swing_lows) if swing_lows else 0
-        opposing = rows[i-1]
-        if disp_close > prev_swing_high and (disp_high - disp_low) >= min_disp and float(opposing.get("close", 0)) <= float(opposing.get("open", 0)):
-            zone_low = float(opposing["low"])
-            zone_high = float(opposing["high"])
-            obs.append({
-                "type": "order_block",
-                "direction": "bullish",
-                "timeframe": tf,
-                "created_index": i,
-                "source_evidence_ids": sorted({
-                    str(item_id)
-                    for row in rows[i-1:i+1]
-                    for item_id in row.get("source_observation_ids", [])
-                    if item_id
-                }),
-                "start": opposing["timestamp"],
-                "end": rows[i]["timestamp"],
-                "low": zone_low,
-                "high": zone_high,
-                "state": "active",
-                "created_at": rows[i]["timestamp"],
-            })
-        if disp_close < prev_swing_low and (disp_high - disp_low) >= min_disp and float(opposing.get("close", 0)) >= float(opposing.get("open", 0)):
-            zone_low = float(opposing["low"])
-            zone_high = float(opposing["high"])
-            obs.append({
-                "type": "order_block",
-                "direction": "bearish",
-                "timeframe": tf,
-                "created_index": i,
-                "source_evidence_ids": sorted({
-                    str(item_id)
-                    for row in rows[i-1:i+1]
-                    for item_id in row.get("source_observation_ids", [])
-                    if item_id
-                }),
-                "start": opposing["timestamp"],
-                "end": rows[i]["timestamp"],
-                "low": zone_low,
-                "high": zone_high,
-                "state": "active",
-                "created_at": rows[i]["timestamp"],
-            })
+    for candidate in candidates.to_dicts():
+        index = int(candidate["created_index"])
+        obs.append({
+            "type": "order_block",
+            "direction": candidate["direction"],
+            "timeframe": tf,
+            "created_index": index,
+            "source_evidence_ids": sorted({
+                str(item_id)
+                for row in rows[index - 1:index + 1]
+                for item_id in row.get("source_observation_ids", [])
+                if item_id
+            }),
+            "start": candidate["start"],
+            "end": candidate["end"],
+            "low": float(candidate["low"]),
+            "high": float(candidate["high"]),
+            "state": "active",
+            "created_at": candidate["end"],
+        })
     for o in obs:
         for j in range(o["created_index"] + 1, len(rows)):
             b = rows[j]

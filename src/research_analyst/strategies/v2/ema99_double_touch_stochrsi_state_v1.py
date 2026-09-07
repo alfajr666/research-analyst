@@ -7,12 +7,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import config
+from polars_indicators import dmi_adx_series
 from strategy_v2_context import (
     cutoff_from_id,
     ema_series,
     evaluation_symbols,
+    get_shared_computation_context,
     has_active_event,
     load_bars_for_interval,
+    strategy_market_connection,
     stoch_rsi,
     wilder_atr,
     wilder_rsi,
@@ -84,20 +87,17 @@ def _crossed_down(k, d, index: int | None = None) -> bool:
 
 def _adx_series(bars1h):
     """Return confirmed ADX values aligned to each completed 1H bar."""
-    values = [None] * bars1h.height
     length = config.EMA99_DOUBLE_TOUCH_ADX_LENGTH
-    for index in range(length * 2 + length, bars1h.height):
-        dmi = _dmi_adx(bars1h[: index + 1], length, length)
-        values[index] = dmi[0] if dmi is not None else None
+    values, _plus_di, _minus_di = dmi_adx_series(bars1h, length, length)
     return values
 
 
-def _replay_touch_state(bars1m, adx_by_bar):
+def _replay_touch_state(bars1m, adx_by_bar, ema_values=None):
     """Replay distinct touch state using only bars whose ADX gate passes."""
     closes = [float(value) for value in bars1m["close"].to_list()]
     highs = [float(value) for value in bars1m["high"].to_list()]
     lows = [float(value) for value in bars1m["low"].to_list()]
-    emas = ema_series(closes, config.EMA99_DOUBLE_TOUCH_EMA_LENGTH)
+    emas = ema_values if ema_values is not None else ema_series(closes, config.EMA99_DOUBLE_TOUCH_EMA_LENGTH)
     state = {
         "short_touch1": False, "short_touch2": False, "short_first_high": None,
         "short_first_index": None, "long_touch1": False, "long_touch2": False,
@@ -149,7 +149,7 @@ def _recent_cross(fast, slow, direction: str) -> bool:
 
 
 def evaluate_symbol(bars1m, bars5m, bars1h, *, asset: str, symbol: str,
-                    cutoff: datetime) -> dict | None:
+                    cutoff: datetime, features1m=None, features5m=None, adx_values=None) -> dict | None:
     """Evaluate true 1M state at one completed 5M execution cutoff."""
     cutoff = _utc(cutoff)
     bars1m = _at_cutoff(bars1m, cutoff)
@@ -161,26 +161,53 @@ def evaluate_symbol(bars1m, bars5m, bars1h, *, asset: str, symbol: str,
             or not _fresh_completed(bars1h, cutoff, 60 * 60 + config.DATA_FRESHNESS_MAX_SECONDS)):
         return None
 
-    dmi = _dmi_adx(
-        bars1h, config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
-        config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
-    )
+    context = get_shared_computation_context()
+    if adx_values is None and context is not None:
+        adx_values, plus_di, minus_di = context.dmi_adx(
+            symbol, "1h", config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
+            config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
+        )
+        dmi = (adx_values[-1], plus_di, minus_di) if adx_values and plus_di is not None and minus_di is not None else None
+    elif isinstance(adx_values, tuple) and len(adx_values) == 3:
+        adx_values, plus_di, minus_di = adx_values
+        dmi = (adx_values[-1], plus_di, minus_di) if adx_values and plus_di is not None and minus_di is not None else None
+    else:
+        dmi = _dmi_adx(
+            bars1h, config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
+            config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
+            symbol=symbol,
+            interval="1h",
+        )
     if dmi is None or dmi[0] < config.EMA99_DOUBLE_TOUCH_ADX_MIN:
         return None
 
     closes1m = [float(value) for value in bars1m["close"].to_list()]
-    raw1m, k1m, d1m = _stoch_values(closes1m)
-    rsi1m = _rsi_series(closes1m)
+    if features1m is None:
+        raw1m, k1m, d1m = _stoch_values(closes1m)
+        rsi1m = _rsi_series(closes1m)
+        ema99_values = ema_series(closes1m, config.EMA99_DOUBLE_TOUCH_EMA_LENGTH)
+    else:
+        raw1m = features1m["stoch_raw"].to_list()
+        k1m = features1m["stoch_k"].to_list()
+        d1m = features1m["stoch_d"].to_list()
+        rsi1m = features1m[f"rsi_{config.EMA99_DOUBLE_TOUCH_RSI1_LENGTH}"].to_list()
+        ema99_values = features1m[f"ema_{config.EMA99_DOUBLE_TOUCH_EMA_LENGTH}"].to_list()
     if (len(k1m) < 2 or len(d1m) < 2 or rsi1m[-1] is None
             or any(value is None for value in (k1m[-2], d1m[-2], k1m[-1], d1m[-1]))):
         return None
 
-    state = _replay_touch_state(bars1m, _expand_adx_to_1m(bars1m, bars1h))
-    fast = ema_series([float(value) for value in bars5m["close"].to_list()], config.EMA99_DOUBLE_TOUCH_FAST_EMA)
-    slow = ema_series([float(value) for value in bars5m["close"].to_list()], config.EMA99_DOUBLE_TOUCH_SLOW_EMA)
+    state = _replay_touch_state(bars1m, _expand_adx_to_1m(bars1m, bars1h, adx_values), ema99_values)
+    if features5m is None:
+        fast = ema_series([float(value) for value in bars5m["close"].to_list()], config.EMA99_DOUBLE_TOUCH_FAST_EMA)
+        slow = ema_series([float(value) for value in bars5m["close"].to_list()], config.EMA99_DOUBLE_TOUCH_SLOW_EMA)
+        rsi5m = _rsi5_series([float(value) for value in bars5m["close"].to_list()])
+        atr5m = wilder_atr(bars5m, config.EMA99_DOUBLE_TOUCH_ATR_LENGTH)
+    else:
+        fast = features5m[f"ema_{config.EMA99_DOUBLE_TOUCH_FAST_EMA}"].to_list()
+        slow = features5m[f"ema_{config.EMA99_DOUBLE_TOUCH_SLOW_EMA}"].to_list()
+        rsi5m = features5m[f"rsi_{config.EMA99_DOUBLE_TOUCH_RSI5_LENGTH}"].to_list()
+        atr5m = features5m[f"atr_{config.EMA99_DOUBLE_TOUCH_ATR_LENGTH}"][-1]
     closes5m = [float(value) for value in bars5m["close"].to_list()]
-    rsi5m = _rsi5_series(closes5m)
-    atr5m = wilder_atr(bars5m, config.EMA99_DOUBLE_TOUCH_ATR_LENGTH)
     if (fast[-1] is None or slow[-1] is None or rsi5m[-1] is None
             or atr5m is None or atr5m <= 0):
         return None
@@ -226,7 +253,7 @@ def evaluate_symbol(bars1m, bars5m, bars1h, *, asset: str, symbol: str,
             "source_symbol": symbol, "adx_1h": dmi[0], "+di_1h": dmi[1], "-di_1h": dmi[2],
             "rsi_1m": rsi1m[-1], "stochrsi_raw_1m": raw1m[-1],
             "stochrsi_k_1m": k1m[-1], "stochrsi_d_1m": d1m[-1],
-            "ema99_1m": ema_series(closes1m, config.EMA99_DOUBLE_TOUCH_EMA_LENGTH)[-1],
+            "ema99_1m": ema99_values[-1],
             "ema7_5m": fast[-1], "ema26_5m": slow[-1], "rsi14_5m": rsi5m[-1],
             "atr14_5m": atr5m, "long_touch2": state["long_touch2"],
             "short_touch2": state["short_touch2"], "cutoff": cutoff.isoformat(),
@@ -234,8 +261,8 @@ def evaluate_symbol(bars1m, bars5m, bars1h, *, asset: str, symbol: str,
     }
 
 
-def _expand_adx_to_1m(bars1m, bars1h):
-    adx_values = _adx_series(bars1h)
+def _expand_adx_to_1m(bars1m, bars1h, adx_values=None):
+    adx_values = _adx_series(bars1h) if adx_values is None else adx_values
     timestamps = [_utc(value) for value in bars1h["timestamp"].to_list()]
     return [adx_values[bisect_right(timestamps, _utc(value)) - 1]
             if bisect_right(timestamps, _utc(value)) else None
@@ -263,19 +290,48 @@ def evaluate_exit(bars5m, *, side: str, cutoff: datetime) -> dict | None:
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
     cutoff = cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now"))
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
+    conn, owns_conn = strategy_market_connection(snapshot.get("market_db_path"))
     try:
         events = []
         for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
+            context = get_shared_computation_context()
+            features1m = context.features(
+                symbol, "1m", {
+                    "ema": {f"ema_{config.EMA99_DOUBLE_TOUCH_EMA_LENGTH}": config.EMA99_DOUBLE_TOUCH_EMA_LENGTH},
+                    "rsi": {f"rsi_{config.EMA99_DOUBLE_TOUCH_RSI1_LENGTH}": config.EMA99_DOUBLE_TOUCH_RSI1_LENGTH},
+                    "stoch": {"stoch": (
+                        config.EMA99_DOUBLE_TOUCH_STOCH_RSI_LENGTH,
+                        config.EMA99_DOUBLE_TOUCH_STOCH_LENGTH,
+                        config.EMA99_DOUBLE_TOUCH_K_LENGTH,
+                        config.EMA99_DOUBLE_TOUCH_D_LENGTH,
+                    )},
+                },
+            ) if context else None
+            features5m = context.features(
+                symbol, "5m", {
+                    "ema": {
+                        f"ema_{config.EMA99_DOUBLE_TOUCH_FAST_EMA}": config.EMA99_DOUBLE_TOUCH_FAST_EMA,
+                        f"ema_{config.EMA99_DOUBLE_TOUCH_SLOW_EMA}": config.EMA99_DOUBLE_TOUCH_SLOW_EMA,
+                    },
+                    "rsi": {f"rsi_{config.EMA99_DOUBLE_TOUCH_RSI5_LENGTH}": config.EMA99_DOUBLE_TOUCH_RSI5_LENGTH},
+                    "atr": {f"atr_{config.EMA99_DOUBLE_TOUCH_ATR_LENGTH}": config.EMA99_DOUBLE_TOUCH_ATR_LENGTH},
+                },
+            ) if context else None
+            adx_values = context.dmi_adx(
+                symbol, "1h", config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
+                config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
+            ) if context else None
             event = evaluate_symbol(
                 load_bars_for_interval(conn, symbol, "1m", cutoff),
                 load_bars_for_interval(conn, symbol, "5m", cutoff),
                 load_bars_for_interval(conn, symbol, "1h", cutoff),
                 asset=asset, symbol=symbol, cutoff=cutoff,
+                features1m=features1m, features5m=features5m, adx_values=adx_values,
             )
             if event and not has_active_event(STRATEGY_ID, asset, event["direction"], now=cutoff):
                 event["input_snapshot_id"] = cutoff_id
                 events.append(event)
         return events
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()

@@ -27,6 +27,7 @@ from strategy_v2_context import (
     resolve_bias,
     snapshot_zones_for_asset,
     structure_bias_4h,
+    wilder_rsi,
     zone_bias_4h,
     zone_stack_and_ltf_scores,
 )
@@ -95,38 +96,8 @@ def load_config() -> RsiReclaimConfig:
 
 
 def rsi_series(closes: Sequence[float], length: int = 14) -> list[float | None]:
-    """Wilder RSI; returns list aligned to closes (None until warm)."""
-    n = len(closes)
-    out: list[float | None] = [None] * n
-    if n < length + 1 or length < 1:
-        return out
-    gains = 0.0
-    losses = 0.0
-    for i in range(1, length + 1):
-        delta = float(closes[i]) - float(closes[i - 1])
-        if delta >= 0:
-            gains += delta
-        else:
-            losses -= delta
-    avg_gain = gains / length
-    avg_loss = losses / length
-    if avg_loss == 0:
-        out[length] = 100.0
-    else:
-        rs = avg_gain / avg_loss
-        out[length] = 100.0 - (100.0 / (1.0 + rs))
-    for i in range(length + 1, n):
-        delta = float(closes[i]) - float(closes[i - 1])
-        gain = delta if delta > 0 else 0.0
-        loss = -delta if delta < 0 else 0.0
-        avg_gain = (avg_gain * (length - 1) + gain) / length
-        avg_loss = (avg_loss * (length - 1) + loss) / length
-        if avg_loss == 0:
-            out[i] = 100.0
-        else:
-            rs = avg_gain / avg_loss
-            out[i] = 100.0 - (100.0 / (1.0 + rs))
-    return out
+    """Wilder RSI adapter retained for callers and existing fixtures."""
+    return wilder_rsi(closes, length)
 
 
 def _candle_quality(open_: float, close: float, high: float, low: float, direction: str) -> float:

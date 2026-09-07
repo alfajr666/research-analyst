@@ -43,35 +43,41 @@ def _strict_pivot_low(lows: list[float], i: int, left: int = 2, right: int = 2) 
 
 def confirmed_pivot_highs(bars_15m: pl.DataFrame, left: int = 2, right: int = 2) -> list[dict[str, Any]]:
     """Return list of confirmed pivot highs. Confirmation requires right bars to exist in the frame."""
-    if bars_15m.height < left + right + 1:
+    if left <= 0 or right <= 0 or bars_15m.height < left + right + 1:
         return []
-    highs = bars_15m["high"].to_list()
-    ts = bars_15m["timestamp"].to_list()
-    pivots = []
-    for i in range(len(highs)):
-        if _strict_pivot_high(highs, i, left, right):
-            pivots.append({
-                "index": i,
-                "ts": ts[i],
-                "price": float(highs[i]),
-            })
-    return pivots
+    indexed = bars_15m.with_row_index("index").with_columns(
+        pl.col("high").cast(pl.Float64).shift(1).rolling_max(
+            left, min_samples=left,
+        ).alias("left_max"),
+        pl.col("high").cast(pl.Float64).shift(-right).rolling_max(
+            right, min_samples=right,
+        ).alias("right_max"),
+    )
+    return indexed.filter(
+        (pl.col("high") > pl.col("left_max"))
+        & (pl.col("high") > pl.col("right_max"))
+    ).select(
+        "index", "timestamp", pl.col("high").cast(pl.Float64).alias("price")
+    ).rename({"timestamp": "ts"}).to_dicts()
 
 
 def confirmed_pivot_lows(bars_15m: pl.DataFrame, left: int = 2, right: int = 2) -> list[dict[str, Any]]:
-    if bars_15m.height < left + right + 1:
+    if left <= 0 or right <= 0 or bars_15m.height < left + right + 1:
         return []
-    lows = bars_15m["low"].to_list()
-    ts = bars_15m["timestamp"].to_list()
-    pivots = []
-    for i in range(len(lows)):
-        if _strict_pivot_low(lows, i, left, right):
-            pivots.append({
-                "index": i,
-                "ts": ts[i],
-                "price": float(lows[i]),
-            })
-    return pivots
+    indexed = bars_15m.with_row_index("index").with_columns(
+        pl.col("low").cast(pl.Float64).shift(1).rolling_min(
+            left, min_samples=left,
+        ).alias("left_min"),
+        pl.col("low").cast(pl.Float64).shift(-right).rolling_min(
+            right, min_samples=right,
+        ).alias("right_min"),
+    )
+    return indexed.filter(
+        (pl.col("low") < pl.col("left_min"))
+        & (pl.col("low") < pl.col("right_min"))
+    ).select(
+        "index", "timestamp", pl.col("low").cast(pl.Float64).alias("price")
+    ).rename({"timestamp": "ts"}).to_dicts()
 
 
 def latest_confirmed_pivot_high(bars_15m: pl.DataFrame, asof_index: int, left: int = 2, right: int = 2) -> dict[str, Any] | None:

@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 import config
+from polars_indicators import dmi_adx, realized_volatility
 
 
-REGIME_SCORE_VERSION = "regime-score-v2"
+REGIME_SCORE_VERSION = "regime-score-v3"
 _REQUIRED_INPUTS = (
     "adx_1h", "adx_4h", "realized_vol_recent", "realized_vol_prior",
 )
@@ -72,62 +73,17 @@ def _column_values(bars: Any, column: str) -> list[float]:
 
 
 def _adx_series(bars: Any, length: int, smoothing: int) -> list[float]:
-    high = _column_values(bars, "high")
-    low = _column_values(bars, "low")
-    close = _column_values(bars, "close")
-    if min(len(high), len(low), len(close)) < length * 2 + smoothing + 1:
-        return []
-    true_ranges = []
-    plus_moves = []
-    minus_moves = []
-    for index in range(1, len(close)):
-        true_ranges.append(max(
-            high[index] - low[index],
-            abs(high[index] - close[index - 1]),
-            abs(low[index] - close[index - 1]),
-        ))
-        up = high[index] - high[index - 1]
-        down = low[index - 1] - low[index]
-        plus_moves.append(up if up > down and up > 0 else 0.0)
-        minus_moves.append(down if down > up and down > 0 else 0.0)
-
-    atr = sum(true_ranges[:length])
-    plus = sum(plus_moves[:length])
-    minus = sum(minus_moves[:length])
-    dx = []
-    for index in range(length, len(true_ranges)):
-        atr = atr - atr / length + true_ranges[index]
-        plus = plus - plus / length + plus_moves[index]
-        minus = minus - minus / length + minus_moves[index]
-        plus_di = 100 * plus / atr if atr else 0.0
-        minus_di = 100 * minus / atr if atr else 0.0
-        denominator = plus_di + minus_di
-        dx.append(100 * abs(plus_di - minus_di) / denominator if denominator else 0.0)
-    if len(dx) < smoothing:
-        return []
-    current = sum(dx[:smoothing]) / smoothing
-    series = [current]
-    for value in dx[smoothing:]:
-        current = (current * (smoothing - 1) + value) / smoothing
-        series.append(current)
+    series, _plus_di, _minus_di = dmi_adx(bars, length, smoothing)
     return series
 
 
 def _realized_volatility(bars: Any, window: int) -> tuple[float | None, float | None]:
-    closes = _column_values(bars, "close")
-    if window <= 0 or len(closes) < window * 2 + 1:
-        return None, None
-    returns = [math.log(closes[index] / closes[index - 1]) for index in range(1, len(closes))
-               if closes[index] > 0 and closes[index - 1] > 0]
-    if len(returns) < window * 2:
-        return None, None
-    prior = returns[-window * 2:-window]
-    recent = returns[-window:]
-    return math.sqrt(sum(value * value for value in recent)), math.sqrt(sum(value * value for value in prior))
+    return realized_volatility(bars, window)
 
 
-def _source_observation_ids(*bars_frames: Any) -> list[str]:
-    identifiers = set()
+def _source_observation_ids(*bars_frames: Any, limit: int | None = None) -> list[str]:
+    identifiers = []
+    seen = set()
     for bars in bars_frames:
         if bars is None:
             continue
@@ -139,10 +95,33 @@ def _source_observation_ids(*bars_frames: Any) -> list[str]:
             values = [row.get("source_observation_ids", []) for row in bars if isinstance(row, dict)]
         for value in values:
             if isinstance(value, (list, tuple, set)):
-                identifiers.update(str(item) for item in value if item)
+                for item in value:
+                    item = str(item)
+                    if item and item not in seen:
+                        seen.add(item)
+                        identifiers.append(item)
             elif value:
-                identifiers.add(str(value))
-    return sorted(identifiers)
+                value = str(value)
+                if value and value not in seen:
+                    seen.add(value)
+                    identifiers.append(value)
+    return identifiers[-limit:] if limit is not None and limit > 0 else identifiers
+
+
+def _provenance_tail(bars: Any, limit: int) -> Any:
+    """Keep provenance proportional to the observations used by the score."""
+    if bars is None or limit <= 0:
+        return bars
+    if hasattr(bars, "tail"):
+        return bars.tail(limit)
+    if isinstance(bars, dict):
+        return {
+            key: values[-limit:] if isinstance(values, list) else values
+            for key, values in bars.items()
+        }
+    if isinstance(bars, list):
+        return bars[-limit:]
+    return bars
 
 
 def market_data_from_bars(bars_1h: Any, bars_4h: Any, bars_vol: Any) -> dict[str, Any]:
@@ -219,15 +198,24 @@ def regime_score_for_asset(
     )
     result["regime_history"] = history
     result.setdefault("components", {})["regime_history"] = history
-    result["source_observation_ids"] = _source_observation_ids(bars_vol, bars_1h)
+    vol_provenance = _provenance_tail(
+        bars_vol,
+        2 * int(getattr(config, "REGIME_SCORE_VOL_WINDOW_BARS", 12)) + 1,
+    )
+    provenance_limit = int(getattr(config, "REGIME_PROVENANCE_MAX_IDS", 128))
+    result["source_observation_ids"] = _source_observation_ids(
+        vol_provenance, bars_1h, limit=provenance_limit
+    )
     result["source_references"] = {
-        "market_5m_volatility_ids": _source_observation_ids(bars_vol),
+        "market_5m_volatility_ids": _source_observation_ids(
+            vol_provenance, limit=provenance_limit
+        ),
         "regime_1h_bar_ids": (
-            [str(value) for value in bars_1h["bar_id"].to_list()]
+            [str(value) for value in bars_1h["bar_id"].to_list()][-provenance_limit:]
             if hasattr(bars_1h, "columns") and "bar_id" in bars_1h.columns else []
         ),
         "regime_4h_bar_ids": (
-            [str(value) for value in bars_4h["bar_id"].to_list()]
+            [str(value) for value in bars_4h["bar_id"].to_list()][-provenance_limit:]
             if bars_4h is not None and "bar_id" in bars_4h.columns else []
         ),
     }

@@ -11,8 +11,10 @@ from strategy_v2_context import (
     has_active_event,
     last_completed_bar_fresh,
     evaluation_symbols,
+    get_shared_computation_context,
     load_bars_for_interval,
     resample_ohlcv,
+    strategy_market_connection,
     stoch_rsi,
 )
 
@@ -25,8 +27,8 @@ def _stoch_rsi(close: pl.Series) -> tuple[pl.Series, pl.Series]:
     return pl.Series(k), pl.Series(d)
 
 
-def _latest_setup(bars_5m: pl.DataFrame) -> dict | None:
-    h4 = resample_ohlcv(bars_5m, "4h")
+def _latest_setup(bars_4h: pl.DataFrame) -> dict | None:
+    h4 = bars_4h
     if h4.height < 7:
         return None
     high = h4["high"].to_list(); low = h4["low"].to_list()
@@ -55,13 +57,16 @@ def _latest_setup(bars_5m: pl.DataFrame) -> dict | None:
     return setup
 
 
-def evaluate_symbol(bars_5m: pl.DataFrame, bars_15m: pl.DataFrame, *, asset: str,
-                    symbol: str, cutoff: datetime, cooldown_bars: int = 4) -> dict | None:
+def evaluate_symbol(bars_5m: pl.DataFrame, bars_4h: pl.DataFrame | None = None, *, asset: str,
+                    symbol: str, cutoff: datetime, cooldown_bars: int = 4, features=None) -> dict | None:
     if bars_5m.height < 40: return None
     if not last_completed_bar_fresh(bars_5m, cutoff): return None
-    setup = _latest_setup(bars_5m)
+    setup = _latest_setup(bars_4h if bars_4h is not None else resample_ohlcv(bars_5m, "4h"))
     if setup is None: return None
-    k, d = _stoch_rsi(bars_5m["close"])
+    if features is None:
+        k, d = _stoch_rsi(bars_5m["close"])
+    else:
+        k, d = features["stoch_k"], features["stoch_d"]
     if any(v is None for v in (k[-1], d[-1], k[-2], d[-2])): return None
     direction = setup["direction"]
     trigger = (k[-1] < 20 and k[-2] <= d[-2] and k[-1] > d[-1]) if direction == "long" else (k[-1] > 80 and k[-2] >= d[-2] and k[-1] < d[-1])
@@ -84,14 +89,19 @@ def evaluate_symbol(bars_5m: pl.DataFrame, bars_15m: pl.DataFrame, *, asset: str
 
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path")); emitted = []
+    conn, owns_conn = strategy_market_connection(snapshot.get("market_db_path")); emitted = []
     try:
         cutoff = cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now"))
         for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
             bars5 = load_bars_for_interval(conn, symbol, "5m", cutoff)
-            ev = evaluate_symbol(bars5, bars5, asset=asset, symbol=symbol, cutoff=cutoff)
+            bars4 = load_bars_for_interval(conn, symbol, "4h", cutoff)
+            context = get_shared_computation_context()
+            features = context.features(symbol, "5m", {"stoch": {"stoch": (14, 14, 3, 3)}}) if context else None
+            ev = evaluate_symbol(bars5, bars4, asset=asset, symbol=symbol, cutoff=cutoff, features=features)
             if ev and not has_active_event(STRATEGY_ID, asset.upper(), ev["direction"], now=cutoff):
                 ev["input_snapshot_id"] = cutoff_id
                 emitted.append(ev)
         return emitted
-    finally: conn.close()
+    finally:
+        if owns_conn:
+            conn.close()

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import config
 from strategy_v2_context import (
     cutoff_from_id, ema_series, evaluation_symbols, has_active_event,
-    last_completed_bar_fresh, load_bars_for_interval, wilder_atr, wilder_rsi,
+    last_completed_bar_fresh, load_bars_for_interval, stoch_rsi, wilder_atr, wilder_rsi,
 )
 
 STRATEGY_ID = "ema9-continuation-stochrsi-v1"
@@ -21,25 +21,8 @@ def _rsi(values: list[float], length: int = 14) -> list[float | None]:
 
 
 def _stoch_rsi(values: list[float]) -> tuple[list[float | None], list[float | None], list[float | None]]:
-    rsi = _rsi(values)
-    raw: list[float | None] = [None] * len(values)
-    for i in range(13, len(values)):
-        window = [x for x in rsi[i - 13 : i + 1] if x is not None]
-        if len(window) < 14:
-            continue
-        lo, hi = min(window), max(window)
-        raw[i] = 0.0 if hi == lo else 100.0 * (rsi[i] - lo) / (hi - lo)
-    k = [None] * len(values)
-    d = [None] * len(values)
-    for i in range(15, len(values)):
-        chunk = [x for x in raw[i - 2 : i + 1] if x is not None]
-        if len(chunk) == 3:
-            k[i] = sum(chunk) / 3
-    for i in range(17, len(values)):
-        chunk = [x for x in k[i - 2 : i + 1] if x is not None]
-        if len(chunk) == 3:
-            d[i] = sum(chunk) / 3
-    return k, d, rsi
+    raw, k, d = stoch_rsi(values, 14, 14, 3, 3)
+    return k, d, _rsi(values)
 
 
 def _atr(rows, length: int = 14) -> float:

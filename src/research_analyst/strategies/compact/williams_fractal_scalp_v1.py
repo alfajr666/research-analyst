@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import config
-from strategy_v2_context import cutoff_from_id, ema_series, evaluation_symbols, has_active_event, last_completed_bar_fresh, load_bars_for_interval
+from strategy_features import build_feature_frame
+from strategy_v2_context import cutoff_from_id, ema_series, evaluation_symbols, get_shared_computation_context, has_active_event, last_completed_bar_fresh, load_bars_for_interval, strategy_market_connection
 
 
 STRATEGY_ID = "williams-fractal-scalp-v1"
@@ -28,7 +29,7 @@ def _ema(values: list[float], span: int) -> list[float | None]:
     return ema_series(values, span)
 
 
-def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime, cfg: WilliamsFractalScalpConfig | None = None) -> dict | None:
+def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime, cfg: WilliamsFractalScalpConfig | None = None, features=None) -> dict | None:
     """Evaluate the last completed 1m bar without mutating research state."""
     cfg = cfg or WilliamsFractalScalpConfig()
     if bars is None or bars.height < max(cfg.min_bars, 2 * cfg.fractal_n + 2):
@@ -37,7 +38,10 @@ def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime, cfg: Wil
         return None
 
     closes = [float(x) for x in bars["close"].to_list()]
-    ema20, ema50, ema100 = (_ema(closes, n) for n in (20, 50, 100))
+    features = features if features is not None else build_feature_frame(
+        bars, ema={"ema_20": 20, "ema_50": 50, "ema_100": 100}
+    )
+    ema20, ema50, ema100 = (features[f"ema_{n}"].to_list() for n in (20, 50, 100))
     if any(series[-1] is None for series in (ema20, ema50, ema100)):
         return None
     center = bars.height - 1 - cfg.fractal_n
@@ -92,18 +96,24 @@ def evaluate(conn, cutoff: datetime | None = None, *, cfg: WilliamsFractalScalpC
     events = []
     for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
         bars = load_bars_for_interval(conn, symbol, EXECUTION_INTERVAL, cutoff)
-        event = evaluate_symbol(bars, asset=asset, symbol=symbol, cutoff=cutoff, cfg=cfg)
+        context = get_shared_computation_context()
+        features = context.features(
+            symbol, EXECUTION_INTERVAL,
+            {"ema": {"ema_20": 20, "ema_50": 50, "ema_100": 100}},
+        ) if context else None
+        event = evaluate_symbol(bars, asset=asset, symbol=symbol, cutoff=cutoff, cfg=cfg, features=features)
         if event and not has_active_event(STRATEGY_ID, asset, event["direction"], alpha_db_path=alpha_db_path, outbox_dir=outbox_dir, now=cutoff):
             events.append(event)
     return events
 
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
+    conn, owns_conn = strategy_market_connection(snapshot.get("market_db_path"))
     try:
         events = evaluate(conn, cutoff=cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now")), snapshot=snapshot)
         for event in events:
             event["input_snapshot_id"] = cutoff_id
         return events
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()

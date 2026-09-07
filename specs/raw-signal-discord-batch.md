@@ -211,25 +211,28 @@ RAW STRATEGY SIGNALS
 Window: 2026-08-29 05:30-06:00 UTC
 Status: observation only; not execution-authorized
 
-asset  side   strategy                 gate    reason
-NIULAI SHORT  bb-rsi-meanrev-v1        FAIL    symbol-account policy
-BTC    LONG   failed-break-v3          PASS    -
+asset  side   strat                    desc
+AZTEC  SHORT  williams-fractal-scalp-v1 PASS
+TRIA   LONG   williams-fractal-scalp-v1 PASS
 
-Totals: 2 raw | 1 hard-gate pass | 1 hard-gate fail
-Clashes and delivery states: retained in the analyst ledger
-Selected intents are delivered independently of this observation batch.
++ 98 more signal evaluations
+skipped 87 symbols (observed)
 ```
 
-The batch message uses one simple presentation status for each candidate:
+The batch message shows every raw candidate emitted by the evaluated strategy
+plugins. Failed hard admission does not remove a raw candidate from this view.
+If a window has no raw candidates, the publisher skips that window.
 
-- `PASS`: hard admission passed
-- `FAIL`: hard admission did not pass, including a candidate whose admission was
-  not finalized when the batch was rendered; the reason column must explain this
+For displayed candidates, the batch message uses one simple presentation status:
 
-The message contains the `gate` and a bounded `reason` column. It does not expose
-score, clash, or executor-delivery states in the compact batch. Those remain
-durable machine-readable ledger fields for audit and operational views. `PASS`
-does not mean selected, delivered, filled, or executed.
+- `PASS`: the strategy emitted a raw candidate after its own signal conditions
+
+The message contains the `strat` and `desc` columns. It does not expose score,
+clash, admission, or executor-delivery states in the compact batch. Those remain
+durable machine-readable ledger fields for audit and operational views. The
+`skipped` count is derived from durable evaluation coverage and includes only
+symbols actually evaluated by a raw-signal plugin without an emitted candidate;
+cadence, scope, and missing-data exclusions are not failures.
 
 Do not include secrets, credentials, internal file paths, or full unbounded
 feature snapshots. Truncate reasons and serialize values consistently.

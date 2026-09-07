@@ -59,6 +59,19 @@ class FVGOrderBlockFixtureTests(unittest.TestCase):
 
         self.assertEqual(fvg["source_evidence_ids"], ["obs-1", "obs-2", "obs-3"])
 
+    def test_fvg_vectorized_candidates_preserve_creation_order_and_timestamps(self):
+        bars = self._make_bars(
+            closes=[100, 101, 105, 103, 112],
+            highs=[100.5, 101.5, 105.5, 104.0, 112.5],
+            lows=[99.5, 100.5, 104.5, 101.0, 111.0],
+        )
+
+        fvgs = detect_fvg(bars, atr=2.0, min_gap_mult=0.25)
+
+        self.assertEqual([f["created_index"] for f in fvgs], [2, 4])
+        self.assertEqual([f["start"] for f in fvgs], [bars["timestamp"][0], bars["timestamp"][2]])
+        self.assertEqual([f["end"] for f in fvgs], [bars["timestamp"][2], bars["timestamp"][4]])
+
     def test_fvg_mitigation_on_wick(self):
         bars = self._make_bars(
             closes=[100, 101, 105, 103],
@@ -110,6 +123,8 @@ class FVGOrderBlockFixtureTests(unittest.TestCase):
         ob = obs[0]
         self.assertIn(ob["direction"], ("bullish", "bearish"))
         self.assertIn(ob["state"], ("active", "partial"))
+        self.assertEqual(ob["start"], bars["timestamp"][1])
+        self.assertEqual(ob["end"], bars["timestamp"][2])
 
     def test_zones_snapshot_limits_to_three_recent_active(self):
         # Many zones, snapshot caps at 3 per ...

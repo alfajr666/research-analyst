@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -13,16 +13,39 @@ import config
 from entry_policy import session_context
 from regime_score import regime_score_for_asset
 from regime_history import init_regime_history_schema
+from db_maintenance import prune_regime_db
 
 
 GATE_VERSION = "regime-session-gate-v3"
-SCORE_VERSION = "regime-score-v3"
+SCORE_VERSION = "regime-score-v4"
 FAMILY_ACTIVATION_VERSION = "family-activation-v2"
 _FAMILY_WEIGHT_KEYS = {
     "trend": "trend_weight",
     "mean_reversion": "mean_reversion_weight",
     "reversal": "reversal_weight",
 }
+_LAST_REGIME_MAINTENANCE = 0.0
+
+
+def _maybe_prune_regime_db(conn: Any, cutoff: Any | None = None) -> None:
+    """Run regime retention on the regime worker's single writer connection."""
+    global _LAST_REGIME_MAINTENANCE
+    if not getattr(config, "DB_MAINTENANCE_ENABLED", True):
+        return
+    # Historical one-shot/replay evaluations must not prune live history based
+    # on the wall clock used by the maintenance scheduler.
+    if cutoff is not None and _utc(cutoff) < datetime.now(timezone.utc) - timedelta(days=1):
+        return
+    current = time.monotonic()
+    interval = max(60, int(getattr(config, "DB_MAINTENANCE_INTERVAL_SECONDS", 21600)))
+    if current - _LAST_REGIME_MAINTENANCE < interval:
+        return
+    _LAST_REGIME_MAINTENANCE = current
+    try:
+        result = prune_regime_db(conn)
+        print(f"Regime database maintenance: {result}", flush=True)
+    except Exception as exc:
+        print(f"Regime database maintenance failed: {exc}", flush=True)
 
 
 def _utc(value: Any) -> datetime:
@@ -392,6 +415,7 @@ def publish_regime_batch(
             if gate["decision"] == "allow":
                 for family in gate["active_families"]:
                     summary["family_assets"][family].append(asset)
+        _maybe_prune_regime_db(regime_conn, cutoff)
         regime_conn.commit()
     finally:
         market_conn.close()

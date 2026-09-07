@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -15,6 +16,7 @@ import polars as pl
 import config
 from alpha_outbox import OUTBOX_DIR
 from structure_zones import compute_atr, detect_fvg, detect_order_blocks
+from polars_indicators import wilder_atr_series
 
 
 MAX_BAR_AGE = timedelta(minutes=20)
@@ -158,6 +160,36 @@ def _prefer_rows(raw_rows: List[Dict]) -> List[Dict]:
     return preferred
 
 
+def _source_high_water(conn: Any, asset: str, interval: str, cutoff: datetime,
+                       start: datetime) -> tuple[Any, ...]:
+    """Return a bounded source identity used to validate incremental reuse."""
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*), MAX(source_end), MAX(retrieved_at),
+                   COALESCE(SUM(LENGTH(payload_json)), 0),
+                   COALESCE(GROUP_CONCAT(DISTINCT source), '')
+              FROM source_observations
+             WHERE asset = ? AND interval = ? AND source_end >= ? AND source_end <= ?
+            """,
+            (asset, interval, start, cutoff),
+        ).fetchone()
+    except Exception:
+        return ("unavailable",)
+    return tuple(row or ("unavailable",))
+
+
+def _feed_identity() -> str:
+    """Identify the configured source precedence contract for cache reuse."""
+    payload = {
+        "ws_source": getattr(config, "BYBIT_WS_SOURCE", "bybit_ws"),
+        "failover_source": getattr(config, "FAILOVER_SOURCE_NAME", "venue_agg_v1"),
+        "coinalyze": bool(getattr(config, "COINANALYZE_EVAL_ENABLED", False)),
+        "purity": getattr(config, "WS_DATA_PURITY", "pure_ws"),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def load_preferred_15m_bars(conn, asset: Optional[str] = None, native_symbol: Optional[str] = None,
                             cutoff: Optional[datetime] = None, lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
     """Canonical preferred loader: usable CA wins over venue_agg_v1 for same bar end.
@@ -182,9 +214,17 @@ def load_15m_bars(conn, symbol: str, cutoff: datetime, lookback_days: int = LOOK
 
 
 HYBRID_HTF_DATA_CONTRACT_VERSION = "hybrid-htf-v1"
+SHARED_COMPUTATION_CACHE_VERSION = "shared-computation-cache-v2"
 _HYBRID_HTF_CONTEXT: ContextVar["HybridHTFContext | None"] = ContextVar(
     "hybrid_htf_context", default=None
 )
+_SHARED_COMPUTATION_CONTEXT: ContextVar["SharedComputationContext | None"] = ContextVar(
+    "shared_computation_context", default=None
+)
+_SEQUENTIAL_FRAME_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_SEQUENTIAL_FRAME_CACHE_LIMIT = 128
+_HYBRID_SEQUENTIAL_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_HYBRID_SEQUENTIAL_CACHE_LIMIT = 64
 
 
 def _normalise_bar_end(value: Any) -> datetime:
@@ -279,13 +319,18 @@ class HybridHTFContext:
     """Invocation-scoped engine source selection for strategy HTF frames."""
 
     def __init__(self, market_conn: Any, regime_conn: Any | None, cutoff: datetime,
-                 evaluation_cutoff: datetime | None = None):
+                 evaluation_cutoff: datetime | None = None,
+                 market_db_path: str | Path | None = None,
+                 regime_db_path: str | Path | None = None):
         self.market_conn = market_conn
         self.regime_conn = regime_conn
         self.cutoff = _ensure_utc(cutoff)
         self.evaluation_cutoff = (
             _ensure_utc(evaluation_cutoff) if evaluation_cutoff is not None else self.cutoff
         )
+        self.market_db_path = str(market_db_path or config.MARKET_DB_PATH)
+        self.regime_db_path = str(regime_db_path or getattr(config, "REGIME_DB_PATH", ""))
+        self.last_reused = False
         self._frames: dict[tuple[str, str, int], pl.DataFrame] = {}
         self._diagnostics: dict[str, dict[str, dict[str, Any]]] = {}
 
@@ -309,6 +354,42 @@ class HybridHTFContext:
         key = (asset, interval, int(lookback_days))
         if key in self._frames:
             return self._frames[key]
+        self.last_reused = False
+
+        cache_key = (
+            self.market_db_path, self.regime_db_path, _feed_identity(),
+            HYBRID_HTF_DATA_CONTRACT_VERSION, asset, interval, int(lookback_days),
+            getattr(config, f"HYBRID_HTF_{'1H' if interval == '1h' else '4H'}_SEED_BARS", 240),
+            getattr(config, f"HYBRID_HTF_{'1H' if interval == '1h' else '4H'}_RETAIN_DAYS",
+                    14 if interval == "1h" else 45),
+        )
+        previous = _HYBRID_SEQUENTIAL_CACHE.get(cache_key)
+        if previous is not None and interval in {"1h", "4h"}:
+            extended = self._extend_cached_frame(asset, interval, lookback_days, previous)
+            if extended is not None:
+                self.last_reused = True
+                details = dict(previous.get("diagnostics") or {})
+                details.update({
+                    "cutoff_at": self.cutoff.isoformat(),
+                    "htf_cutoff_at": self.cutoff.isoformat(),
+                    "evaluation_cutoff_at": self.evaluation_cutoff.isoformat(),
+                    "canonical_5m_observation_ids": sorted({
+                        str(observation_id)
+                        for row in extended.to_dicts()
+                        for observation_id in row.get("source_observation_ids", [])
+                        if observation_id
+                    }),
+                    "sequential_reuse": True,
+                })
+                self._diagnostics.setdefault(asset, {})[interval] = details
+                self._frames[key] = extended
+                _HYBRID_SEQUENTIAL_CACHE[cache_key] = {
+                    **previous,
+                    "cutoff": self.cutoff,
+                    "frame": extended,
+                    "diagnostics": details,
+                }
+                return extended
 
         base_lookback = max(int(lookback_days), 60 if interval == "4h" else 16)
         start = self.cutoff - timedelta(days=base_lookback)
@@ -438,7 +519,82 @@ class HybridHTFContext:
             canonical_5m_observation_ids=canonical_ids,
         )
         self._frames[key] = merged
+        diagnostics = self._diagnostics[asset][interval]
+        _HYBRID_SEQUENTIAL_CACHE[cache_key] = {
+            "cutoff": self.cutoff,
+            "frame": merged,
+            "handoff": handoff,
+            "desired_handoff": desired_handoff,
+            "direct_high_water": self._direct_high_water(asset, interval),
+            "diagnostics": diagnostics,
+        }
+        while len(_HYBRID_SEQUENTIAL_CACHE) > _HYBRID_SEQUENTIAL_CACHE_LIMIT:
+            _HYBRID_SEQUENTIAL_CACHE.pop(next(iter(_HYBRID_SEQUENTIAL_CACHE)))
         return merged
+
+    def _direct_high_water(self, asset: str, interval: str) -> tuple[Any, ...]:
+        if self.regime_conn is None:
+            return ("none",)
+        table = "regime_1h_bars" if interval == "1h" else "regime_4h_bars"
+        try:
+            row = self.regime_conn.execute(
+                f"SELECT COUNT(*), MAX(bar_version), MAX(source_end) FROM {table} WHERE asset = ?",
+                (asset,),
+            ).fetchone()
+        except Exception:
+            return ("unavailable",)
+        return tuple(row or ("unavailable",))
+
+    def _expected_handoff(self, interval: str) -> datetime:
+        seconds = 3600 if interval == "1h" else 14400
+        seed_required = int(getattr(
+            config, f"HYBRID_HTF_{'1H' if interval == '1h' else '4H'}_SEED_BARS", 240
+        ))
+        retain_days = int(getattr(
+            config, f"HYBRID_HTF_{'1H' if interval == '1h' else '4H'}_RETAIN_DAYS",
+            14 if interval == "1h" else 45,
+        ))
+        seed_reserve = max(300, retain_days * 86400 - seed_required * seconds)
+        return _floor_boundary(self.cutoff - timedelta(seconds=seed_reserve), seconds)
+
+    def _extend_cached_frame(self, asset: str, interval: str, lookback_days: int,
+                             previous: dict[str, Any]) -> pl.DataFrame | None:
+        previous_cutoff = previous["cutoff"]
+        handoff = previous["handoff"]
+        if (previous_cutoff >= self.cutoff
+                or previous.get("desired_handoff") != self._expected_handoff(interval)):
+            return None
+        if previous.get("direct_high_water") != self._direct_high_water(asset, interval):
+            return None
+        seconds = 3600 if interval == "1h" else 14400
+        repair_start = max(
+            handoff + timedelta(minutes=5),
+            previous_cutoff - timedelta(seconds=seconds * 2),
+        )
+        try:
+            raw = _load_raw_observations_for_asset(
+                self.market_conn, asset, self.cutoff, repair_start,
+                interval="5m", include_invalid=True,
+            )
+            tail, reason = _contiguous_canonical_tail(raw, self.cutoff)
+            if not tail:
+                return None
+            local = resample_ohlcv(
+                _rows_to_frame([
+                    row for row in tail
+                    if _normalise_bar_end(row["timestamp"]) > handoff
+                ]), interval,
+            )
+            if local.is_empty():
+                return None
+            prefix = previous["frame"].filter(pl.col("timestamp") < local["timestamp"][0])
+            merged = pl.concat([prefix, local], how="diagonal_relaxed").sort("timestamp")
+            duplicate_timestamps = merged.group_by("timestamp").len().filter(pl.col("len") > 1)
+            if not duplicate_timestamps.is_empty():
+                return None
+            return merged.unique(subset=["timestamp"], keep="last", maintain_order=True)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
 
 
 @contextmanager
@@ -460,7 +616,9 @@ def hybrid_htf_context(market_db_path: str | Path | None, regime_db_path: str | 
             except Exception:
                 regime_conn = None
         context = HybridHTFContext(
-            market_conn, regime_conn, cutoff, evaluation_cutoff=evaluation_cutoff
+            market_conn, regime_conn, cutoff, evaluation_cutoff=evaluation_cutoff,
+            market_db_path=market_db_path or config.MARKET_DB_PATH,
+            regime_db_path=regime_db_path or getattr(config, "REGIME_DB_PATH", None),
         )
         token = _HYBRID_HTF_CONTEXT.set(context)
         try:
@@ -494,9 +652,9 @@ def hybrid_htf_context_evaluation_cutoff() -> datetime | None:
     return context.evaluation_cutoff if context is not None else None
 
 
-def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
-                           lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
-    """Load engine-context HTF bars or canonical market bars.
+def _load_bars_for_interval_uncached(conn, symbol: str, interval: str, cutoff: datetime,
+                                     lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
+    """Load engine-context HTF bars or canonical market bars without sharing.
 
     Within an engine hybrid context, 1h/4h frames use direct historical seeds
     followed by the canonical 5m-derived tail. Outside that context, higher
@@ -522,6 +680,244 @@ def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
     raw = _load_raw_observations_for_asset(conn, asset, cutoff, start, interval=interval)
     rows = _prefer_rows(raw)
     return _rows_to_frame(rows)
+
+
+def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
+                           lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
+    """Load a cutoff-bound frame, reusing the active evaluation context."""
+    shared = _SHARED_COMPUTATION_CONTEXT.get()
+    if shared is not None:
+        return shared.load_bars(conn, symbol, interval, cutoff, lookback_days)
+    return _load_bars_for_interval_uncached(conn, symbol, interval, cutoff, lookback_days)
+
+
+class SharedComputationContext:
+    """One immutable frame and feature cache for a cutoff-bound evaluation."""
+
+    def __init__(self, market_conn: Any, evaluation_cutoff: datetime,
+                 market_db_path: str | Path | None = None):
+        self.market_conn = market_conn
+        self.evaluation_cutoff = _ensure_utc(evaluation_cutoff)
+        self.market_db_path = str(market_db_path or config.MARKET_DB_PATH)
+        hybrid = _HYBRID_HTF_CONTEXT.get()
+        self.feed_id = _feed_identity()
+        self.source_contract = f"{SHARED_COMPUTATION_CACHE_VERSION}:{HYBRID_HTF_DATA_CONTRACT_VERSION}"
+        self.htf_cutoff = hybrid.cutoff if hybrid is not None else None
+        self._frames: dict[tuple[str, str, int], pl.DataFrame] = {}
+        self._features: dict[tuple[str, str, tuple], pl.DataFrame] = {}
+        self._dmi: dict[tuple[str, str, int, int], tuple[list[float | None], float | None, float | None]] = {}
+        self.stats = {
+            "frame_hits": 0,
+            "frame_misses": 0,
+            "feature_hits": 0,
+            "feature_misses": 0,
+            "dmi_hits": 0,
+            "dmi_misses": 0,
+            "sequential_hits": 0,
+            "sequential_misses": 0,
+            "cache_invalidations": 0,
+            "cache_invalidation_reasons": {},
+        }
+
+    @staticmethod
+    def _feature_key(spec: dict[str, Any]) -> tuple:
+        def freeze(value: Any) -> Any:
+            if isinstance(value, dict):
+                return tuple(sorted((str(key), freeze(item)) for key, item in value.items()))
+            if isinstance(value, (list, tuple)):
+                return tuple(freeze(item) for item in value)
+            return value
+
+        return tuple(sorted((str(key), freeze(value)) for key, value in spec.items()))
+
+    def load_bars(self, conn: Any, symbol: str, interval: str, cutoff: datetime,
+                  lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
+        cutoff = _ensure_utc(cutoff)
+        if cutoff != self.evaluation_cutoff and not (
+            interval in {"1h", "4h"}
+            and completed_cycle_for(cutoff, "5m") == completed_cycle_for(self.evaluation_cutoff, "5m")
+        ):
+            raise ValueError(
+                f"shared computation cutoff {self.evaluation_cutoff.isoformat()} "
+                f"does not match requested cutoff {cutoff.isoformat()}"
+            )
+        asset = _asset_from_symbol(symbol)
+        key = (asset, interval, int(lookback_days))
+        cached = self._frames.get(key)
+        if cached is not None:
+            self.stats["frame_hits"] += 1
+            return cached
+        self.stats["frame_misses"] += 1
+        frame = self._load_sequential_frame(asset, interval, cutoff, lookback_days)
+        self._frames[key] = frame
+        return frame
+
+    def _load_sequential_frame(self, asset: str, interval: str, cutoff: datetime,
+                               lookback_days: int) -> pl.DataFrame:
+        """Extend a validated base frame instead of rebuilding every cutoff."""
+        cache_key = (
+            self.market_db_path, self.feed_id, self.source_contract, asset, interval,
+            int(lookback_days), self.htf_cutoff if interval in {"1h", "4h"} else None,
+        )
+        previous = _SEQUENTIAL_FRAME_CACHE.get(cache_key)
+        period_minutes = {"1m": 1, "5m": 5}.get(interval)
+        if previous is not None and period_minutes is not None:
+            previous_cutoff = previous["cutoff"]
+            previous_frame = previous["frame"]
+            if previous_cutoff < cutoff and not previous_frame.is_empty():
+                previous_start = previous_cutoff - timedelta(days=lookback_days)
+                current_prefix_identity = _source_high_water(
+                    self.market_conn, asset, interval, previous_cutoff, previous_start
+                )
+                if current_prefix_identity != previous.get("source_high_water"):
+                    self._invalidate_cache("source_identity_changed")
+                    previous = None
+            if previous is not None and previous_cutoff < cutoff and not previous_frame.is_empty():
+                repair_start = max(
+                    cutoff - timedelta(days=lookback_days),
+                    previous_cutoff - timedelta(minutes=period_minutes * 2),
+                )
+                raw = _load_raw_observations_for_asset(
+                    self.market_conn,
+                    asset,
+                    cutoff,
+                    repair_start,
+                    interval=interval,
+                )
+                tail = _rows_to_frame(_prefer_rows(raw))
+                prefix = previous_frame.filter(pl.col("timestamp") < repair_start)
+                if not tail.is_empty():
+                    frame = pl.concat([prefix, tail], how="diagonal_relaxed").sort("timestamp")
+                    duplicate_timestamps = frame.group_by("timestamp").len().filter(pl.col("len") > 1)
+                    if not duplicate_timestamps.is_empty():
+                        self._invalidate_cache("conflicting_incremental_rows")
+                        frame = None
+                    else:
+                        frame = frame.unique(subset=["timestamp"], keep="last", maintain_order=True)
+                if frame is not None and not tail.is_empty():
+                    frame = frame.filter(pl.col("timestamp") <= cutoff)
+                    self.stats["sequential_hits"] += 1
+                    _SEQUENTIAL_FRAME_CACHE[cache_key] = {
+                        "cutoff": cutoff,
+                        "frame": frame,
+                        "feed_id": self.feed_id,
+                        "source_contract": self.source_contract,
+                        "source_high_water": _source_high_water(
+                            self.market_conn, asset, interval, cutoff,
+                            cutoff - timedelta(days=lookback_days),
+                        ),
+                    }
+                    return frame
+            elif previous is not None and previous_cutoff >= cutoff:
+                self._invalidate_cache("non_monotonic_cutoff")
+        hybrid = _HYBRID_HTF_CONTEXT.get()
+        if hybrid is None or interval not in {"1h", "4h"}:
+            self.stats["sequential_misses"] += 1
+        frame = _load_bars_for_interval_uncached(
+            self.market_conn, asset, interval, cutoff, lookback_days
+        )
+        if hybrid is not None and interval in {"1h", "4h"}:
+            if hybrid.last_reused:
+                self.stats["sequential_hits"] += 1
+            else:
+                self.stats["sequential_misses"] += 1
+        _SEQUENTIAL_FRAME_CACHE[cache_key] = {
+            "cutoff": cutoff,
+            "frame": frame,
+            "feed_id": self.feed_id,
+            "source_contract": self.source_contract,
+            "source_high_water": _source_high_water(
+                self.market_conn, asset, interval, cutoff,
+                cutoff - timedelta(days=lookback_days),
+            ),
+        }
+        while len(_SEQUENTIAL_FRAME_CACHE) > _SEQUENTIAL_FRAME_CACHE_LIMIT:
+            _SEQUENTIAL_FRAME_CACHE.pop(next(iter(_SEQUENTIAL_FRAME_CACHE)))
+        return frame
+
+    def _invalidate_cache(self, reason: str) -> None:
+        self.stats["cache_invalidations"] += 1
+        reasons = self.stats["cache_invalidation_reasons"]
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    def features(self, symbol: str, interval: str, spec: dict[str, Any],
+                 cutoff: datetime | None = None, lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
+        """Build one Polars feature frame for a normalized feature specification."""
+        from strategy_features import build_feature_frame
+
+        cutoff = self.evaluation_cutoff if cutoff is None else _ensure_utc(cutoff)
+        key = (_asset_from_symbol(symbol), interval, self._feature_key(spec))
+        cached = self._features.get(key)
+        if cached is not None:
+            self.stats["feature_hits"] += 1
+            return cached
+        self.stats["feature_misses"] += 1
+        frame = self.load_bars(None, symbol, interval, cutoff, lookback_days)
+        result = build_feature_frame(frame, **spec)
+        self._features[key] = result
+        return result
+
+    def dmi_adx(self, symbol: str, interval: str, length: int, smoothing: int,
+                cutoff: datetime | None = None, lookback_days: int = LOOKBACK_DAYS):
+        """Compute and cache one ADX/DMI contract for this cutoff."""
+        from polars_indicators import dmi_adx_series
+
+        cutoff = self.evaluation_cutoff if cutoff is None else _ensure_utc(cutoff)
+        key = (_asset_from_symbol(symbol), interval, int(length), int(smoothing))
+        cached = self._dmi.get(key)
+        if cached is not None:
+            self.stats["dmi_hits"] += 1
+            return cached
+        self.stats["dmi_misses"] += 1
+        frame = self.load_bars(None, symbol, interval, cutoff, lookback_days)
+        result = dmi_adx_series(frame, length, smoothing)
+        self._dmi[key] = result
+        return result
+
+
+@contextmanager
+def shared_computation_context(market_db_path: str | Path | None,
+                               evaluation_cutoff: datetime):
+    """Install one shared read-only computation context for an evaluation."""
+    current = _SHARED_COMPUTATION_CONTEXT.get()
+    if current is not None:
+        yield current
+        return
+    hybrid = _HYBRID_HTF_CONTEXT.get()
+    owns_connection = hybrid is None
+    conn = hybrid.market_conn if hybrid is not None else config.get_db_connection(
+        read_only=True,
+        db_path=market_db_path or config.MARKET_DB_PATH,
+    )
+    context = SharedComputationContext(conn, evaluation_cutoff, market_db_path)
+    token = _SHARED_COMPUTATION_CONTEXT.set(context)
+    try:
+        yield context
+    finally:
+        _SHARED_COMPUTATION_CONTEXT.reset(token)
+        if owns_connection:
+            conn.close()
+
+
+def shared_computation_context_active() -> bool:
+    return _SHARED_COMPUTATION_CONTEXT.get() is not None
+
+
+def get_shared_computation_context() -> SharedComputationContext | None:
+    return _SHARED_COMPUTATION_CONTEXT.get()
+
+
+def strategy_market_connection(db_path: str | Path | None = None) -> tuple[Any, bool]:
+    """Return the shared market connection, or an owned fallback for direct calls."""
+    context = get_shared_computation_context()
+    if context is not None:
+        return context.market_conn, False
+    return config.get_db_connection(read_only=True, db_path=db_path), True
+
+
+def shared_computation_stats() -> dict[str, int]:
+    context = _SHARED_COMPUTATION_CONTEXT.get()
+    return dict(context.stats) if context is not None else {}
 
 
 def _rows_to_frame(rows: List[Dict[str, Any]]) -> pl.DataFrame:
@@ -577,9 +973,9 @@ def list_candidate_symbols(conn, cutoff: datetime, *, apply_rotation: bool = Fal
     from symbol_rotation import subscription_assets
     bases, feed = subscription_assets(cutoff)
     candidates = list(zip(config.expand_perp_symbols(bases, "bybit"), bases))
-    # The gateway and the evaluator consume the same durable rotation snapshot.
-    # A missing/expired feed is fail-closed to permanent assets; strategies must
-    # not re-rank that fallback from local bars.
+    # The gateway and evaluator consume the same durable effective-universe
+    # snapshot. A stale feed may retain unexpired watchlist entries, but
+    # strategies must not re-rank or extend that state from local bars.
     return candidates
 
 
@@ -603,52 +999,99 @@ def resample_ohlcv(bars: pl.DataFrame, every: str) -> pl.DataFrame:
     seconds = {"15m": 900, "1h": 3600, "4h": 14400}.get(every)
     if seconds is None:
         raise ValueError(f"unsupported resampling interval: {every}")
-    rows = bars.sort("timestamp").to_dicts()
-    # Exchange feeds may encode closed bar ends one millisecond before the boundary.
-    def normalize_bar_end(value: Any) -> datetime:
-        return (_ensure_utc(value) + timedelta(milliseconds=1)).replace(microsecond=0)
-
-    timestamps = [normalize_bar_end(row["timestamp"]) for row in rows]
-    deltas = [int((timestamps[i] - timestamps[i - 1]).total_seconds())
-              for i in range(1, len(timestamps))
-              if timestamps[i] > timestamps[i - 1]]
-    base_seconds = min(deltas) if deltas else 300
+    # Normalize only the two representations accepted by the source contract.
+    try:
+        normalized_timestamps = [
+            _normalise_bar_end(value) for value in bars["timestamp"].to_list()
+        ]
+        for row in bars.to_dicts():
+            prices = [float(row[name]) for name in ("open", "high", "low", "close")]
+            volume = float(row.get("volume") or 0.0)
+            if (not all(math.isfinite(value) and value > 0 for value in prices)
+                    or prices[1] < max(prices[0], prices[3])
+                    or prices[2] > min(prices[0], prices[3])
+                    or not math.isfinite(volume) or volume < 0):
+                return pl.DataFrame()
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return pl.DataFrame()
+    normalized = bars.with_columns(
+        pl.Series("timestamp", normalized_timestamps, dtype=pl.Datetime("us", time_zone="UTC"))
+    ).sort("timestamp")
+    duplicate_times = normalized.group_by("timestamp").len().filter(pl.col("len") > 1)["timestamp"].to_list()
+    for timestamp in duplicate_times:
+        duplicate_rows = normalized.filter(pl.col("timestamp") == timestamp)
+        signatures = {
+            tuple(row.get(name) for name in ("open", "high", "low", "close", "volume"))
+            for row in duplicate_rows.to_dicts()
+        }
+        if len(signatures) > 1:
+            return pl.DataFrame()
+    normalized = normalized.unique(subset=["timestamp"], keep="last", maintain_order=True).sort("timestamp")
+    deltas = normalized.select(
+        pl.col("timestamp").diff().dt.total_seconds().alias("delta_seconds")
+    )["delta_seconds"].drop_nulls()
+    positive_deltas = deltas.filter(deltas > 0)
+    base_seconds = int(positive_deltas.min()) if positive_deltas.len() else 300
     if base_seconds <= 0 or seconds % base_seconds:
         return pl.DataFrame()
     required = seconds // base_seconds
-    grouped: Dict[int, List[Dict[str, Any]]] = {}
-    for row, timestamp in zip(rows, timestamps):
-        epoch = int(timestamp.timestamp())
-        bucket_end = ((epoch + seconds - 1) // seconds) * seconds
-        grouped.setdefault(bucket_end, []).append(row)
-    output: List[Dict[str, Any]] = []
-    for bucket_end, bucket_rows in sorted(grouped.items()):
-        by_end = {normalize_bar_end(row["timestamp"]): row for row in bucket_rows}
-        expected = [datetime.fromtimestamp(bucket_end - base_seconds * i, timezone.utc)
-                    for i in range(required - 1, -1, -1)]
-        if any(end not in by_end for end in expected):
-            continue
-        ordered = [by_end[end] for end in expected]
-        output.append({
-            "timestamp": datetime.fromtimestamp(bucket_end, timezone.utc),
-            "open": float(ordered[0]["open"]),
-            "high": max(float(row["high"]) for row in ordered),
-            "low": min(float(row["low"]) for row in ordered),
-            "close": float(ordered[-1]["close"]),
-            "volume": sum(float(row.get("volume") or 0.0) for row in ordered),
-            "open_interest": ordered[-1].get("open_interest", 0.0),
-            "funding_rate": ordered[-1].get("funding_rate", 0.0),
-            "source": ordered[-1].get("source", "resampled"),
-            "source_provenance": sorted({str(row.get("source", "unknown")) for row in ordered}),
-            "data_purity": "pure_ws" if all(str(row.get("source", "")).endswith("_ws") for row in ordered) else "unknown",
-            "source_observation_ids": sorted({
-                str(observation_id)
-                for row in ordered
-                for observation_id in row.get("source_observation_ids", [])
-                if observation_id
-            }),
-        })
-    return _rows_to_frame(output)
+    if "source" not in normalized.columns:
+        normalized = normalized.with_columns(pl.lit("unknown").alias("source"))
+    else:
+        normalized = normalized.with_columns(pl.col("source").fill_null("unknown"))
+    if "volume" not in normalized.columns:
+        normalized = normalized.with_columns(pl.lit(0.0).alias("volume"))
+    else:
+        normalized = normalized.with_columns(pl.col("volume").fill_null(0.0))
+    if "open_interest" not in normalized.columns:
+        normalized = normalized.with_columns(pl.lit(0.0).alias("open_interest"))
+    else:
+        normalized = normalized.with_columns(pl.col("open_interest").fill_null(0.0))
+    if "funding_rate" not in normalized.columns:
+        normalized = normalized.with_columns(pl.lit(0.0).alias("funding_rate"))
+    else:
+        normalized = normalized.with_columns(pl.col("funding_rate").fill_null(0.0))
+    if "source_observation_ids" not in normalized.columns:
+        normalized = normalized.with_columns(
+            pl.Series("source_observation_ids", [[] for _ in range(normalized.height)], dtype=pl.List(pl.String))
+        )
+
+    result = normalized.group_by_dynamic(
+        "timestamp", every=every, closed="right", label="right"
+    ).agg([
+        pl.len().alias("_bucket_count"),
+        pl.col("timestamp").sort().alias("_timestamps"),
+        pl.col("open").first().cast(pl.Float64).alias("open"),
+        pl.col("high").max().cast(pl.Float64).alias("high"),
+        pl.col("low").min().cast(pl.Float64).alias("low"),
+        pl.col("close").last().cast(pl.Float64).alias("close"),
+        pl.col("volume").sum().cast(pl.Float64).alias("volume"),
+        pl.col("open_interest").last().cast(pl.Float64).alias("open_interest"),
+        pl.col("funding_rate").last().cast(pl.Float64).alias("funding_rate"),
+        pl.col("source").last().alias("source"),
+        pl.col("source").unique().sort().alias("source_provenance"),
+        pl.col("source").str.ends_with("_ws").all().alias("_pure_ws"),
+        pl.col("source_observation_ids").explode().drop_nulls().unique().sort().alias(
+            "source_observation_ids"
+        ),
+    ]).filter(pl.col("_bucket_count") == required).sort("timestamp")
+    exact_bucket_mask = []
+    for row in result.select("timestamp", "_timestamps").to_dicts():
+        bucket_end = int(_ensure_utc(row["timestamp"]).timestamp())
+        actual = sorted(int(_ensure_utc(value).timestamp()) for value in row["_timestamps"])
+        expected = [bucket_end - seconds + base_seconds * (index + 1) for index in range(required)]
+        exact_bucket_mask.append(actual == expected)
+    if result.height:
+        result = result.filter(pl.Series("_exact_bucket", exact_bucket_mask))
+    if result.is_empty():
+        return pl.DataFrame()
+    return result.select([
+        "timestamp", "open", "high", "low", "close", "volume", "open_interest",
+        "funding_rate", "source", "source_provenance",
+        pl.when(pl.col("_pure_ws")).then(pl.lit("pure_ws"))
+        .otherwise(pl.lit("unknown")).alias("data_purity"),
+        "source_observation_ids",
+    ])
 
 
 def ema_last(closes: Sequence[float], span: int) -> float | None:
@@ -657,55 +1100,56 @@ def ema_last(closes: Sequence[float], span: int) -> float | None:
     return ema_series(closes, span)[-1]
 
 
+def _polars_seeded_ewm(values: pl.Series, length: int, alpha: float) -> pl.Series:
+    """Run an EWMA from an explicit arithmetic seed in Polars."""
+    values = values.cast(pl.Float64)
+    if length <= 0 or values.len() < length:
+        return pl.Series("ewm", [None] * values.len(), dtype=pl.Float64)
+    seed = values.head(length).mean()
+    seeded = pl.concat([
+        pl.Series("values", [None] * (length - 1), dtype=pl.Float64),
+        pl.Series("values", [seed], dtype=pl.Float64),
+        values.slice(length),
+    ])
+    return seeded.ewm_mean(alpha=alpha, adjust=False, min_samples=1).alias("ewm")
+
+
 def ema_series(values: Sequence[float], span: int) -> List[float | None]:
     """TradingView-style EMA with an SMA seed at the declared warmup point."""
-    out: List[float | None] = [None] * len(values)
-    if span <= 0 or len(values) < span:
-        return out
-    out[span - 1] = sum(float(value) for value in values[:span]) / span
-    alpha = 2.0 / (span + 1.0)
-    for index in range(span, len(values)):
-        out[index] = alpha * float(values[index]) + (1.0 - alpha) * out[index - 1]
-    return out
+    series = pl.Series("values", [float(value) for value in values], dtype=pl.Float64)
+    return _polars_seeded_ewm(series, span, 2.0 / (span + 1.0)).to_list()
 
 
 def wilder_rsi(values: Sequence[float], length: int = 14) -> List[float | None]:
     """Wilder RMA RSI, equivalent to TradingView ``ta.rsi``."""
-    out: List[float | None] = [None] * len(values)
-    if length <= 0 or len(values) <= length:
-        return out
-    gains = [max(float(values[i]) - float(values[i - 1]), 0.0) for i in range(1, len(values))]
-    losses = [max(float(values[i - 1]) - float(values[i]), 0.0) for i in range(1, len(values))]
-    gain = sum(gains[:length]) / length
-    loss = sum(losses[:length]) / length
-
-    def value() -> float:
-        if loss == 0:
-            return 100.0 if gain > 0 else 0.0
-        return 100.0 - 100.0 / (1.0 + gain / loss)
-
-    out[length] = value()
-    for index in range(length + 1, len(values)):
-        gain = (gain * (length - 1) + gains[index - 1]) / length
-        loss = (loss * (length - 1) + losses[index - 1]) / length
-        out[index] = value()
-    return out
+    closes = pl.Series("close", [float(value) for value in values], dtype=pl.Float64)
+    if length <= 0 or closes.len() <= length:
+        return [None] * closes.len()
+    changes = closes.diff().slice(1)
+    gains = changes.clip(lower_bound=0.0)
+    losses = (-changes).clip(lower_bound=0.0)
+    gain_rma = _polars_seeded_ewm(gains, length, 1.0 / length)
+    loss_rma = _polars_seeded_ewm(losses, length, 1.0 / length)
+    frame = pl.DataFrame({
+        "gain": pl.concat([pl.Series([None], dtype=pl.Float64), gain_rma]),
+        "loss": pl.concat([pl.Series([None], dtype=pl.Float64), loss_rma]),
+    }).with_columns(
+        pl.when(pl.col("loss").is_null() | pl.col("gain").is_null())
+        .then(pl.lit(None, dtype=pl.Float64))
+        .when(pl.col("loss") == 0)
+        .then(pl.when(pl.col("gain") > 0).then(100.0).otherwise(0.0))
+        .otherwise(100.0 - 100.0 / (1.0 + pl.col("gain") / pl.col("loss")))
+        .alias("rsi")
+    )
+    return frame["rsi"].to_list()
 
 
 def wilder_atr(bars: pl.DataFrame, length: int = 14) -> float | None:
     """Return the final Wilder ATR after its declared warmup."""
     if bars.is_empty() or length <= 0 or bars.height < length:
         return None
-    highs = [float(value) for value in bars["high"].to_list()]
-    lows = [float(value) for value in bars["low"].to_list()]
-    closes = [float(value) for value in bars["close"].to_list()]
-    true_ranges = [highs[0] - lows[0]]
-    true_ranges.extend(max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]),
-                           abs(lows[i] - closes[i - 1])) for i in range(1, len(closes)))
-    atr = sum(true_ranges[:length]) / length
-    for current in true_ranges[length:]:
-        atr = (atr * (length - 1) + current) / length
-    return atr if math.isfinite(atr) and atr > 0 else None
+    atr = wilder_atr_series(bars, length)[-1]
+    return float(atr) if atr is not None and math.isfinite(atr) and atr > 0 else None
 
 
 def stoch_rsi(values: Sequence[float], rsi_length: int = 14, stoch_length: int = 14,
@@ -713,24 +1157,24 @@ def stoch_rsi(values: Sequence[float], rsi_length: int = 14, stoch_length: int =
     """Return raw StochRSI, SMA K, SMA D using explicit zero-denominator rules."""
     if min(rsi_length, stoch_length, k_smoothing, d_smoothing) <= 0:
         return ([None] * len(values),) * 3
-    rsi = wilder_rsi(values, rsi_length)
-    raw: List[float | None] = [None] * len(values)
-    for index in range(len(values)):
-        window = rsi[index - stoch_length + 1:index + 1] if index + 1 >= stoch_length else []
-        if len(window) != stoch_length or any(value is None for value in window):
-            continue
-        low, high = min(window), max(window)
-        raw[index] = 0.0 if high == low else 100.0 * (rsi[index] - low) / (high - low)
-    k: List[float | None] = [None] * len(values)
-    d: List[float | None] = [None] * len(values)
-    for index in range(len(values)):
-        window = raw[index - k_smoothing + 1:index + 1] if index + 1 >= k_smoothing else []
-        if len(window) == k_smoothing and all(value is not None for value in window):
-            k[index] = sum(window) / k_smoothing
-        window_k = k[index - d_smoothing + 1:index + 1] if index + 1 >= d_smoothing else []
-        if len(window_k) == d_smoothing and all(value is not None for value in window_k):
-            d[index] = sum(window_k) / d_smoothing
-    return raw, k, d
+    rsi = pl.Series("rsi", wilder_rsi(values, rsi_length), dtype=pl.Float64)
+    frame = pl.DataFrame({"rsi": rsi}).with_columns(
+        rsi_low=pl.col("rsi").rolling_min(stoch_length, min_samples=stoch_length),
+        rsi_high=pl.col("rsi").rolling_max(stoch_length, min_samples=stoch_length),
+    ).with_columns(
+        pl.when(pl.col("rsi_low").is_null() | pl.col("rsi_high").is_null())
+        .then(pl.lit(None, dtype=pl.Float64))
+        .when(pl.col("rsi_high") == pl.col("rsi_low"))
+        .then(0.0)
+        .otherwise(100.0 * (pl.col("rsi") - pl.col("rsi_low")) /
+                   (pl.col("rsi_high") - pl.col("rsi_low")))
+        .alias("raw")
+    ).with_columns(
+        pl.col("raw").rolling_mean(k_smoothing, min_samples=k_smoothing).alias("k")
+    ).with_columns(
+        pl.col("k").rolling_mean(d_smoothing, min_samples=d_smoothing).alias("d")
+    )
+    return frame["raw"].to_list(), frame["k"].to_list(), frame["d"].to_list()
 
 
 def last_completed_bar_fresh(bars_15m: pl.DataFrame, cutoff: datetime) -> bool:

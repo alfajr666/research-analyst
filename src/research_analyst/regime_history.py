@@ -109,6 +109,10 @@ def init_regime_history_schema(conn: Any) -> None:
             f"ON regime_{interval}_bars (asset, bar_end)"
         )
         conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_regime_{interval}_bars_retention "
+            f"ON regime_{interval}_bars (source_end)"
+        )
+        conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_regime_{interval}_jobs_status "
             f"ON regime_{interval}_backfill_jobs (status, next_retry_at)"
         )

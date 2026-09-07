@@ -1,13 +1,14 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import config
 from symbol_rotation import (
     build_feed,
+    effective_state_at,
     fetch_bybit_ticker_snapshot,
     PERMANENT_SYMBOLS,
     read_feed,
@@ -30,12 +31,16 @@ class SymbolRotationTests(unittest.TestCase):
                 "SYMBOL_ROTATION_LOOKBACK_HOURS",
                 "SYMBOL_ROTATION_BAR_INTERVAL",
                 "SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT",
+                "SYMBOL_ROTATION_WATCHLIST_TTL_HOURS",
+                "SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS",
             )
         }
         config.SYMBOL_ROTATION_ENABLED = True
         config.SYMBOL_ROTATION_LOOKBACK_HOURS = 24
         config.SYMBOL_ROTATION_BAR_INTERVAL = "5m"
         config.SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT = 30
+        config.SYMBOL_ROTATION_WATCHLIST_TTL_HOURS = 72
+        config.SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS = 80
 
     def tearDown(self):
         for name, value in self.previous.items():
@@ -171,16 +176,28 @@ class SymbolRotationTests(unittest.TestCase):
             retained = build_feed([], boundary.replace(hour=2), previous_feed=previous)
             fallback = build_feed([], boundary.replace(hour=8), previous_feed=previous)
         self.assertEqual(retained["feed_id"], previous["feed_id"])
-        self.assertEqual(fallback["status"], "fallback")
-        self.assertEqual(fallback["symbol_count"], 4)
+        self.assertEqual(fallback["feed_id"], previous["feed_id"])
+        self.assertEqual(fallback["watchlist_entry_count"], previous["watchlist_entry_count"])
         self.assertTrue(validate_feed(fallback))
 
     def test_legacy_fallback_feed_is_migrated_to_permanent_symbols(self):
         boundary = datetime(2026, 8, 18, tzinfo=timezone.utc)
         path = Path(self.directory.name) / "feed.json"
-        legacy = build_feed([], boundary, generated_at=boundary)
-        legacy["symbols"] = [f"COIN{index:02d}" for index in range(92)] + list(PERMANENT_SYMBOLS)
-        legacy["symbol_count"] = len(legacy["symbols"])
+        legacy = {
+            "schema_version": 1,
+            "feed_id": "legacy-feed",
+            "algorithm_version": "performance-24h-v1",
+            "generated_at": boundary.isoformat().replace("+00:00", "Z"),
+            "valid_from": boundary.isoformat().replace("+00:00", "Z"),
+            "valid_until": (boundary + timedelta(hours=4)).isoformat().replace("+00:00", "Z"),
+            "permanent_symbols": list(PERMANENT_SYMBOLS),
+            "rotating_symbol_count": 30,
+            "symbol_count": 96,
+            "gainers": [],
+            "losers": [],
+            "symbols": [f"COIN{index:02d}" for index in range(92)] + list(PERMANENT_SYMBOLS),
+            "status": "ready",
+        }
         write_feed(legacy, path)
         conn = config.get_db_connection(db_path=self.db)
         try:
@@ -269,6 +286,54 @@ class SymbolRotationTests(unittest.TestCase):
             path = Path(self.directory.name) / "feed.json"
             write_feed(invalid, path)
         self.assertEqual(read_feed(path, boundary)["feed_id"], invalid["feed_id"])
+
+    def test_watchlist_refreshes_ttl_and_expires_at_exact_cutoff(self):
+        boundary = datetime(2026, 8, 18, tzinfo=timezone.utc)
+        assets = [f"COIN{index:02d}" for index in range(40)]
+        records = [
+            {"asset": asset, "as_of": boundary, "source": "test", "interval": "24h",
+             "retrieved_at": boundary, "reference_price": 100.0,
+             "current_price": 100.0 + index}
+            for index, asset in enumerate(assets)
+        ]
+        with patch.object(config, "load_static_symbols", return_value=assets):
+            initial = build_feed(records, boundary, generated_at=boundary)
+            later = boundary + timedelta(hours=4)
+            refreshed = build_feed(records, later, generated_at=later, previous_feed=initial)
+
+        selected = initial["watchlist_entries"][0]
+        refreshed_entry = next(
+            entry for entry in refreshed["watchlist_entries"] if entry["asset"] == selected["asset"]
+        )
+        self.assertEqual(refreshed_entry["first_selected_at"], selected["first_selected_at"])
+        self.assertEqual(refreshed_entry["last_selected_at"], "2026-08-18T04:00:00Z")
+        self.assertEqual(refreshed_entry["expires_at"], "2026-08-21T04:00:00Z")
+        self.assertEqual(refreshed["effective_universe_version"], initial["effective_universe_version"])
+
+        active, active_metadata = effective_state_at(refreshed, later + timedelta(hours=71, minutes=59))
+        self.assertEqual(len(active), 34)
+        self.assertEqual(active_metadata["status"], "degraded")
+        expired, expired_metadata = effective_state_at(refreshed, later + timedelta(hours=72))
+        self.assertEqual(expired, ["BTC", "ETH", "PAXG", "QQQ"])
+        self.assertEqual(expired_metadata["status"], "permanent_fallback")
+        self.assertNotEqual(active_metadata["effective_universe_version"], expired_metadata["effective_universe_version"])
+
+    def test_watchlist_cap_includes_permanent_symbols(self):
+        boundary = datetime(2026, 8, 18, tzinfo=timezone.utc)
+        assets = [f"COIN{index:02d}" for index in range(40)]
+        records = [
+            {"asset": asset, "as_of": boundary, "source": "test", "interval": "24h",
+             "retrieved_at": boundary, "reference_price": 100.0,
+             "current_price": 100.0 + index}
+            for index, asset in enumerate(assets)
+        ]
+        config.SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS = 10
+        with patch.object(config, "load_static_symbols", return_value=assets):
+            feed = build_feed(records, boundary, generated_at=boundary)
+        self.assertEqual(feed["symbol_count"], 10)
+        self.assertEqual(feed["effective_symbol_count"], 10)
+        self.assertEqual(feed["watchlist_entry_count"], 6)
+        self.assertEqual(feed["symbols"][:4], list(PERMANENT_SYMBOLS))
 
 
 if __name__ == "__main__":

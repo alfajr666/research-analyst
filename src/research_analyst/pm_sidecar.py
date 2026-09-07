@@ -24,11 +24,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
+from db_maintenance import prune_pm_advice_db
+from strategy_features import build_feature_frame
 from strategy_v2_context import (
     atr_last,
     completed_cycle_for,
     ema_last,
     load_bars_for_interval,
+    SharedComputationContext,
     structure_bias_4h,
 )
 
@@ -236,8 +239,12 @@ def _bars_tail(bars, n: int = 60):
     return bars.sort("timestamp").tail(n)
 
 
-def _htf_bias(conn, asset: str, cutoff: datetime) -> Tuple[str, Optional[float]]:
-    bars_4h = _bars_tail(load_bars_for_interval(conn, asset, "4h", cutoff))
+def _htf_bias(conn, asset: str, cutoff: datetime,
+              computation: SharedComputationContext | None = None) -> Tuple[str, Optional[float]]:
+    bars_4h = _bars_tail(
+        computation.load_bars(conn, asset, "4h", cutoff) if computation else
+        load_bars_for_interval(conn, asset, "4h", cutoff)
+    )
     if bars_4h is None:
         return "neutral", None
     try:
@@ -246,56 +253,49 @@ def _htf_bias(conn, asset: str, cutoff: datetime) -> Tuple[str, Optional[float]]
         return "neutral", None
 
 
-def _ta_5m(conn, asset: str, cutoff: datetime) -> Dict[str, Any]:
-    bars = _bars_tail(load_bars_for_interval(conn, asset, "5m", cutoff))
+def _ta_5m(conn, asset: str, cutoff: datetime,
+           computation: SharedComputationContext | None = None) -> Dict[str, Any]:
+    bars = _bars_tail(
+        computation.load_bars(conn, asset, "5m", cutoff) if computation else
+        load_bars_for_interval(conn, asset, "5m", cutoff)
+    )
     if bars is None:
         return {}
-    closes = bars["close"].to_list()
-    last = closes[-1] if closes else None
-    summary = {"last_close": last}
+    summary = {"last_close": bars["close"][-1] if bars.height else None}
     try:
-        summary["ema20"] = ema_last(closes, 20)
-    except Exception:
-        pass
-    try:
-        summary["atr14"] = atr_last(bars, 14)
-    except Exception:
-        pass
-    try:
-        rsi_len, stoch_len = 14, 14
-        rsi = []
-        for i in range(len(closes)):
-            if i < rsi_len:
-                rsi.append(None)
-                continue
-            gains = [max(closes[j] - closes[j - 1], 0.0) for j in range(i - rsi_len + 1, i + 1)]
-            losses = [max(closes[j - 1] - closes[j], 0.0) for j in range(i - rsi_len + 1, i + 1)]
-            avg_loss = sum(losses) / rsi_len
-            rsi.append(100.0 if avg_loss == 0 else 100.0 - 100.0 / (1.0 + sum(gains) / rsi_len / avg_loss))
-        raw = []
-        for i, value in enumerate(rsi):
-            window = [x for x in rsi[max(0, i - stoch_len + 1):i + 1] if x is not None]
-            if value is None or len(window) < stoch_len:
-                raw.append(None)
-            else:
-                lo, hi = min(window), max(window)
-                raw.append(0.0 if hi == lo else 100.0 * (value - lo) / (hi - lo))
-        k_values = [sum(raw[i - 2:i + 1]) / 3 for i in range(len(raw)) if i >= 2 and all(x is not None for x in raw[i - 2:i + 1])]
-        summary["rsi5"] = rsi[-1]
-        summary["stoch_k"] = k_values[-1] if k_values else None
+        feature_spec = {
+            "ema": {"ema20": 20},
+            "atr": {"atr14": 14},
+            "rolling_rsi": {"rsi5": 14},
+            "rolling_stoch": {"stoch": (14, 14, 3, 3)},
+        }
+        features = computation.features(asset, "5m", feature_spec, cutoff=cutoff) if computation else build_feature_frame(
+            bars, **feature_spec
+        )
+        row = features.row(-1, named=True)
+        summary.update({
+            "ema20": row.get("ema20"),
+            "atr14": row.get("atr14"),
+            "rsi5": row.get("rsi5"),
+            "stoch_k": row.get("stoch_k"),
+        })
     except Exception:
         pass
     return summary
 
 
-def _swings(conn, asset: str, cutoff: datetime) -> Dict[str, Any]:
+def _swings(conn, asset: str, cutoff: datetime,
+            computation: SharedComputationContext | None = None) -> Dict[str, Any]:
     """HTF swing highs/lows from confirmed pivots on 4h bars."""
     try:
         from market_structure import (
             latest_confirmed_pivot_high,
             latest_confirmed_pivot_low,
         )
-        bars = _bars_tail(load_bars_for_interval(conn, asset, "4h", cutoff))
+        bars = _bars_tail(
+            computation.load_bars(conn, asset, "4h", cutoff) if computation else
+            load_bars_for_interval(conn, asset, "4h", cutoff)
+        )
         if bars is None:
             return {}
         idx = len(bars) - 1
@@ -484,13 +484,16 @@ def _write_decision_file(pos: Dict[str, Any], decision: Dict[str, Any],
 
 
 def _mechanical_strategy_decision(pos: Dict[str, Any], intent: Optional[Dict[str, Any]],
-                                  market_conn, cutoff: datetime) -> Optional[Dict[str, Any]]:
+                                   market_conn, cutoff: datetime,
+                                   computation: SharedComputationContext | None = None) -> Optional[Dict[str, Any]]:
     """Evaluate deterministic strategy management without consulting the LLM."""
     if pos.get("strategy_id") != getattr(config, "EMA99_RETEST_STRATEGY_ID", ""):
         return None
     from strategies.v2.ema99_retest_adx_fundamo_v1 import evaluate_exit, evaluate_stop_revision
 
-    bars = load_bars_for_interval(market_conn, pos["asset"], "5m", cutoff)
+    bars = computation.load_bars(market_conn, pos["asset"], "5m", cutoff) if computation else load_bars_for_interval(
+        market_conn, pos["asset"], "5m", cutoff
+    )
     exit_signal = evaluate_exit(bars, side=pos["side"], cutoff=cutoff)
     if exit_signal:
         return {
@@ -533,8 +536,15 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
         return {"enabled": False, "advices": 0}
     now = now or _utcnow()
     cutoff = completed_cycle_for(now, f"{getattr(config, 'PM_CADENCE_MINUTES', 5)}m")
-    conn = config.get_db_connection(read_only=False, db_path=db_path)
+    analyst_path = db_path or config.ANALYST_DB_PATH
+    advice_path = db_path if db_path is not None else config.PM_ADVICE_DB_PATH
+    same_database = str(analyst_path) == str(advice_path)
+    conn = config.get_db_connection(read_only=same_database is False, db_path=analyst_path)
+    if not same_database:
+        config.init_pm_advice_db(advice_path)
+    advice_conn = conn if same_database else config.get_db_connection(read_only=False, db_path=advice_path)
     market_conn = config.get_db_connection(read_only=True, db_path=config.MARKET_DB_PATH)
+    computation = SharedComputationContext(market_conn, cutoff, config.MARKET_DB_PATH)
     try:
         positions: List[Dict[str, Any]] = []
         snapshot_dir = getattr(config, "EXECUTOR_SNAPSHOT_DIR", "") or ""
@@ -564,22 +574,22 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
                            strategy_id=UNMANAGED_STRATEGY_ID, asset=asset,
                            position_id=pos.get("position_id"), reason=reason,
                            cutoff=cutoff.isoformat())
-                if _emit_advice(conn, pos, decision, None, None, cutoff, now):
+                if _emit_advice(advice_conn, pos, decision, None, None, cutoff, now):
                     advices += 1
                     if _write_decision_file(pos, decision, cutoff, now):
                         written += 1
                 continue
             intent = _get_active_intent(conn, pos["strategy_id"], asset)
-            mechanical = _mechanical_strategy_decision(pos, intent, market_conn, cutoff)
+            mechanical = _mechanical_strategy_decision(pos, intent, market_conn, cutoff, computation)
             if mechanical is not None:
-                if _emit_advice(conn, pos, mechanical, None, None, cutoff, now):
+                if _emit_advice(advice_conn, pos, mechanical, None, None, cutoff, now):
                     advices += 1
                     if _write_decision_file(pos, mechanical, cutoff, now):
                         written += 1
                 continue
-            htf_bias, _ = _htf_bias(market_conn, asset, cutoff)
-            ta = _ta_5m(market_conn, asset, cutoff)
-            swings = _swings(market_conn, asset, cutoff)
+            htf_bias, _ = _htf_bias(market_conn, asset, cutoff, computation)
+            ta = _ta_5m(market_conn, asset, cutoff, computation)
+            swings = _swings(market_conn, asset, cutoff, computation)
             rr = _compute_rr(
                 pos["side"], pos["entry"], ta.get("last_close"),
                 (intent or {}).get("invalidation_price"),
@@ -605,13 +615,16 @@ def run_once(db_path: str | None = None, now: Optional[datetime] = None) -> Dict
                        action=decision["action"], confidence=decision.get("confidence"),
                        proposed_action=decision.get("proposed_action"),
                        reason=decision["reason"], cutoff=cutoff.isoformat())
-            if _emit_advice(conn, pos, decision, htf_bias, rr, cutoff, now):
+            if _emit_advice(advice_conn, pos, decision, htf_bias, rr, cutoff, now):
                 advices += 1
                 if _write_decision_file(pos, decision, cutoff, now):
                     written += 1
         return {"enabled": True, "positions": len(positions),
                 "advices": advices, "decisions_written": written}
     finally:
+        prune_pm_advice_db(advice_conn, now=now, max_batches=10)
+        if advice_conn is not conn:
+            advice_conn.close()
         market_conn.close()
         conn.close()
 
@@ -626,7 +639,7 @@ if __name__ == "__main__":
         print(f"Starting independent PM sidecar at {interval_seconds}s cadence...", flush=True)
         while True:
             try:
-                print(json.dumps(run_once(config.ANALYST_DB_PATH), default=str), flush=True)
+                print(json.dumps(run_once(), default=str), flush=True)
             except Exception as exc:
                 print(f"PM sidecar err: {exc}", file=sys.stderr, flush=True)
             time.sleep(interval_seconds)
