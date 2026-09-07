@@ -23,8 +23,8 @@ rotation feed
     |                       -> regime.sqlite3 regime_1h_bars + regime_4h_bars
     |                       -> regime score and gate
     |
-    +--> ws_gateway -> 1m/5m REST bootstrap
-                         -> live 1m/5m WebSocket
+    +--> ws_gateway -> 5m REST bootstrap
+                         -> live 5m WebSocket
                          -> market.sqlite3
 ```
 
@@ -98,8 +98,8 @@ still uses:
 - completed direct 1h bars from the regime cache;
 - completed 5m bars for recent and prior realized-volatility windows.
 
-The live evaluation bootstrap remains responsible for enough 1m and 5m history
-for active strategy paths. The engine combines direct 1h/4h seed history with
+The live evaluation bootstrap remains responsible for enough 5m history for
+active strategy paths. The engine combines direct 1h/4h seed history with
 the newest canonical 5m-derived tail according to
 `specs/hybrid-htf-engine-v1.md`; strategies remain unaware of that handoff.
 
@@ -129,7 +129,7 @@ the regime database read-only. The gateway remains the sole writer of
 
 The regime worker uses only Bybit's public REST API for historical 1h and 4h
 bootstrap. This is not a second live market provider and is not a competing
-source for 5m, 1m, or strategy evaluation bars.
+source for 5m or strategy evaluation bars.
 
 ## 5. Storage Contract
 
@@ -219,7 +219,7 @@ same completed-bar and source-version rules as the initial bootstrap.
 
 ### 6.3 Live evaluation bootstrap
 
-The gateway continues to backfill the active asset's recent `1m` and `5m`
+The gateway continues to backfill the active asset's recent `5m`
 history before or during re-entry. WebSocket data is the ongoing latest source.
 The 5m bootstrap must remain sufficient for the enabled strategy cadences,
 1h-derived context, volatility, and existing deep-warmup checks.
@@ -230,7 +230,7 @@ The regime and gateway readiness states are separate:
 regime_1h_ready       -> direct 1h regime history is usable
 regime_4h_ready       -> direct 4h regime history is usable
 regime_history_ready  -> both direct regime histories are usable
-market_1m5m_ready     -> live evaluation history is usable
+market_5m_ready       -> live evaluation history is usable
 websocket_live        -> latest observations are flowing
 ```
 
@@ -292,7 +292,7 @@ existing market database.
 For 34 active assets and 92 approved assets:
 
 ```text
-Live WebSocket topics:          34 x (1m + 5m) = 68
+Live WebSocket topics:          34 x 5m = 34
 Regime 1h/4h WebSocket topics:  0
 Initial direct 1h rows:         92 x 336 ~= 30,900
 Initial direct 4h rows:         92 x 270 ~= 24,800
@@ -302,7 +302,7 @@ Market DB writers:               1
 ```
 
 The direct 1h/4h caches avoid fetching thousands of 5m bars solely to
-manufacture the regime's higher-timeframe warmup. The live 1m/5m bootstrap
+manufacture the regime's higher-timeframe warmup. The live 5m bootstrap
 remains bounded to active evaluation needs.
 
 ## 11. Validation Requirements

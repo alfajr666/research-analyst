@@ -13,11 +13,11 @@ Bybit public tickers
   -> symbol-rotation worker
   -> versioned performance feed
   -> ws_gateway subscriptions
-       Bybit public WS: completed 1m + 5m bars
+        Bybit public WS: completed 5m bars
        startup/re-entry REST backfill
        local 5m -> 15m/1h/4h resampling
        -> data/market.sqlite3
-       -> durable 1m/5m evaluation triggers
+        -> durable 5m evaluation triggers
 
 data/market.sqlite3 + completed 5m cutoff
   -> regime-session worker
@@ -171,8 +171,8 @@ The production allowlist currently contains 11 plugins:
 | --- | --- | --- | --- |
 | `failed-break-v3` | 5m | reversal | Bybit Hyro |
 | `bb-rsi-meanrev-v1` | 5m | mean_reversion | Bybit Hyro |
-| `williams-fractal-scalp-v1` | 1m | trend | Bybit Hyro |
-| `ema9-adx-stochrsi-state-v1` | 1m | trend | Bybit Hyro |
+| `williams-fractal-scalp-v1` | 5m | trend | Bybit Hyro |
+| `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit Hyro |
 | `dual-zone-follower-v2` | 5m | trend | Bybit Fundamo |
 | `dual-zone-short-follower-v2` | 5m | trend | Bybit Fundamo |
 | `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit Fundamo |

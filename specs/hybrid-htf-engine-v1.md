@@ -28,7 +28,8 @@ source-selection flag.
 ## Scope
 
 - Hybrid loading applies only to `1h` and `4h` strategy frames.
-- `1m`, `5m`, and `15m` remain canonical market paths.
+- `5m` and `15m` remain canonical market paths; `1m` is retired from the
+  strategy engine.
 - The existing shared `resample_ohlcv` implementation is used for the live
   tail.
 - The same engine context is used for HTF feature materialization and plugin
@@ -39,7 +40,7 @@ source-selection flag.
 ## Handoff Contract
 
 The engine uses two explicit cutoffs. `evaluation_cutoff` is the exact
-strategy-trigger cutoff and remains authoritative for `1m`/`5m` strategy data,
+strategy-trigger cutoff and remains authoritative for `5m` strategy data,
 candidate timestamps, freshness, and replay. `htf_cutoff` is the latest
 completed canonical `5m` boundary at or before `evaluation_cutoff`; it is the
 only cutoff used for the hybrid `1h`/`4h` frame.

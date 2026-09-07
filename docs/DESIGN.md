@@ -14,7 +14,7 @@ crypto perpetuals. It continuously:
 
 1. Maintains a market-data feed for a **static 97-symbol universe** (sourced from
     an approved tradeable-assets snapshot), with optional **rotated symbols** when enabled.
-2. Evaluates **strategies as plugins** on **1m / 5m / 15m** bars, using **HTF
+2. Evaluates **strategies as plugins** on **5m / 15m** bars, using **HTF
    (1h/4h) swing + FVG/OB** context resampled from the base feed.
 3. Emits a **trade intent** per evaluation — a falsifiable directional thesis
    (entry, invalidation, targets, expiry) — delivered to **Discord as a signal**.
@@ -33,7 +33,7 @@ The engine **never holds exchange credentials and never places orders**.
                  ┌─────────────────────────────────────────────────────────┐
    public WS      │                 ws_gateway  [TARGET]                     │
    (Bybit on,     │  ConnectionPool → StreamRouter → IngestBuffer → SQLite   │
-    Binance off)  │  ResampleWorker: 1m → 5m → 15m → 1h → 4h                │
+     Binance off)  │  ResampleWorker: 5m → 15m → 1h → 4h                     │
                  └───────────────────────────┬─────────────────────────────┘
                                              │ source_observations (ws_bars)
                                              ▼
@@ -93,7 +93,7 @@ The engine **never holds exchange credentials and never places orders**.
 Split by ownership to preserve single-writer discipline.
 
 **Market data (`MARKET_DB_PATH`, gateway-owned):**
-- `source_observations` — the canonical bar store: `asset, native_symbol, interval, source, source_end, payload_json`. Holds 1m/5m/15m (and HTF resampled) bars.
+- `source_observations` — the canonical bar store: `asset, native_symbol, interval, source, source_end, payload_json`. Holds 5m/15m (and HTF resampled) bars. Historical 1m rows may remain but are no longer written or read by the engine.
 - `source_request_log` — ingestion rate-limit/freshness log (CA/OM circuits).
 - `universe_snapshots`, `broad_discovery_snapshots`, `discovery_watchlist_history`, `deep_backfill_jobs` — point-in-time discovery + durable backfill.
 - `regime_signals`, `confluence_alerts`, `scanner_history`, `brain_outputs`, `option_chains`, `alpha_candidates` — research/regime records.
@@ -117,7 +117,7 @@ Split by ownership to preserve single-writer discipline.
 
 Driven by `orchestrator._run_pipeline()` → `strategy_plugins.invoke_plugins_for_intervals()` (per-interval; legacy single-cutoff `invoke_plugins_for_cutoff` retained for tests).
 
-1. **Cutoff.** `completed_cycle_for(now, interval)` → the most recent completed boundary for each `EVAL_INTERVALS` member (1m/5m/15m); `_ensure_cutoff_run_finalized()` marks `cutoff_runs.status='finalized'`. Plugins require a finalized cutoff (bar-safety: only completed bars, `source_end < cutoff`).
+1. **Cutoff.** `completed_cycle_for(now, interval)` → the most recent completed boundary for each `EVAL_INTERVALS` member (5m/15m); `_ensure_cutoff_run_finalized()` marks `cutoff_runs.status='finalized'`. Plugins require a finalized cutoff (bar-safety: only completed bars, `source_end < cutoff`).
 2. **Feature materialization.** For the active universe, `structure_zones` computes FVG/OB on resampled 1h/4h in memory; only a lightweight count is written to `feature_snapshots`.
 3. **Plugin invocation.** `load_enabled_plugins()` returns plugins whose id is in `STRATEGY_ENABLED_IDS`. Each `p.run(cutoff_id, snapshot)` is executed in a try/except — **failures are isolated** and reported per-plugin, never aborting the cycle.
 4. **Event production.** Each plugin emits trade-intent dicts; `alpha_outbox.write_event()` stamps `alpha_id` (uuid5), `dedupe_key` (sha256 of `strategy_id|asset|direction|observed_at`), and enforces the `data_purity` gate (mixed strategies require `pure_ca`).
@@ -201,7 +201,7 @@ remains strategy-dumb but safety-authoritative.
   `binance_oi_rotation_*` machinery (membership TTL ~36h, hard prune, static-membership
   skip, ADR-013) is the proven pattern to feed *rotated* symbols into the eval
   universe when enabled.
-- **Capacity.** 97 symbols × (1m kline + 5m kline + markPrice) ≈ 291 streams — well within
+- **Capacity.** 97 symbols × (5m kline + markPrice) ≈ 194 streams — well within
   Bybit's sharded-pool and Binance's 1024-stream limits (see `specs/ws-ingestion.md`).
 
 ---
@@ -212,9 +212,9 @@ remains strategy-dumb but safety-authoritative.
 ingestion are not live defaults. `specs/ws-ingestion.md` documents the active
 path:
 - `WS_BYBIT_ENABLED=true` (default), `WS_BINANCE_ENABLED=false`.
-- Stream **1m + 5m kline + markPrice**; **resample 15m/1h/4h locally from the 5m base** via
+- Stream **5m kline + markPrice**; **resample 15m/1h/4h locally from the 5m base** via
   `strategy_v2_context.resample_ohlcv`. Matches the "higher TF is resampled" rule while
-  keeping 1m/5m available as direct eval feeds (per the 1m+5m correction).
+  keeping 5m as the direct evaluation feed.
 - Seed a short warm window from REST, then maintain it via WS.
 - Stamp `source`/`data_purity` so the existing emit gate and `_get_bar_purity`
   keep working unchanged.
@@ -223,7 +223,7 @@ path:
 
 ## 8. Timeframe handling
 
-- **Eval timeframes:** 1m, 5m, 15m — 1m/5m are streamed and 15m is locally resampled; plugins run on each
+- **Eval timeframes:** 5m, 15m — 5m is streamed and 15m is locally resampled; plugins run on each
   via `invoke_plugins_for_intervals` (`config.EVAL_INTERVALS`). Each interval gets its own
   finalized `cutoff_runs` row and a snapshot carrying `eval_interval`.
 - **HTF context:** 1h and 4h are **resampled** from the 5m base (never streamed), and feed
@@ -333,7 +333,6 @@ not run in a live worker. The installed compaction schedule is Sunday at
 
 | Data | Keep | Rationale |
 | --- | --- | --- |
-| Raw 1m bars | 7 days | builds 5m/15m + short-term microstructure |
 | 5m / 15m (resampled) | 30 / 90 days | main evaluation horizon |
 | HTF 1h / 4h bars | 365 days | regime and strategy context |
 | `structure_zones` | no persisted rows | recomputed from bars when needed |
@@ -366,7 +365,7 @@ through pruning.
 | `WS_SYMBOL_SOURCE` | `static` | `static`\|`rotated`\|`both`. |
 | `WS_BYBIT_ENABLED` | `true` | Primary public WS source. |
 | `WS_BINANCE_ENABLED` | `false` | Opt-in WS source. |
-| `WS_STREAM_TIMEFRAMES` | `1m,5m` | Base streamed TFs (15m resampled from 5m). |
+| `WS_STREAM_TIMEFRAMES` | `5m` | Base streamed TF (15m resampled from 5m). |
 | `WS_MARKPRICE_ENABLED` | `true` | Stream markPrice for live state. |
 | `STRATEGY_ENABLED_IDS` | (v1+v2 allowlist) | Compiled plugin allowlist. |
 | `STRATEGY_ACTIVE_IDS` | (empty ⇒ all enabled active) | Runtime active/inactive allowlist; `plugin_states` overrides per-id. |
@@ -390,7 +389,7 @@ through pruning.
 3. **Swing enrichment** — expose swing levels from `structure_zones` as advisory
    enrichment (scored like FVG/OB via confluence); feed into bias + PM RR. No
    standalone detector.
-4. **1m/5m eval timeframes** ✅ — `completed_cycle_for` + `load_bars_for_interval` in
+4. **5m/15m eval timeframes** ✅ — `completed_cycle_for` + `load_bars_for_interval` in
     `strategy_v2_context`; v2 plugins honor `snapshot["eval_interval"]`;
     `invoke_plugins_for_intervals` runs each `EVAL_INTERVALS` member with its own cutoff.
     HTF (1h/4h) stays resampled-from-5m enrichment only.
@@ -408,7 +407,7 @@ through pruning.
     RR + 5m TA; falls back to `hold` on any LLM error/timeout. `PM_SIDECAR_ENABLED=true`.
     One advice per position per cutoff (deterministic `advice_id` dedupe). (`specs/llm-position-sidecar.md`)
  8. **Tiered prune** ✅ — `prune_db` now deletes `source_observations` per interval via
-    `config.PRUNE_INTERVAL_DAYS` (1m=7d, 5m=30d, 15m=90d, 1h/4h=365d; `0` disables a tier).
+     `config.PRUNE_INTERVAL_DAYS` (5m=30d, 15m=90d, 1h/4h=365d; `0` disables a tier).
     Uncovered intervals fall back to the legacy `futures_retention_days`.
  9. **Rotation feed** ✅ (disabled by default) — `rotation_feed.py` exports active
     `binance_oi_rotation_watchlist_history` members to `BINANCE_OI_ROTATION_FEED_PATH`;

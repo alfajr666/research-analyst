@@ -1,4 +1,4 @@
-"""5m EMA9 continuation setup with a 1m StochRSI trigger."""
+"""5m EMA9 continuation setup with a 5m StochRSI trigger."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from strategy_v2_context import (
 STRATEGY_ID = "ema9-continuation-stochrsi-v1"
 SETUP_CLASS = "ema9_continuation"
 PHASE = "stochrsi_trigger"
-PLUGIN_VERSION = "v1"
+PLUGIN_VERSION = "v2"
 TRIGGER_MEMORY_BARS = int(getattr(config, "EMA9_TRIGGER_MEMORY_BARS", 30))
 
 
@@ -36,11 +36,10 @@ def _atr(rows, length: int = 14) -> float:
     return float(wilder_atr(pl.DataFrame(rows), length) or 0.0)
 
 
-def evaluate_symbol(bars_5m, bars_1m, *, asset: str, symbol: str, cutoff: datetime) -> dict | None:
-    if bars_5m.is_empty() or bars_1m.is_empty():
+def evaluate_symbol(bars_5m, *, asset: str, symbol: str, cutoff: datetime) -> dict | None:
+    if bars_5m.is_empty():
         return None
-    if (not last_completed_bar_fresh(bars_5m, cutoff)
-            or bars_5m.height < 30 or bars_1m.height < 40):
+    if not last_completed_bar_fresh(bars_5m, cutoff) or bars_5m.height < 40:
         return None
     five = bars_5m.to_dicts()
     window = five[-15:]
@@ -59,8 +58,7 @@ def evaluate_symbol(bars_5m, bars_1m, *, asset: str, symbol: str, cutoff: dateti
     raw_stop = min(float(x["low"]) for x in window) - 2 * atr if above else max(float(x["high"]) for x in window) + 2 * atr
     stop_distance = max(abs(entry - raw_stop), entry * 0.001)
     stop = entry - stop_distance if above else entry + stop_distance
-    one = bars_1m.to_dicts()
-    vals = [float(x["close"]) for x in one]
+    vals = closes
     k, d, rsi = _stoch_rsi(vals)
     i = len(vals) - 1
     if any(x is None for x in (k[i], k[i - 1], d[i], d[i - 1], rsi[i])):
@@ -73,7 +71,7 @@ def evaluate_symbol(bars_5m, bars_1m, *, asset: str, symbol: str, cutoff: dateti
         return None
     if not (memory and cross and (vals[-1] > ema1 if above else vals[-1] < ema1)):
         return None
-    observed = one[-1]["timestamp"]
+    observed = five[-1]["timestamp"]
     if hasattr(observed, "to_pydatetime"):
         observed = observed.to_pydatetime()
     if observed.tzinfo is None:
@@ -87,14 +85,14 @@ def evaluate_symbol(bars_5m, bars_1m, *, asset: str, symbol: str, cutoff: dateti
             "invalidation_price": stop, "targets": [target], "plugin_version": PLUGIN_VERSION,
              "metadata": {"source_symbol": symbol, "atr14_5m": atr, "risk": risk,
                          "strategy_exits": {"long": "bear_cross_and_rsi_above_70_after_overbought", "short": "bull_cross_and_rsi_below_30_after_oversold"},
-             "protective_take_profit_r": 2.0, "trigger_memory_bars": TRIGGER_MEMORY_BARS}, "feature_snapshot": {"ema9_5m": emas[-1], "stoch_k_1m": k[i], "stoch_d_1m": d[i], "rsi_1m": rsi[i], "cutoff": cutoff.isoformat()}}
+             "protective_take_profit_r": 2.0, "trigger_memory_bars": TRIGGER_MEMORY_BARS}, "feature_snapshot": {"ema9_5m": emas[-1], "stoch_k_5m": k[i], "stoch_d_5m": d[i], "rsi_5m": rsi[i], "cutoff": cutoff.isoformat()}}
 
 
 def evaluate(conn, cutoff: datetime | None = None, *, snapshot: dict | None = None, alpha_db_path=None, outbox_dir=None, eval_interval="5m") -> list[dict]:
     snapshot = snapshot or {}; cutoff = cutoff or cutoff_from_id(str(snapshot.get("cutoff_at") or ""), snapshot.get("now"))
     events = []
     for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
-        event = evaluate_symbol(load_bars_for_interval(conn, symbol, "5m", cutoff), load_bars_for_interval(conn, symbol, "1m", cutoff), asset=asset, symbol=symbol, cutoff=cutoff)
+        event = evaluate_symbol(load_bars_for_interval(conn, symbol, "5m", cutoff), asset=asset, symbol=symbol, cutoff=cutoff)
         if event and not has_active_event(STRATEGY_ID, asset.upper(), event["direction"], alpha_db_path=alpha_db_path, outbox_dir=outbox_dir, now=cutoff): events.append(event)
     return events
 

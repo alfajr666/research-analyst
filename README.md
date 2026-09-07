@@ -15,11 +15,11 @@ Bybit public tickers
   -> symbol-rotation worker
   -> versioned sticky performance feed
   -> ws_gateway
-       Bybit public WS: completed 1m + 5m bars
+       Bybit public WS: completed 5m bars
        startup/re-entry REST backfill for missing streamed intervals
        local 5m -> 15m/1h/4h resampling
        -> data/market.sqlite3
-       -> durable 1m/5m evaluation triggers
+        -> durable 5m evaluation triggers
 
 data/market.sqlite3 + completed 5m cutoff
   -> regime-session worker
@@ -80,9 +80,9 @@ second writer.
 
 ## Market Data
 
-Bybit is the production public source. The gateway streams completed `1m` and
-`5m` bars and locally derives strategy-facing `15m`, `1h`, and `4h` bars from
-completed `5m` observations. For strategy `1h`/`4h` warmup, the engine may seed
+Bybit is the production public source. The gateway streams completed `5m` bars
+and locally derives strategy-facing `15m`, `1h`, and `4h` bars from completed
+`5m` observations. For strategy `1h`/`4h` warmup, the engine may seed
 historical bars from the regime worker's direct Bybit REST cache, then hand off
 to the canonical 5m-derived tail. The handoff is engine-owned and invisible to
 strategies; see `specs/hybrid-htf-engine-v1.md`.
@@ -113,9 +113,10 @@ regime-scope provenance.
 Strategies remain source-blind: they do not read watchlist configuration,
 rotation state, regime state, or account policy. In `REGIME_SESSION_MODE=enforce`,
 the router additionally restricts each plugin to its active market family. The
-account-symbol policy remains a downstream admission gate. The current 1m/5m
-market-data and strategy contract is unchanged, and Binance OI rotation remains
-separate. See `specs/sticky-symbol-watchlist-and-scope-router-v1.md`.
+    account-symbol policy remains a downstream admission gate. The strategy engine
+    uses a 5m-only market-data contract; executor PM snapshots remain 1m and
+    Binance OI rotation remains separate. See
+    `specs/no-1m-engine-and-strategy-rewrite-v1.md`.
 
 Canonical asset names are preserved throughout the pipeline. For example,
 `ANKRUSDT` maps to `ANKR` and `MARSCOINUSDT` maps to `MARSCOIN`; bare asset
@@ -224,8 +225,8 @@ The current production allowlist contains 11 plugins:
 | --- | --- | --- | --- |
 | `failed-break-v3` | 5m | reversal | Hyro |
 | `bb-rsi-meanrev-v1` | 5m | mean_reversion | Hyro |
-| `williams-fractal-scalp-v1` | 1m | trend | Hyro |
-| `ema9-adx-stochrsi-state-v1` | 1m | trend | Hyro |
+| `williams-fractal-scalp-v1` | 5m | trend | Hyro |
+| `ema9-adx-stochrsi-state-v1` | 5m | trend | Hyro |
 | `dual-zone-follower-v2` | 5m | trend | Fundamo |
 | `dual-zone-short-follower-v2` | 5m | trend | Fundamo |
 | `ema20-pullback-h4-trend-v1` | 5m | trend | Fundamo |

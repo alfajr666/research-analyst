@@ -3,7 +3,7 @@
 Design (see specs/ws-ingestion.md):
 - Bybit is the default public source (WS_BYBIT_ENABLED=true); Binance is opt-in
   (WS_BINANCE_ENABLED=false).
-- We stream **1m + 5m kline** (plus markPrice). 15m/1h/4h are resampled locally
+- We stream **5m kline** (plus markPrice). 15m/1h/4h are resampled locally
   from the 5m base by the writer task and persisted as derived observations, so
   existing evaluators (which read source_observations for 15m/HTF) work unchanged.
 - Native bars are stamped source=bybit_ws/binance_ws, data_purity=pure_ws (starts
@@ -45,7 +45,7 @@ RESAMPLE_LOOKBACK_MIN = int(os.getenv("WS_RESAMPLE_LOOKBACK_MIN", "1440"))  # 24
 RESAMPLE_REPAIR_MIN = int(os.getenv("WS_RESAMPLE_REPAIR_MIN", "30"))
 
 # Streamed base timeframes -> exchange-specific tokens.
-STREAMED_TFS = [t.strip() for t in os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").split(",") if t.strip()]
+STREAMED_TFS = list(config.WS_STREAM_TIMEFRAMES)
 WS_MESSAGE_TIMEOUT_SECONDS = 90
 WS_STALE_SECONDS = int(os.getenv("WS_STALE_SECONDS", "180"))
 _STARTED_MONOTONIC = time.monotonic()
@@ -88,8 +88,8 @@ async def health_monitor() -> None:
         if stale and _HEALTH["active_connections"] > 0:
             raise RuntimeError(f"WebSocket feed stale for more than {WS_STALE_SECONDS}s")
         await asyncio.sleep(10)
-BYBIT_TF_TOKEN = {"1m": "1", "5m": "5", "15m": "15"}
-BINANCE_TF_STREAM = {"1m": "1m", "5m": "5m", "15m": "15m"}
+BYBIT_TF_TOKEN = {"5m": "5"}
+BINANCE_TF_STREAM = {"5m": "5m"}
 
 
 # --------------------------------------------------------------------------- #
@@ -288,7 +288,7 @@ def _base_from_perp(symbol: str) -> str:
 def _bybit_interval_from_topic(topic: str) -> str:
     token = topic.split(".")[1] if topic.startswith("kline.") else ""
     rev = {v: k for k, v in BYBIT_TF_TOKEN.items()}
-    return rev.get(token, token)
+    return rev.get(token, "")
 
 
 def normalize_bybit_kline(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -300,6 +300,8 @@ def normalize_bybit_kline(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     rec = data[0]
     sym = str(rec.get("symbol") or msg.get("topic", "").split(".")[-1])
     interval = _bybit_interval_from_topic(msg.get("topic", ""))
+    if interval != "5m":
+        return None
     try:
         return {
             "native_symbol": sym,
@@ -341,11 +343,13 @@ def normalize_binance_kline(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(k, dict):
         return None
     sym = str(k.get("s") or msg.get("s") or "")
+    if str(k.get("i", "")) != "5m":
+        return None
     try:
         return {
             "native_symbol": sym,
             "asset": _base_from_perp(sym),
-            "interval": str(k.get("i", "1m")),
+            "interval": str(k.get("i", "5m")),
             "open": float(k["o"]),
             "high": float(k["h"]),
             "low": float(k["l"]),
@@ -499,7 +503,7 @@ def _backfill_candidates(symbols: List[str], cutoff: datetime | None = None) -> 
         _HEALTH["warmup"] = details
         ready_set = set(ready)
         candidates = [symbol for symbol in symbols if symbol not in ready_set]
-        interval_minutes = {"1m": 1, "5m": 5, "15m": 15}
+        interval_minutes = {"5m": 5}
         for symbol in symbols:
             if symbol in candidates:
                 continue
@@ -539,7 +543,7 @@ def _record_backfill(provider: str, symbols: List[str], rows: int, started: floa
 
 def backfill_via_rest(provider: str, symbols: List[str], hours: int,
                       emit_row=None) -> int:
-    """Seed recent 1m + 5m history via paginated REST backfill."""
+    """Seed recent 5m history via paginated REST backfill."""
     source = config.BYBIT_WS_SOURCE if provider == "bybit" else config.BINANCE_WS_SOURCE
     venue = provider
     written = 0
@@ -573,7 +577,7 @@ def backfill_via_rest(provider: str, symbols: List[str], hours: int,
                                 "native_symbol": sym, "asset": _base_from_perp(sym), "interval": tf,
                                 "open": float(row[1]), "high": float(row[2]), "low": float(row[3]),
                                 "close": float(row[4]), "volume": float(row[5]),
-                                "source_start_ms": int(row[0]), "source_end_ms": int(row[0]) + (300000 if tf == "5m" else 60000),
+                                "source_start_ms": int(row[0]), "source_end_ms": int(row[0]) + 300000,
                                 "confirm": 1,
                             }
                             row = bar_record_to_row(rec, source, venue, "backfill")
@@ -651,7 +655,7 @@ def _publish_base_triggers(rows: List[Dict[str, Any]]) -> None:
     cutoffs = {
         (row.get("interval"), row.get("source_end"))
         for row in rows
-        if row.get("interval") in ("1m", "5m") and row.get("source_end") is not None
+        if row.get("interval") == "5m" and row.get("source_end") is not None
         and _row_timestamp(row["source_end"]) <= now
     }
     for interval, cutoff in sorted(cutoffs, key=lambda item: (item[1], item[0])):
@@ -661,8 +665,8 @@ def _publish_base_triggers(rows: List[Dict[str, Any]]) -> None:
 def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) -> int:
     """Build 15m/1h/4h derived bars from recent 5m and upsert them.
 
-    5m is streamed directly; 1m is used as-is. Derived bars keep the originating
-    ws source (e.g. bybit_ws) so the emit-gate purity check (pure_*) and
+    5m is streamed directly. Derived bars keep the originating ws source
+    (e.g. bybit_ws) so the emit-gate purity check (pure_*) and
     _get_bar_purity treat them as pure.
     """
     written = 0

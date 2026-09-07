@@ -36,7 +36,7 @@ is the trigger between completed market bars and plugin evaluation.
 ## 3. Target Behavior
 
 ```text
-Bybit WebSocket 1m/5m update
+Bybit WebSocket 5m update
         |
         v
 gateway writer persists observation
@@ -59,7 +59,7 @@ gateway writer persists observation
         alpha event + TradeIntent file
 ```
 
-The evaluator may also evaluate 1m and 15m as enrichment/observability work, but
+The evaluator may also evaluate 15m as enrichment/observability work, but
 the first implementation must make the 5m path independently triggerable and
 must not wait for a 15-minute timer.
 
@@ -152,10 +152,8 @@ Modify `ws_gateway.writer_task` and its persistence seam as follows:
 7. Bound trigger publication work; coalesce duplicate cutoffs before writing.
 
 The gateway currently derives higher-timeframe bars on a roughly 60-second
-maintenance timer. The 5m trigger should be based on the persisted streamed 5m
-bar, not on the 15m/1h/4h resampling loop. If the provider sends only 1m bars,
-the trigger must be based on the locally completed 5m aggregation and published
-after that aggregate is committed.
+maintenance timer. The 5m trigger must be based on the persisted streamed 5m
+bar, not on the 15m/1h/4h resampling loop. There is no 1m fallback path.
 
 ## 7. Evaluator Changes
 
@@ -224,11 +222,11 @@ Before writing an intent, the existing geometry and validity checks must still r
 An expired candidate may remain auditable in the alpha ledger but must not become
 an executable opportunity.
 
-## 10. 1m and 15m Interaction
+## 10. 15m Interaction
 
 The first target is 5m only.
 
-- 1m observations remain available for strategy context and future evaluation.
+- 1m observations are not part of the active strategy engine contract.
 - 15m/1h/4h derived bars remain enrichment data.
 - 15m evaluation should not be triggered by the 5m event unless explicitly
   configured as a separate interval trigger.

@@ -22,7 +22,7 @@ intent. Never call old multi-target adapters for the live compact path.
 
 ## Market data
 
-Bybit public WS supplies confirmed 1m and 5m klines plus mark price. The gateway
+Bybit public WS supplies confirmed 5m klines plus mark price. The gateway
 has one market SQLite writer. It locally resamples completed 5m data into 15m,
 1h, and 4h observations. Startup and re-entry REST backfill seeds missing
 streamed intervals through that same writer; CoinAnalyze and venue-aggregate
@@ -37,8 +37,8 @@ analyst code and never start duplicate writers.
 | --- | --- | --- | --- |
 | `failed-break-v3` | 5m | reversal | Bybit Hyro |
 | `bb-rsi-meanrev-v1` | 5m | mean reversion | Bybit Hyro |
-| `williams-fractal-scalp-v1` | 1m | trend | Bybit Hyro |
-| `ema9-adx-stochrsi-state-v1` | 1m | trend | Bybit Hyro |
+| `williams-fractal-scalp-v1` | 5m | trend | Bybit Hyro |
+| `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit Hyro |
 | `dual-zone-follower-v2` | 5m | trend | Bybit Fundamo |
 | `dual-zone-short-follower-v2` | 5m | trend | Bybit Fundamo |
 | `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit Fundamo |
@@ -68,8 +68,9 @@ The evaluator always materializes features for the cutoff-bound effective
 universe, then builds one immutable scope per plugin. Regime enforcement may
 restrict a scope by family, but strategies do not inspect rotation, watchlist,
 regime, or account policy. Account-symbol admission remains a downstream hard
-gate. The 1m market-data and strategy contract is unchanged, and Binance OI
-rotation remains separate.
+gate. The strategy engine uses a 5m-only market-data contract, while Binance OI
+rotation and executor position snapshots remain separate; the latter is a 1m
+PM handoff contract.
 
 Trade intents are published through the shared SQLite intent bus configured by
 the absolute `INTENT_BUS_DB`. Legacy JSON inbox writing remains disabled unless

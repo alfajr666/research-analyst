@@ -23,7 +23,7 @@ def _bars(count, minutes, close=100.0, end=None):
 class Ema99DoubleTouchE2ETests(unittest.TestCase):
     def test_candidate_admits_and_builds_external_2r_intent(self):
         cutoff = datetime(2026, 8, 1, tzinfo=timezone.utc)
-        bars1 = _bars(140, 1, end=cutoff).with_columns(
+        bars5 = _bars(140, 5, end=cutoff).with_columns(
             pl.when(pl.arange(0, 140) == 139)
             .then(pl.lit(101.0))
             .otherwise(pl.col("close"))
@@ -37,19 +37,22 @@ class Ema99DoubleTouchE2ETests(unittest.TestCase):
             return_value=([50.0] * 140, k, d),
         ), patch(
             "strategies.v2.ema99_double_touch_stochrsi_state_v1._rsi_series",
-            side_effect=[[50.0] * 140, [50.0] * 40],
+            return_value=[50.0] * 140,
+        ), patch(
+            "strategies.v2.ema99_double_touch_stochrsi_state_v1._rsi5_series",
+            return_value=[50.0] * 140,
         ), patch(
             "strategies.v2.ema99_double_touch_stochrsi_state_v1._dmi_adx",
             return_value=(21.0, 30.0, 10.0),
         ), patch(
             "strategies.v2.ema99_double_touch_stochrsi_state_v1._adx_series",
-            return_value=[21.0] * 140,
+            return_value=[21.0] * 60,
         ), patch(
             "strategies.v2.ema99_double_touch_stochrsi_state_v1._recent_cross",
             return_value=True,
         ):
             event = evaluate_symbol(
-                bars1, _bars(40, 5, end=cutoff), _bars(60, 60, end=cutoff),
+                bars5, _bars(60, 60, end=cutoff),
                 asset="BTC", symbol="BTCUSDT", cutoff=cutoff,
             )
         self.assertIsNotNone(event)

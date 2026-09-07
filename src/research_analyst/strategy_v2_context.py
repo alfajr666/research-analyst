@@ -46,11 +46,13 @@ def completed_cycle(now: datetime | None = None) -> datetime:
     return now.replace(minute=now.minute - now.minute % 15, second=0, microsecond=0)
 
 
-_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+_INTERVAL_MINUTES = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 
 
 def completed_cycle_for(now: datetime | None, interval: str) -> datetime:
     """Floor `now` to the most recent completed `interval` bar boundary."""
+    if interval == "1m":
+        raise ValueError("1m evaluation is retired; use 5m")
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     minutes = _INTERVAL_MINUTES.get(interval, 15)
     if minutes >= 60:
@@ -685,6 +687,8 @@ def _load_bars_for_interval_uncached(conn, symbol: str, interval: str, cutoff: d
 def load_bars_for_interval(conn, symbol: str, interval: str, cutoff: datetime,
                            lookback_days: int = LOOKBACK_DAYS) -> pl.DataFrame:
     """Load a cutoff-bound frame, reusing the active evaluation context."""
+    if interval == "1m":
+        raise ValueError("1m market data is retired from the strategy engine")
     shared = _SHARED_COMPUTATION_CONTEXT.get()
     if shared is not None:
         return shared.load_bars(conn, symbol, interval, cutoff, lookback_days)
@@ -760,7 +764,7 @@ class SharedComputationContext:
             int(lookback_days), self.htf_cutoff if interval in {"1h", "4h"} else None,
         )
         previous = _SEQUENTIAL_FRAME_CACHE.get(cache_key)
-        period_minutes = {"1m": 1, "5m": 5}.get(interval)
+        period_minutes = {"5m": 5}.get(interval)
         if previous is not None and period_minutes is not None:
             previous_cutoff = previous["cutoff"]
             previous_frame = previous["frame"]

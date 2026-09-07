@@ -130,7 +130,7 @@ paths (`src/research_analyst/strategy_plugins.py:574-596`,
 |---|---|---|
 | Decision unit | Current wall-clock context | Completed 5m `cutoff_id` and immutable snapshot |
 | Selection target | Logical option families, expanded to variants | Registered perpetual strategy IDs or an explicitly defined family catalog |
-| Context | BTC/ETH option-implied plus chart/enrichment data | Bybit market observations, 1m/5m bars, resampled 15m/1h/4h, zones, and strategy features |
+| Context | BTC/ETH option-implied plus chart/enrichment data | Bybit market observations, 5m bars, resampled 15m/1h/4h, zones, and strategy features |
 | Cadence | Poll every 5m, select at most every 15m | Consume every 5m trigger; recompute selection every 15m by default and reuse it in intervening cutoffs |
 | Failure | Keep last state or rule fallback | Keep last persisted valid selection, otherwise deterministic allowlist/rule set; never block admission indefinitely |
 | Authority | Activation proposal through in-process bus | Per-cutoff evaluation filter only; operator states remain separate |
@@ -150,7 +150,7 @@ defines equivalent families.
 ### No additional WebSocket should be added
 
 The existing gateway is already the sole market database writer and streams
-1m/5m Bybit klines; higher timeframes are locally resampled
+5m Bybit klines; higher timeframes are locally resampled
 (`src/research_analyst/ws_gateway.py:1-14`). Its stream planner shards symbols
 by connection and its provider task is independent of orchestrator evaluation
 (`src/research_analyst/ws_gateway.py:240-265,

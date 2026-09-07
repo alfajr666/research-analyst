@@ -52,6 +52,13 @@ class EvaluationTriggerTests(unittest.TestCase):
             self.assertTrue(failed.name.endswith(".json"))
             self.assertEqual(json.loads(failed.read_text())["attempts"], 1)
 
+    def test_pending_ignores_retired_one_minute_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            retired = root / "1m-2026-08-29T14-45-00Z.json"
+            retired.write_text(json.dumps({"interval": "1m"}))
+            self.assertEqual(pending(root), [])
+
 
 if __name__ == "__main__":
     unittest.main()

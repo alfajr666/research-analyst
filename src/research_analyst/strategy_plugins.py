@@ -146,8 +146,8 @@ def _load_builtin_plugins():
     register(StrategyPlugin("bb-rsi-meanrev-v1", "v1", ("bars_5m",), (), bb_rsi_run, "5m", "mean_reversion"))
     # Primary execution bars gate invocation; each plugin loads its own HTF context.
     register(StrategyPlugin("failed-break-v3", "v3", ("bars_5m",), (), failed_break_run, "5m", "reversal"))
-    register(StrategyPlugin("williams-fractal-scalp-v1", "v1", ("bars_1m",), (), williams_run, "1m", "trend"))
-    register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v1", ("bars_1m",), (), ema9_run, "1m", "trend"))
+    register(StrategyPlugin("williams-fractal-scalp-v1", "v2", ("bars_5m",), (), williams_run, "5m", "trend"))
+    register(StrategyPlugin("ema9-continuation-stochrsi-v1", "v2", ("bars_5m",), (), ema9_run, "5m", "trend"))
     register(StrategyPlugin("ema99-retest-adx-fundamo-v1", "v1", ("bars_5m",), (), ema99_retest_run, "5m", "trend"))
     register(StrategyPlugin("dual-zone-follower-v2", "v2", ("bars_5m",), (), dual_zone_run, "5m", "trend"))
     register(StrategyPlugin("dual-zone-short-follower-v2", "v2", ("bars_5m",), (), dual_zone_short_run, "5m", "trend"))
@@ -156,22 +156,21 @@ def _load_builtin_plugins():
     register(StrategyPlugin("gold-trend-ema-bb-stoch-v1", "v1", ("bars_5m",), (), gold_run, "5m", "trend"))
     register(StrategyPlugin("mtf-exhaustion-reversal-v1", "v1", ("bars_5m",), (), exhaustion_run, "5m", "reversal"))
     register(StrategyPlugin("trend-wall-v1", "v1", ("bars_5m",), (), wall_run, "5m", "trend"))
-    register(StrategyPlugin("ema9-adx-stochrsi-state-v1", "v1", ("bars_1m",), (), ema9_adx_run, "1m", "trend"))
-    register(StrategyPlugin("ema99-double-touch-stochrsi-state-v1", "v1", ("bars_1m",), (), ema99_double_touch_run, "5m", "trend"))
+    register(StrategyPlugin("ema9-adx-stochrsi-state-v1", "v2", ("bars_5m",), (), ema9_adx_run, "5m", "trend"))
+    register(StrategyPlugin("ema99-double-touch-stochrsi-state-v1", "v2", ("bars_5m",), (), ema99_double_touch_run, "5m", "trend"))
     register(StrategyPlugin("ema7-26-cross-hammer-shooting-star-1h-adx-v1", "v1", ("bars_5m",), (), ema7_26_hammer_run, "5m", "reversal"))
 
     requirements = {
         "failed-break-v3": ("5m", "4h", ("5m", {"stoch": {"stoch": (14, 14, 3, 3)}}), True),
         "bb-rsi-meanrev-v1": ("5m", ("5m", {"rsi": {"rsi": 13}, "atr": {"atr": 14}, "bollinger": {"bb": (30, 2.0)}}), False),
-        "williams-fractal-scalp-v1": ("1m", ("1m", {"ema": {"ema_20": 20, "ema_50": 50, "ema_100": 100}}), True),
+        "williams-fractal-scalp-v1": ("5m", ("5m", {"ema": {"ema_20": 20, "ema_50": 50, "ema_100": 100}}), True),
         "ema9-adx-stochrsi-state-v1": (
-            "1m", "5m", "1h",
-            ("1m", {"ema": {f"ema_{config.EMA9_ADX_EMA_LENGTH}": config.EMA9_ADX_EMA_LENGTH},
-                     "rsi": {f"rsi_{config.EMA9_ADX_RSI_LENGTH}": config.EMA9_ADX_RSI_LENGTH},
-                     "stoch": {"stoch": (config.EMA9_ADX_RSI_LENGTH, config.EMA9_ADX_STOCH_LENGTH,
-                                           config.EMA9_ADX_K_LENGTH, config.EMA9_ADX_D_LENGTH)}}),
+            "5m", "1h",
             ("5m", {"ema": {f"ema_{config.EMA9_ADX_EMA_LENGTH}": config.EMA9_ADX_EMA_LENGTH},
-                     "atr": {f"atr_{config.EMA9_ADX_ATR_LENGTH}": config.EMA9_ADX_ATR_LENGTH}}),
+                      "rsi": {f"rsi_{config.EMA9_ADX_RSI_LENGTH}": config.EMA9_ADX_RSI_LENGTH},
+                      "stoch": {"stoch": (config.EMA9_ADX_RSI_LENGTH, config.EMA9_ADX_STOCH_LENGTH,
+                                            config.EMA9_ADX_K_LENGTH, config.EMA9_ADX_D_LENGTH)},
+                      "atr": {f"atr_{config.EMA9_ADX_ATR_LENGTH}": config.EMA9_ADX_ATR_LENGTH}}),
             True,
         ),
         "dual-zone-follower-v2": (
@@ -219,18 +218,21 @@ def _load_builtin_plugins():
             False,
         ),
         "ema99-double-touch-stochrsi-state-v1": (
-            "1m", "5m", "1h",
-            ("1m", {"ema": {f"ema_{config.EMA99_DOUBLE_TOUCH_EMA_LENGTH}": config.EMA99_DOUBLE_TOUCH_EMA_LENGTH},
-                     "rsi": {f"rsi_{config.EMA99_DOUBLE_TOUCH_RSI1_LENGTH}": config.EMA99_DOUBLE_TOUCH_RSI1_LENGTH},
-                     "stoch": {"stoch": (config.EMA99_DOUBLE_TOUCH_STOCH_RSI_LENGTH,
-                                           config.EMA99_DOUBLE_TOUCH_STOCH_LENGTH,
-                                           config.EMA99_DOUBLE_TOUCH_K_LENGTH,
-                                           config.EMA99_DOUBLE_TOUCH_D_LENGTH)}}),
+            "5m", "1h",
             ("5m", {"ema": {
-                f"ema_{config.EMA99_DOUBLE_TOUCH_FAST_EMA}": config.EMA99_DOUBLE_TOUCH_FAST_EMA,
-                f"ema_{config.EMA99_DOUBLE_TOUCH_SLOW_EMA}": config.EMA99_DOUBLE_TOUCH_SLOW_EMA,
-            }, "rsi": {f"rsi_{config.EMA99_DOUBLE_TOUCH_RSI5_LENGTH}": config.EMA99_DOUBLE_TOUCH_RSI5_LENGTH},
-                     "atr": {f"atr_{config.EMA99_DOUBLE_TOUCH_ATR_LENGTH}": config.EMA99_DOUBLE_TOUCH_ATR_LENGTH}}),
+                         f"ema_{config.EMA99_DOUBLE_TOUCH_EMA_LENGTH}": config.EMA99_DOUBLE_TOUCH_EMA_LENGTH,
+                         f"ema_{config.EMA99_DOUBLE_TOUCH_FAST_EMA}": config.EMA99_DOUBLE_TOUCH_FAST_EMA,
+                         f"ema_{config.EMA99_DOUBLE_TOUCH_SLOW_EMA}": config.EMA99_DOUBLE_TOUCH_SLOW_EMA,
+                     },
+                     "rsi": {
+                         f"rsi_{config.EMA99_DOUBLE_TOUCH_RSI1_LENGTH}": config.EMA99_DOUBLE_TOUCH_RSI1_LENGTH,
+                         f"rsi_{config.EMA99_DOUBLE_TOUCH_RSI5_LENGTH}": config.EMA99_DOUBLE_TOUCH_RSI5_LENGTH,
+                     },
+                     "stoch": {"stoch": (config.EMA99_DOUBLE_TOUCH_STOCH_RSI_LENGTH,
+                                            config.EMA99_DOUBLE_TOUCH_STOCH_LENGTH,
+                                            config.EMA99_DOUBLE_TOUCH_K_LENGTH,
+                                            config.EMA99_DOUBLE_TOUCH_D_LENGTH)},
+                       "atr": {f"atr_{config.EMA99_DOUBLE_TOUCH_ATR_LENGTH}": config.EMA99_DOUBLE_TOUCH_ATR_LENGTH}}),
             True,
         ),
         "ema7-26-cross-hammer-shooting-star-1h-adx-v1": (
@@ -837,12 +839,14 @@ def invoke_plugins_for_intervals(db_path: str | Path, now: datetime | None = Non
                                   cutoff_at: datetime | None = None,
                                   regime_scope: dict | None = None,
                                   effective_universe: dict | None = None) -> Dict[str, Dict[str, object]]:
-    """Run enabled plugins on every eval interval (1m/5m/15m by default).
+    """Run enabled plugins on every configured eval interval (5m by default).
     Each interval gets its own finalized cutoff_run and its own snapshot carrying
     `eval_interval`, so plugins evaluate on the correct bars. HTF (1h/4h) is NOT
     an eval interval — it remains an enrichment layer fed into plugins via zones.
     """
-    eval_intervals = list(eval_intervals or getattr(config, "EVAL_INTERVALS", ["1m", "5m", "15m"]))
+    eval_intervals = list(eval_intervals or getattr(config, "EVAL_INTERVALS", ["5m"]))
+    if "1m" in eval_intervals:
+        raise ValueError("1m evaluation is retired; use 5m")
     now = now or datetime.now(timezone.utc)
     out: Dict[str, Dict[str, object]] = {}
     for iv in eval_intervals:

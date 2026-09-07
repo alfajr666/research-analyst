@@ -2,8 +2,9 @@
 
 ## Status
 
-Implementation specification. No strategy or runtime code is changed by this
-document.
+Historical implementation specification. Its 1m strategy cadence sections are
+superseded by `specs/no-1m-engine-and-strategy-rewrite-v1.md`; the admission,
+intent, executor, and PM contracts remain reference material.
 
 This specification is the normative implementation brief for:
 
@@ -193,8 +194,8 @@ policy.
 |---|---:|---|
 | Failed Break | 5m | Every completed 5m cutoff |
 | BB-RSI | 5m | Every completed 5m cutoff |
-| Williams Fractal | 1m | Every completed 1m cutoff |
-| EMA9 Continuation | 1m trigger with 5m setup | Every completed 1m cutoff |
+| Williams Fractal | 5m | Every completed 5m cutoff |
+| EMA9 Continuation | 5m trigger with 5m setup | Every completed 5m cutoff |
 | Dual-Zone long | 5m | Every completed 5m cutoff |
 | Dual-Zone short | 5m | Every completed 5m cutoff |
 | EMA20 Pullback | 1h signal, 5m coordinator | Only when a new completed 1h bar is available at a 5m cutoff |
@@ -543,7 +544,7 @@ logic or fields.
 - Each new strategy has entry, rejection, stop geometry, and cutoff fixtures.
 - MTF Exhaustion requires confirmed 4h divergence rather than a level proxy.
 - TrendWall evaluates once per new 15m bar.
-- Williams and EMA9 evaluate once per completed 1m cutoff.
+- Williams and EMA9 evaluate once per completed 5m cutoff.
 - EMA20 evaluates once per new completed 1h signal bar.
 - No strategy writes directly to the alpha outbox.
 - Strategy feature snapshots survive central invocation unchanged.

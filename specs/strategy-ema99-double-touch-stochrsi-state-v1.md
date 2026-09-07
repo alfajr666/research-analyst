@@ -27,7 +27,7 @@ semantics rather than the literal chart-local calculations:
 strategy_id: ema99-double-touch-stochrsi-state-v1
 plugin_version: v1
 entry_timeframe: 5m
-trigger_timeframe: 1m
+trigger_timeframe: 5m
 structure_timeframe: 5m
 trend_timeframe: 1h
 direction: long and short

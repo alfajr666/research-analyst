@@ -27,7 +27,7 @@ Default windows are:
 | Store/table family | Retention |
 | --- | ---: |
 | Market option-chain snapshots | 3 days |
-| Market 1m / 5m / 15m bars | 7 / 30 / 90 days |
+| Market 5m / 15m bars | 30 / 90 days |
 | Market 1h / 4h bars | 365 days |
 | Market discovery / watchlist history | 90 / 365 days |
 | Analyst feature snapshots | 2 days |

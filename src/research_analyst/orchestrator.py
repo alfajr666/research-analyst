@@ -102,7 +102,7 @@ def prune_db(conn, futures_retention_days: int, auxiliary_retention_days: int = 
     """Prunes auxiliary data and retains market history per-interval (phase 8 tiered TTL).
 
     `source_observations` is pruned per interval using `config.PRUNE_INTERVAL_DAYS`
-    (1m short, 5m/15m medium, 1h/4h long). Intervals not covered by the tiers fall
+    (5m/15m medium, 1h/4h long). Intervals not covered by the tiers fall
     back to the legacy `futures_retention_days` (0 disables that fallback).
     """
     now_utc = datetime.now(timezone.utc)
@@ -436,9 +436,7 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         from symbol_rotation import subscription_assets
         from regime_session import wait_for_gate_scope
         assets, feed_metadata = subscription_assets(cutoff_at)
-        # Regime observations are published on the completed 5m cadence. A
-        # 1m evaluation must consume the newest preceding 5m observation
-        # rather than requesting an impossible exact 1m regime cutoff.
+        # Regime observations and evaluation both use the completed 5m cadence.
         regime_cutoff_at = completed_cycle_for(cutoff_at, "5m")
         regime_scope = wait_for_gate_scope(
             assets,
@@ -617,6 +615,9 @@ def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = Non
 
 def run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] | None = None):
     """Run the deterministic pipeline and record its durable operational state."""
+    requested_intervals = list(eval_intervals or config.EVAL_INTERVALS)
+    if "1m" in requested_intervals:
+        raise ValueError("1m evaluation is retired; use 5m")
     config.init_analyst_db()
     run_id = str(uuid4())
     _start_pipeline_run(run_id, datetime.now(timezone.utc))

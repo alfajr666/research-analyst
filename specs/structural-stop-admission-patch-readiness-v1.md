@@ -205,7 +205,7 @@ Until `ready`, the symbol may remain subscribed but must be marked
 The deep history requirement is the maximum of all enabled consumer needs,
 including:
 
-- direct 1m/5m data;
+- direct 5m data;
 - complete 15m/1h/4h resamples;
 - ATR and EMA warmups;
 - swing confirmation windows;

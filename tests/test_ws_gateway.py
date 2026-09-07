@@ -12,14 +12,13 @@ import ws_gateway as wsg
 
 
 def test_plan_bybit_streams_shards():
-    syms = [f"BASE{i}" for i in range(45)]  # 45 bases -> 2 kline topics each
+    syms = [f"BASE{i}" for i in range(45)]  # one 5m topic per base
     shards = wsg.plan_bybit_streams(syms, shard=20)
     total = sum(len(s) for s in shards)
-    assert total == 90, total  # 45 * (kline.1 + kline.5)
-    # Soft cap: a symbol can overshoot the 20 cap by up to (topics per symbol - 1).
+    assert total == 45, total
+    # Soft cap: a symbol can overshoot the 20 cap by up to one topic.
     assert max(len(s) for s in shards) <= 20 + len(wsg.STREAMED_TFS), max(len(s) for s in shards)
-    assert shards[0][0] == "kline.1.BASE0USDT"
-    assert shards[0][1] == "kline.5.BASE0USDT"
+    assert shards[0][0] == "kline.5.BASE0USDT"
 
 
 def test_gateway_static_mode_is_independent_from_compact_evaluation_universe(monkeypatch):
@@ -66,7 +65,7 @@ def test_backfill_candidates_skip_symbols_with_retained_ready_history(monkeypatc
     conn = config.get_db_connection(db_path=db)
     try:
         rows = []
-        for interval, count, minutes in (("5m", required_5m_bars(), 5), ("1m", 1000, 1)):
+        for interval, count, minutes in (("5m", required_5m_bars(), 5),):
             for index in range(count):
                 end = cutoff - timedelta(minutes=minutes * (count - index - 1))
                 rows.append((
@@ -90,24 +89,18 @@ def test_backfill_candidates_skip_symbols_with_retained_ready_history(monkeypatc
 
 def test_plan_binance_streams_single_conn():
     streams = wsg.plan_binance_streams(["BTC", "ETH"])
-    assert "btcusdt@kline_1m" in streams
     assert "btcusdt@kline_5m" in streams
     assert "btcusdt@markPrice@1s" in streams
-    assert len(streams) == 6  # 2 symbols * (1m + 5m + mark)
+    assert len(streams) == 4  # 2 symbols * (5m + mark)
 
 
-def test_normalize_bybit_kline():
+def test_normalize_bybit_rejects_one_minute_kline():
     msg = {
         "topic": "kline.1.BTCUSDT", "ts": 1700000000000, "type": "snapshot",
         "data": [{"start": 1700000000000, "end": 1700000060000, "open": "100", "high": "110",
                   "low": "95", "close": "105", "volume": "12.5", "turnover": "1300", "confirm": 1}],
     }
-    rec = wsg.normalize_bybit_kline(msg)
-    assert rec == {
-        "native_symbol": "BTCUSDT", "asset": "BTC", "interval": "1m",
-        "open": 100.0, "high": 110.0, "low": 95.0, "close": 105.0, "volume": 12.5,
-        "source_start_ms": 1700000000000, "source_end_ms": 1700000060000, "confirm": 1,
-    }
+    assert wsg.normalize_bybit_kline(msg) is None
 
 
 def test_normalize_bybit_kline_5m():
@@ -123,7 +116,7 @@ def test_normalize_bybit_kline_5m():
 
 def test_normalize_binance_kline():
     msg = {"e": "kline", "E": 1, "s": "BTCUSDT", "k": {
-        "t": 1700000000000, "T": 1700000060000, "s": "BTCUSDT", "i": "1m",
+        "t": 1700000000000, "T": 1700000300000, "s": "BTCUSDT", "i": "5m",
         "o": "100", "h": "110", "l": "95", "c": "105", "v": "12.5", "x": True}}
     rec = wsg.normalize_binance_kline(msg)
     assert rec["close"] == 105.0 and rec["confirm"] == 1 and rec["asset"] == "BTC"
@@ -142,10 +135,10 @@ def test_normalize_marks():
 
 def test_make_observation_id_deterministic():
     end = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
-    a = wsg.make_observation_id("bybit_ws", "bybit", "BTCUSDT", "1m", end)
-    b = wsg.make_observation_id("bybit_ws", "bybit", "BTCUSDT", "1m", end)
+    a = wsg.make_observation_id("bybit_ws", "bybit", "BTCUSDT", "5m", end)
+    b = wsg.make_observation_id("bybit_ws", "bybit", "BTCUSDT", "5m", end)
     assert a == b
-    c = wsg.make_observation_id("bybit_ws", "bybit", "BTCUSDT", "5m", end)
+    c = wsg.make_observation_id("bybit_ws", "bybit", "BTCUSDT", "15m", end)
     assert a != c
 
 
@@ -168,12 +161,12 @@ def test_publish_base_triggers_excludes_future_bars(monkeypatch):
 
 
 def test_bar_record_to_row_shape():
-    rec = {"native_symbol": "BTCUSDT", "asset": "BTC", "interval": "1m", "open": 1, "high": 2,
+    rec = {"native_symbol": "BTCUSDT", "asset": "BTC", "interval": "5m", "open": 1, "high": 2,
            "low": 0.5, "close": 1.5, "volume": 10, "source_start_ms": 1700000000000,
-           "source_end_ms": 1700000060000, "confirm": 1}
+           "source_end_ms": 1700000300000, "confirm": 1}
     row = wsg.bar_record_to_row(rec, "bybit_ws", "bybit", "stream")
     assert row["source"] == "bybit_ws"
-    assert row["interval"] == "1m"
+    assert row["interval"] == "5m"
     p = __import__("json").loads(row["payload_json"])
     assert p["open"] == 1.0 and p["close"] == 1.5 and p["open_interest"] is None
     assert row["observation_id"].startswith("b") or len(row["observation_id"]) == 64

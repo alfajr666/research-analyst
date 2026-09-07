@@ -406,7 +406,14 @@ TREND_WALL_ADX_MIN = float(os.getenv("TREND_WALL_ADX_MIN", "20.0"))
 TREND_WALL_WALL_PROXIMITY = float(os.getenv("TREND_WALL_WALL_PROXIMITY", "0.01"))
 TREND_WALL_ATR_LENGTH = int(os.getenv("TREND_WALL_ATR_LENGTH", "16"))
 TREND_WALL_ATR_STOP_MULTIPLIER = float(os.getenv("TREND_WALL_ATR_STOP_MULTIPLIER", "2.0"))
-WS_STREAM_TIMEFRAMES = os.getenv("WS_STREAM_TIMEFRAMES", "1m,5m").strip().lower().split(",")
+WS_STREAM_TIMEFRAMES = [
+    value.strip().lower()
+    for value in os.getenv("WS_STREAM_TIMEFRAMES", "5m").split(",")
+    if value.strip()
+]
+WS_STREAM_TIMEFRAMES = [value for value in WS_STREAM_TIMEFRAMES if value != "1m"]
+if not WS_STREAM_TIMEFRAMES or any(value != "5m" for value in WS_STREAM_TIMEFRAMES):
+    raise ValueError("WS_STREAM_TIMEFRAMES must contain only 5m")
 WS_MARKPRICE_ENABLED = os.getenv("WS_MARKPRICE_ENABLED", "true").lower() == "true"
 # Shard size for Bybit (per-connection topic cap). Binance uses one combined conn.
 WS_BYBIT_SHARD = int(os.getenv("WS_BYBIT_SHARD", "20"))
@@ -604,10 +611,13 @@ STRATEGY_ENABLED_IDS = tuple(
     ).split(",") if s.strip()
 )
 
-# Evaluation intervals the active strategy plugins run on. 1m/5m are streamed
-# directly by ws_gateway; 15m is resampled from 5m. HTF (1h/4h) remains an
-# enrichment layer only (resampled, not evaluated standalone).
-EVAL_INTERVALS = [s.strip() for s in os.getenv("EVAL_INTERVALS", "1m,5m,15m").split(",") if s.strip()]
+# Evaluation intervals the active strategy plugins run on. 5m is streamed
+# directly by ws_gateway; 15m is a derived extension point. HTF (1h/4h) remains
+# an enrichment layer only (resampled, not evaluated standalone).
+EVAL_INTERVALS = [
+    s.strip() for s in os.getenv("EVAL_INTERVALS", "5m").split(",")
+    if s.strip() and s.strip() != "1m"
+]
 
 # Runtime active/inactive toggle (phase 6). Empty => all enabled strategies are
 # active. Set to an explicit allowlist to override (e.g. "accumulation-base-v2,
@@ -625,14 +635,14 @@ PM_LLM_RETRIES = int(os.getenv("PM_LLM_RETRIES", "1"))
 PM_REASON_MAX_CHARS = int(os.getenv("PM_REASON_MAX_CHARS", "120"))
 
 # Phase 8: tiered prune retention, days per interval. <=0 disables that tier.
-# 1m is high-volume/low-value -> short; 5m/15m medium; HTF (1h/4h) long.
-PRUNE_1M_DAYS = int(os.getenv("PRUNE_1M_DAYS", "7"))
+# 5m/15m are medium; HTF (1h/4h) are long. Historical 1m rows are not
+# deleted by the no-1m migration.
 PRUNE_5M_DAYS = int(os.getenv("PRUNE_5M_DAYS", "30"))
 PRUNE_15M_DAYS = int(os.getenv("PRUNE_15M_DAYS", "90"))
 PRUNE_1H_DAYS = int(os.getenv("PRUNE_1H_DAYS", "365"))
 PRUNE_4H_DAYS = int(os.getenv("PRUNE_4H_DAYS", "365"))
 PRUNE_INTERVAL_DAYS = {
-    "1m": PRUNE_1M_DAYS, "5m": PRUNE_5M_DAYS, "15m": PRUNE_15M_DAYS,
+    "5m": PRUNE_5M_DAYS, "15m": PRUNE_15M_DAYS,
     "1h": PRUNE_1H_DAYS, "4h": PRUNE_4H_DAYS,
 }
 

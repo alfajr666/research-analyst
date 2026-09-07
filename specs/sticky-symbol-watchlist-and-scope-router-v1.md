@@ -38,9 +38,9 @@ point-in-time performance snapshot
                        symbol-dumb strategies
 ```
 
-The current market-data timeframes remain unchanged by this specification.
-The existing 1m and 5m stream/evaluation behavior is preserved until the
-separate 1m strategy audit is complete.
+This specification defines watchlist and scope behavior independently of the
+market interval. The active engine interval contract is the separate 5m-only
+contract in `specs/no-1m-engine-and-strategy-rewrite-v1.md`.
 
 ## 2. Objectives
 
@@ -91,8 +91,8 @@ separate 1m strategy audit is complete.
     lifecycle data, but it does not silently extend the normal evaluation
     universe.
 13. Account-symbol admission remains a downstream hard safety gate.
-14. The 1m market-data and strategy contract remains unchanged by this
-    specification.
+14. The 5m-only market-data and strategy contract remains unchanged by this
+    watchlist specification.
 15. Binance OI rotation remains separate from this watchlist.
 
 ## 5. Watchlist Lifecycle
@@ -198,9 +198,9 @@ Existing entries that remain active are not re-backfilled on every feed update.
 Expiration removes future live subscription demand but does not delete retained
 market history.
 
-The current streamed timeframes remain `1m` and `5m`. Higher timeframes continue
-to use the existing local resampling and hybrid HTF contracts. This document
-does not authorize changing them to 5m-only.
+The gateway streams completed `5m` bars. Higher timeframes continue to use the
+existing local resampling and hybrid HTF contracts. This document does not
+change that interval contract.
 
 The market database remains owned by `ws_gateway`. The watchlist publisher does
 not write market observations, and no second market database writer is added.
@@ -339,15 +339,13 @@ Before production enforcement, benchmark at the configured cap and verify:
 - Router output is deterministic for the same cutoff and inputs.
 - Strategies remain free of rotation, watchlist, and account-symbol branches.
 - Account-symbol admission still rejects invalid candidates downstream.
-- 1m data and strategy behavior remain unchanged by this feature.
+- The 5m-only data and strategy contract remains unchanged by this feature.
 
 ## 13. Explicitly Deferred
 
 The following are not decisions in this specification:
 
-- Rewriting 1m strategies to 5m.
-- Removing 1m WebSocket ingestion.
-- Disabling or rewriting strategies that currently require 1m data.
+- Rewriting strategies beyond the 5m migration contract.
 - Moving account-symbol policy from admission into the scope router.
 - Changing the performance-ranking algorithm.
 - Changing the rotation refresh cadence.

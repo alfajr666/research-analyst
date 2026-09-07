@@ -35,7 +35,7 @@ Bybit REST completed 1h/4h history
   -> regime worker direct-history cache
   -> immutable hybrid handoff
 
-Bybit WS completed 1m/5m observations
+Bybit WS completed 5m observations
   -> market.sqlite3
   -> canonical completed 5m tail
   -> Polars 1h/4h resampling after the handoff

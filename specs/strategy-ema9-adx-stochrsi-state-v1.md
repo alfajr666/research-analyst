@@ -11,7 +11,7 @@ controlled service restart and post-restart verification.
 ```text
 strategy_id: ema9-adx-stochrsi-state-v1
 plugin_version: v1
-entry_timeframe: 1m
+entry_timeframe: 5m
 structure_timeframe: 5m
 trend_timeframe: 1h
 direction: long and short

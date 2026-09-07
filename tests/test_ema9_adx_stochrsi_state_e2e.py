@@ -29,13 +29,13 @@ def _bars(count, minutes, close=100.0):
 
 class Ema9AdxStochRsiStateE2ETests(unittest.TestCase):
     def test_selected_candidate_becomes_executor_2r_intent_without_sizing(self):
-        bars1 = _bars(80, 1).with_columns(
+        bars5 = _bars(80, 5).with_columns(
             pl.when(pl.arange(0, 80) == 79)
             .then(pl.lit(101.0))
             .otherwise(pl.col("close"))
             .alias("close")
         )
-        bars5 = _bars(40, 5).with_columns(
+        bars5 = bars5.with_columns(
             pl.lit(100.5).alias("high"),
             pl.lit(99.5).alias("low"),
         )
@@ -50,8 +50,8 @@ class Ema9AdxStochRsiStateE2ETests(unittest.TestCase):
             return_value=(21.0, 30.0, 10.0),
         ):
             event = evaluate_symbol(
-                bars1, bars5, _bars(60, 60), asset="BTC",
-                symbol="BTCUSDT", cutoff=bars1["timestamp"][-1],
+                bars5, _bars(60, 60), asset="BTC",
+                symbol="BTCUSDT", cutoff=bars5["timestamp"][-1],
             )
         self.assertIsNotNone(event)
         event["candidate_id"] = "candidate-1"
@@ -85,7 +85,7 @@ class Ema9AdxStochRsiStateE2ETests(unittest.TestCase):
     def test_registered_and_enabled_after_portfolio_swap(self):
         self.assertIn(STRATEGY_ID, _REGISTRY)
         self.assertIn(STRATEGY_ID, config.STRATEGY_ENABLED_IDS)
-        self.assertEqual(_REGISTRY[STRATEGY_ID].cadence, "1m")
+        self.assertEqual(_REGISTRY[STRATEGY_ID].cadence, "5m")
 
 
 if __name__ == "__main__":

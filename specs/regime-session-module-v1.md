@@ -102,7 +102,7 @@ cross-asset feature would require a separate design decision and validation.
 The gateway continues to stream only the existing base timeframes:
 
 ```text
-1m + 5m per subscribed asset
+5m per subscribed asset
 ```
 
 No 1h or 4h WebSocket topics are added. The gateway remains the sole writer of
@@ -125,8 +125,8 @@ live market provider is not required and must not be introduced.
 
 The regime worker may use Bybit public REST for its historical `1h` and `4h`
 caches, as specified in `specs/regime-history-bootstrap-v2.md`. It must not
-write `market.sqlite3`, provide 1m/5m strategy bars, or become a competing live
-writer. The gateway continues to own 1m/5m REST bootstrap and WebSocket data.
+    write `market.sqlite3`, provide strategy bars, or become a competing live
+    writer. The gateway continues to own 5m REST bootstrap and WebSocket data.
 The evaluator reads the direct cache read-only through the hybrid HTF engine
 contract.
 
@@ -185,7 +185,7 @@ smoothing defaults.
 The regime worker fetches 4 calendar days of direct 1h history and 15 calendar
 days of direct 4h history, retaining at least 3 complete 1h days and 14
 complete 4h days after boundary trimming. The gateway separately backfills the
-recent 1m/5m strategy history for newly added rotated assets. That bootstrap
+    recent 5m strategy history for newly added rotated assets. That bootstrap
 remains independent of regime readiness.
 
 Insufficient warmup blocks that asset only. It does not fabricate an unknown
@@ -476,7 +476,7 @@ gateway's market observations and are not consumed by strategy plugins.
 
 ```text
 gateway
-  -> writes completed 1m/5m observations
+  -> writes completed 5m observations
   -> locally derives 15m/1h/4h observations
   -> publishes completed cutoff trigger
 
@@ -503,8 +503,8 @@ worker has not published a matching result before the grace period expires, the
 asset is blocked rather than evaluated without the first hard gate.
 
 The worker should compute one score batch per completed 5m cutoff, not once per
-strategy. 1m and 15m evaluation paths, if enabled, consume the newest preceding
-valid 5m regime observation and may not use a future observation.
+strategy. Any derived 15m evaluation path consumes the newest preceding valid
+5m regime observation and may not use a future observation.
 
 ### 6.1 Operational observability
 
@@ -527,7 +527,7 @@ distinguishable in the log.
 For the expected 34 active assets:
 
 ```text
-WebSocket topics remain:        34 x (1m + 5m) = 68
+WebSocket topics remain:        34 x 5m = 34
 Direct 1h/4h topics added:      0
 Regime score batches per 5m:    1
 Market database writers:        1, the gateway
@@ -611,7 +611,7 @@ Required checks:
 - direct 1h and 4h history have no future, duplicate, or gapped bars;
 - direct 1h and 4h values have documented parity diagnostics against 5m resamples;
 - newly rotated assets do not enter enforcement before direct 1h/4h readiness;
-- live 1m/5m bootstrap remains separate from regime 1h/4h readiness.
+- live 5m bootstrap remains separate from regime 1h/4h readiness.
 
 The score is not approved for live sizing until candidate-level outcome data is
 populated and the score has been evaluated out of sample. Realized executor PnL
@@ -623,7 +623,7 @@ Rollback is a configuration change to `REGIME_SESSION_MODE=off`. Rollback must:
 
 - stop requiring regime observations for evaluation;
 - leave existing positions untouched;
-- leave the gateway's 1m/5m subscriptions unchanged;
+- leave the gateway's 5m subscriptions unchanged;
 - leave historical regime observations intact for audit;
 - not delete or rewrite candidates, intents, or execution receipts.
 

@@ -13,8 +13,8 @@ from strategy_v2_context import cutoff_from_id, ema_series, evaluation_symbols, 
 STRATEGY_ID = "williams-fractal-scalp-v1"
 SETUP_CLASS = "trend_pullback"
 PHASE = "confirmed_fractal_pullback"
-PLUGIN_VERSION = "v1"
-EXECUTION_INTERVAL = "1m"
+PLUGIN_VERSION = "v2"
+EXECUTION_INTERVAL = "5m"
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ def _ema(values: list[float], span: int) -> list[float | None]:
 
 
 def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime, cfg: WilliamsFractalScalpConfig | None = None, features=None) -> dict | None:
-    """Evaluate the last completed 1m bar without mutating research state."""
+    """Evaluate the last completed 5m bar without mutating research state."""
     cfg = cfg or WilliamsFractalScalpConfig()
     if bars is None or bars.height < max(cfg.min_bars, 2 * cfg.fractal_n + 2):
         return None

@@ -135,7 +135,8 @@ def test_polars_indicator_kernels_match_reference_recurrences():
 
 
 def test_all_registered_strategies_have_explicit_cadence_and_new_ids_are_registered():
-    assert all(plugin.cadence in {"1m", "5m", "15m"} for plugin in _REGISTRY.values())
+    assert all(plugin.cadence in {"5m", "15m"} for plugin in _REGISTRY.values())
+    assert all("1m" not in plugin.required_intervals for plugin in _REGISTRY.values())
     for strategy_id in (
         "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
         "ema99-double-touch-stochrsi-state-v1",
@@ -161,10 +162,7 @@ def test_new_fundamo_routes_are_account_agnostic_in_candidate_and_fixed_downstre
         assert all(key not in event for key in ("account_id", "exchange_id", "quantity", "leverage", "order_type"))
 
 
-def test_one_minute_evaluation_trigger_keeps_its_interval_and_cutoff(tmp_path):
+def test_one_minute_evaluation_trigger_is_rejected(tmp_path):
     cutoff = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
-    created, path = publish(cutoff, tmp_path, interval="1m")
-    assert created
-    payload = json.loads(path.read_text())
-    assert payload["interval"] == "1m"
-    assert payload["cutoff_at"] == "2026-01-01T12:01:00+00:00"
+    with pytest.raises(ValueError, match="unsupported evaluation trigger interval"):
+        publish(cutoff, tmp_path, interval="1m")

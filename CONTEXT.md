@@ -36,8 +36,8 @@
   confirmed regular RSI divergence, recent trend ADX, and negative ADX decay;
   it is not a trade trigger and does not deactivate other families.
 - **Bootstrap readiness**: the per-asset state proving that regime `4h` history,
-  live-evaluation `1m`/`5m` history, and any required live stream prerequisites
-  are complete before enforced evaluation.
+  live-evaluation `5m` history, and any required live stream prerequisites are
+  complete before enforced evaluation.
 - **Structural reference**: a confirmed, point-in-time market feature that a
   candidate declares as the level whose violation invalidates its setup, such
   as a swing or a selected imbalance zone.

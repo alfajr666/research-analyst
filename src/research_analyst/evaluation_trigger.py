@@ -17,6 +17,8 @@ TRIGGER_DIR = Path(os.getenv("EVALUATION_TRIGGER_DIR", str(config.DEFAULT_DB_DIR
 
 def _canonical_cutoff(cutoff_at: datetime | str, interval: str) -> datetime:
     """Normalize exchange ``boundary - 1ms`` timestamps before flooring."""
+    if interval != "5m":
+        raise ValueError(f"unsupported evaluation trigger interval: {interval}; only 5m is supported")
     if isinstance(cutoff_at, str):
         cutoff_at = datetime.fromisoformat(cutoff_at.replace("Z", "+00:00"))
     if cutoff_at.tzinfo is None:
@@ -25,8 +27,7 @@ def _canonical_cutoff(cutoff_at: datetime | str, interval: str) -> datetime:
     if cutoff_at.microsecond >= 999_000:
         cutoff_at += timedelta(milliseconds=1)
     cutoff_at = cutoff_at.replace(second=0, microsecond=0)
-    minutes = {"1m": 1, "5m": 5}.get(interval, 5)
-    return cutoff_at.replace(minute=cutoff_at.minute - cutoff_at.minute % minutes)
+    return cutoff_at.replace(minute=cutoff_at.minute - cutoff_at.minute % 5)
 
 
 def cutoff_key(cutoff_at: datetime, interval: str = "5m") -> str:
@@ -38,7 +39,7 @@ def cutoff_key(cutoff_at: datetime, interval: str = "5m") -> str:
 def publish(cutoff_at: datetime, trigger_dir: Path | None = None,
             *, interval: str = "5m") -> tuple[bool, Path]:
     """Atomically publish one completed base cutoff; duplicate publication is harmless."""
-    if interval not in {"1m", "5m"}:
+    if interval != "5m":
         raise ValueError(f"unsupported evaluation trigger interval: {interval}")
     cutoff_at = _canonical_cutoff(cutoff_at, interval)
     directory = Path(trigger_dir or TRIGGER_DIR)
@@ -73,7 +74,7 @@ def pending(trigger_dir: Path | None = None) -> list[Path]:
     if not directory.exists():
         return []
     recover_claimed(directory)
-    paths = [*directory.glob("1m-*.json"), *directory.glob("5m-*.json")]
+    paths = list(directory.glob("5m-*.json"))
     def order(path: Path) -> tuple[datetime, str]:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -96,7 +97,7 @@ def recover_claimed(trigger_dir: Path | None = None) -> int:
     directory = Path(trigger_dir or TRIGGER_DIR)
     lease = getattr(config, "EVALUATION_LEASE_SECONDS", 600)
     recovered = 0
-    paths = [*directory.glob("1m-*.claimed"), *directory.glob("5m-*.claimed")] if directory.exists() else []
+    paths = list(directory.glob("5m-*.claimed")) if directory.exists() else []
     for path in paths:
         if time.time() - path.stat().st_mtime >= lease:
             path.rename(path.with_suffix(".json"))
