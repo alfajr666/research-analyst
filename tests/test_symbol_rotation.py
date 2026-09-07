@@ -180,7 +180,7 @@ class SymbolRotationTests(unittest.TestCase):
         self.assertEqual(fallback["watchlist_entry_count"], previous["watchlist_entry_count"])
         self.assertTrue(validate_feed(fallback))
 
-    def test_legacy_fallback_feed_is_migrated_to_permanent_symbols(self):
+    def test_legacy_feed_is_migrated_without_discarding_selections(self):
         boundary = datetime(2026, 8, 18, tzinfo=timezone.utc)
         path = Path(self.directory.name) / "feed.json"
         legacy = {
@@ -205,7 +205,10 @@ class SymbolRotationTests(unittest.TestCase):
             current = refresh_feed(conn, boundary, path=path, now=boundary)
         finally:
             conn.close()
-        self.assertEqual(current["symbols"], list(PERMANENT_SYMBOLS))
+        self.assertEqual(current["symbol_count"], 80)
+        self.assertTrue(all(symbol in current["symbols"] for symbol in PERMANENT_SYMBOLS))
+        self.assertEqual(current["status"], "ready")
+        self.assertTrue(validate_feed(current))
 
     def test_refreshes_rotation_at_each_four_hour_boundary(self):
         boundary = datetime(2026, 8, 18, tzinfo=timezone.utc)

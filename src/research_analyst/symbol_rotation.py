@@ -652,6 +652,83 @@ def _fallback_feed(
     return feed
 
 
+def _migrate_legacy_feed(legacy: Mapping[str, object], boundary: datetime,
+                         generated_at: datetime) -> dict:
+    """Upgrade a valid legacy snapshot without discarding its selections."""
+    selected_items: list[dict] = []
+    seen: set[str] = set()
+    for side, field in (("gainer", "gainers"), ("loser", "losers")):
+        raw_items = legacy.get(field, [])
+        if not isinstance(raw_items, list):
+            raw_items = []
+        for position, raw_item in enumerate(raw_items, start=1):
+            if not isinstance(raw_item, Mapping):
+                continue
+            asset = _canonical_asset(raw_item.get("asset"))
+            if not asset or asset in PERMANENT_ASSETS or asset in seen:
+                continue
+            seen.add(asset)
+            rank = raw_item.get("rank", position)
+            if isinstance(rank, bool):
+                rank = position
+            else:
+                try:
+                    rank = int(rank)
+                except (TypeError, ValueError):
+                    rank = position
+            if rank <= 0:
+                rank = position
+            selected_items.append({
+                "asset": asset,
+                "rank_side": side,
+                "rank": rank,
+                "return": raw_item.get("return"),
+            })
+
+    # Older feeds did not always persist ranked side arrays. Preserve their
+    # remaining symbols as deterministic legacy selections during migration.
+    raw_symbols = legacy.get("symbols", [])
+    if isinstance(raw_symbols, list):
+        for position, raw_symbol in enumerate(raw_symbols, start=1):
+            asset = _canonical_asset(raw_symbol)
+            if not asset or asset in PERMANENT_ASSETS or asset in seen:
+                continue
+            seen.add(asset)
+            selected_items.append({"asset": asset, "rank_side": "gainer", "rank": position})
+
+    feed_id = f"{legacy.get('feed_id') or 'legacy-feed'}-sticky"
+    entries, kept_assets, events, history = _apply_watchlist(
+        selected_items, None, boundary, feed_id
+    )
+    symbols = list(PERMANENT_SYMBOLS) + kept_assets
+    feed = dict(legacy)
+    feed.update({
+        "schema_version": SCHEMA_VERSION,
+        "feed_id": feed_id,
+        "algorithm_version": ALGORITHM_VERSION,
+        "generated_at": _iso(generated_at),
+        "valid_from": _iso(boundary),
+        "valid_until": _iso(boundary + timedelta(hours=int(getattr(config, "SYMBOL_ROTATION_REFRESH_HOURS", 4)))),
+        "permanent_symbols": list(PERMANENT_SYMBOLS),
+        "symbols": symbols,
+        "symbol_count": len(symbols),
+        "status": "ready",
+        "fallback_reason": None,
+        "watchlist_ttl_hours": float(getattr(config, "SYMBOL_ROTATION_WATCHLIST_TTL_HOURS", 72)),
+        "watchlist_max_symbols": _watchlist_cap(),
+        "watchlist_entries": entries,
+        "watchlist_events": events,
+        "watchlist_history": history,
+        "effective_symbol_count": len(symbols),
+        "watchlist_entry_count": len(entries),
+        "effective_universe_version": _effective_universe_version(symbols, entries),
+        "last_valid_feed_id": legacy.get("feed_id"),
+        "last_valid_feed_at": legacy.get("generated_at"),
+        "freshness_state": "ready",
+    })
+    return feed
+
+
 def build_feed(records: Iterable[Mapping[str, object]], boundary: datetime,
                *, generated_at: datetime | None = None, previous_feed: dict | None = None,
                source_cutoff: datetime | None = None) -> dict:
@@ -828,9 +905,7 @@ def refresh_feed(conn, boundary: datetime, *, records: Iterable[Mapping[str, obj
     current = read_feed(path, boundary)
     if current and current.get("valid_from") == boundary.isoformat().replace("+00:00", "Z"):
         if current.get("schema_version") == LEGACY_SCHEMA_VERSION:
-            migrated = _fallback_feed(
-                boundary, now or datetime.now(timezone.utc), "legacy feed migrated to sticky schema"
-            )
+            migrated = _migrate_legacy_feed(current, boundary, _utc(now or datetime.now(timezone.utc)))
             write_feed(migrated, path)
             return migrated
         if current.get("status") == "fallback" and records is not None:
