@@ -28,7 +28,7 @@ merging direct and canonical bars.
 - Completed `5m` observations remain the authoritative execution/evaluation
   input.
 - `15m` remains a derived auxiliary frame from committed `5m` observations for
-  any legacy or non-production plugin that explicitly requires it.
+  current plugins that explicitly require it.
 - Regime scoring and strategy HTF setup use the same direct-history contract,
   but remain separate consumers and computations.
 - Strategy plugins remain source-blind. They continue calling

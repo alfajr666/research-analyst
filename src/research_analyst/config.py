@@ -183,35 +183,11 @@ COMPACT_STRATEGY_IDS = frozenset((
     "ema9-adx-stochrsi-state-v1",
 ))
 FUNDAMO_STRATEGY_IDS = frozenset((
-    "ema99-retest-adx-fundamo-v1",
-    "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
 ))
-DUAL_ZONE_STRATEGY_ID = "dual-zone-follower-v2"
-DUAL_ZONE_EXIT_EMA_LENGTH = int(os.getenv("DUAL_ZONE_EXIT_EMA_LENGTH", "7"))
-DUAL_ZONE_ANCHOR_EMA_LENGTH = int(os.getenv("DUAL_ZONE_ANCHOR_EMA_LENGTH", "26"))
-DUAL_ZONE_TREND_EMA_LENGTH = int(os.getenv("DUAL_ZONE_TREND_EMA_LENGTH", "99"))
-DUAL_ZONE_A_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_A_ENTRY_DISTANCE_PCT", "1.0"))
-DUAL_ZONE_A_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_A_TARGET_DISTANCE_PCT", "3.0"))
-DUAL_ZONE_A_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_A_STOP_DISTANCE_PCT", "1.0"))
-DUAL_ZONE_B_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_B_ENTRY_DISTANCE_PCT", "1.5"))
-DUAL_ZONE_B_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_B_TARGET_DISTANCE_PCT", "5.0"))
-DUAL_ZONE_B_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_B_STOP_DISTANCE_PCT", "1.0"))
-DUAL_ZONE_SHORT_STRATEGY_ID = "dual-zone-short-follower-v2"
-DUAL_ZONE_SHORT_A_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_A_ENTRY_DISTANCE_PCT", "1.0"))
-DUAL_ZONE_SHORT_A_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_A_TARGET_DISTANCE_PCT", "3.0"))
-DUAL_ZONE_SHORT_A_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_A_STOP_DISTANCE_PCT", "1.0"))
-DUAL_ZONE_SHORT_B_ENTRY_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_B_ENTRY_DISTANCE_PCT", "1.5"))
-DUAL_ZONE_SHORT_B_TARGET_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_B_TARGET_DISTANCE_PCT", "5.0"))
-DUAL_ZONE_SHORT_B_STOP_DISTANCE_PCT = float(os.getenv("DUAL_ZONE_SHORT_B_STOP_DISTANCE_PCT", "1.0"))
-DUAL_ZONE_ADX_TIMEFRAME = os.getenv("DUAL_ZONE_ADX_TIMEFRAME", "1h")
-DUAL_ZONE_ADX_DI_LENGTH = int(os.getenv("DUAL_ZONE_ADX_DI_LENGTH", "14"))
-DUAL_ZONE_ADX_SMOOTHING = int(os.getenv("DUAL_ZONE_ADX_SMOOTHING", "14"))
-DUAL_ZONE_MIN_ADX = float(os.getenv("DUAL_ZONE_MIN_ADX", "22.0"))
-DUAL_ZONE_USE_DI_DIRECTION = os.getenv("DUAL_ZONE_USE_DI_DIRECTION", "true").lower() == "true"
-EMA99_RETEST_STRATEGY_ID = "ema99-retest-adx-fundamo-v1"
+EMA99_RETEST_STRATEGY_ID = "ema99-retest-adx-v1"
 EMA99_RETEST_FAST_EMA_LENGTH = int(os.getenv("EMA99_RETEST_FAST_EMA_LENGTH", "26"))
 EMA99_RETEST_SLOW_EMA_LENGTH = int(os.getenv("EMA99_RETEST_SLOW_EMA_LENGTH", "99"))
 EMA99_RETEST_RSI_LENGTH = int(os.getenv("EMA99_RETEST_RSI_LENGTH", "14"))
@@ -362,7 +338,7 @@ STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
         "STRATEGY_ENABLED_IDS",
         "failed-break-v3,bb-rsi-meanrev-v1,williams-fractal-scalp-v1,"
-        "ema9-adx-stochrsi-state-v1,dual-zone-follower-v2,dual-zone-short-follower-v2,"
+        "ema9-adx-stochrsi-state-v1,"
         "ema20-pullback-h4-trend-v1,gold-trend-ema-bb-stoch-v1,"
         "mtf-exhaustion-reversal-v1,ema99-double-touch-stochrsi-state-v1,"
         "ema7-26-cross-hammer-shooting-star-1h-adx-v1"
@@ -420,22 +396,12 @@ ANALYST_DELIVERY_RETENTION_DAYS = int(os.getenv("ANALYST_DELIVERY_RETENTION_DAYS
 ANALYST_METRICS_RETENTION_DAYS = int(os.getenv("ANALYST_METRICS_RETENTION_DAYS", "30"))
 ANALYST_RESEARCH_RETENTION_DAYS = int(os.getenv("ANALYST_RESEARCH_RETENTION_DAYS", "30"))
 
-# Trade-intent outbox → bybit-executor (see bybit-executor/AGENTS.md "Trade Intent
-# Contract", schema_version 1). The internal alpha event is the advisory record
-# (Discord); this envelope is the executor-consumable intent.
-#
-# Shared handoff: the analyst WRITES to INTENT_INBOX and the executor READS the same
-# directory. The executor's own default is <bybit-executor>/data/intents, so set
-# BYBIT_EXECUTOR_DIR to the executor repo root and INTENT_INBOX resolves there with no
-# guessing. If the executor overrides its INTENT_INBOX, set this to the same absolute
-# path. Deliberately OFF by default (INTENT_DELIVERY_ENABLED).
+# Trade-intent delivery (see bybit-executor/AGENTS.md "Trade Intent Contract",
+# schema_version 1). The internal alpha event is the advisory record (Discord);
+# this envelope is published to the shared SQLite bus for executor handoff.
+# Deliberately OFF by default (INTENT_DELIVERY_ENABLED).
 BYBIT_EXECUTOR_DIR = os.getenv("BYBIT_EXECUTOR_DIR", "")
-if BYBIT_EXECUTOR_DIR:
-    _default_intent_inbox = Path(BYBIT_EXECUTOR_DIR) / "data" / "intents"
-else:
-    _default_intent_inbox = DEFAULT_DB_DIR / "intent_outbox"
 INTENT_DELIVERY_ENABLED = os.getenv("INTENT_DELIVERY_ENABLED", "false").lower() in ("1", "true", "yes", "on")
-INTENT_INBOX = Path(os.getenv("INTENT_INBOX", str(_default_intent_inbox)))
 INTENT_SOURCE = os.getenv("INTENT_SOURCE", "research-analyst")
 INTENT_EXCHANGE_ID = os.getenv("INTENT_EXCHANGE_ID", "bybit")
 INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "hyro")
@@ -465,7 +431,7 @@ try:
         INTENT_ROUTING = {}
 except (ValueError, TypeError):
     INTENT_ROUTING = {}
-for _fundamo_strategy in ("ema99-retest-adx-fundamo-v1", "dual-zone-follower-v2", "dual-zone-short-follower-v2",
+for _fundamo_strategy in ("ema99-retest-adx-v1",
                            "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
                            "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1",
                            "trend-wall-v1", "ema99-double-touch-stochrsi-state-v1",
@@ -480,9 +446,6 @@ INTENT_BUS_BYBIT_ENABLED = os.getenv("INTENT_BUS_BYBIT_ENABLED", "false").lower(
 INTENT_BUS_PROPR_ENABLED = os.getenv("INTENT_BUS_PROPR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 _INTENT_BUS_DB_RAW = os.getenv("INTENT_BUS_DB") or ""
 INTENT_BUS_DB = str(Path(_INTENT_BUS_DB_RAW).expanduser()) if _INTENT_BUS_DB_RAW and Path(_INTENT_BUS_DB_RAW).expanduser().is_absolute() else None
-# JSON inbox delivery is compatibility-only; SQLite is authoritative.
-INTENT_BUS_LEGACY_INBOX_ENABLED = os.getenv("INTENT_BUS_LEGACY_INBOX_ENABLED", "false").lower() in ("1", "true", "yes", "on")
-
 # Executor snapshot handoff used by ws_gateway to retain open-position symbols
 # during universe rotation. Position management is owned by standalone-llm-pm.
 if BYBIT_EXECUTOR_DIR:
@@ -561,11 +524,9 @@ LSR_V1_USE_15M_EPHEMERAL_FVG = os.getenv("LSR_V1_USE_15M_EPHEMERAL_FVG", "true")
 
 # Emit classification (normative, see spec)
 PRICE_STRUCTURE_STRATEGY_IDS = {
-    "ema99-retest-adx-fundamo-v1",
     "accumulation-base-v2", "rsi-reclaim-v1",
     "liquidity-sweep-reversal-v1", "bb-rsi-meanrev-v1", "failed-break-v3",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
-    "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema9-adx-stochrsi-state-v1",
@@ -876,7 +837,7 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
         # created before an event is emitted retain their own stable ID and link
         # to the promoted event without changing their identity.
 
-        # Create indexes for fast analysis (market only; futures_data removed post-drop)
+        # Create indexes for fast analysis.
         if not is_alpha:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_options_ts ON option_chains (timestamp, underlying);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_ts ON brain_outputs (timestamp, underlying);")
@@ -1224,77 +1185,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
         conn.commit()
     finally:
         conn.close()
-
-def import_legacy_futures_as_source_observations(db_path: str | Path | None = None) -> int:
-    """One-shot migration: append legacy futures_data rows into source_observations (idempotent).
-    Run once at cutover; subsequent inits are no-op. To be removed post futures_data drop.
-    """
-    conn = get_db_connection(read_only=False, db_path=db_path)
-    try:
-        # Only if we have legacy data and no legacy_import rows yet
-        already = conn.execute(
-            "SELECT 1 FROM source_observations WHERE retrieval_kind = 'legacy_import' LIMIT 1"
-        ).fetchone()
-        if already:
-            return 0
-        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()]
-        if "futures_data" not in tables:
-            return 0
-        rows = conn.execute("""
-            SELECT timestamp, underlying, symbol, open, high, low, close, volume
-            FROM futures_data
-            ORDER BY timestamp
-        """).fetchall()
-        if not rows:
-            return 0
-        imported = 0
-        for ts, underlying, symbol, o, h, l, c, v in rows:
-            obs_id = f"legacy:{underlying}:{ts}"
-            payload = {
-                "open": o, "high": h, "low": l, "close": c, "volume": v,
-                "open_interest": None, "funding_rate": None
-            }
-            try:
-                conn.execute("""
-                    INSERT INTO source_observations VALUES (?, 'coinalyze', 'aggregate_perp', ?, ?, 'perpetual', '15m', ?, ?, ?, 'legacy_import', ?)
-                    ON CONFLICT (observation_id) DO NOTHING
-                """, (obs_id, symbol, underlying or symbol.split("USDT")[0], ts, ts, ts, json.dumps(payload)))
-                imported += 1
-            except Exception:
-                pass
-        conn.commit()
-        return imported
-    finally:
-        conn.close()
-
-
-def drop_legacy_futures_data(db_path: str | Path | None = None) -> bool:
-    """Post-cutover drop of legacy futures_data table.
-    Verifies source_observations has data first. Returns True if dropped.
-    """
-    conn = get_db_connection(read_only=False, db_path=db_path)
-    try:
-        # Verify source has coverage
-        has_source = conn.execute("SELECT COUNT(*) FROM source_observations").fetchone()[0] > 0
-        if not has_source:
-            print("Refusing drop: no data in source_observations yet")
-            return False
-        # Check if futures still exists
-        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()]
-        if "futures_data" not in tables:
-            return False
-        conn.execute("DROP TABLE IF EXISTS futures_data")
-        # Also drop index if any
-        try:
-            conn.execute("DROP INDEX IF EXISTS idx_futures_ts")
-        except Exception:
-            pass
-        conn.commit()
-        print("Dropped legacy futures_data table (source_observations is now sole market source)")
-        return True
-    finally:
-        conn.close()
-
 
 if __name__ == "__main__":
     print(f"Initializing market database at {MARKET_DB_PATH}...")

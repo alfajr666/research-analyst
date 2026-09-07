@@ -56,7 +56,7 @@ class Ema99DoubleTouchTests(unittest.TestCase):
             "strategies.v2.ema99_double_touch_stochrsi_state_v1._rsi5_series",
             return_value=[50.0] * 140,
         ), patch(
-            "strategies.v2.ema99_double_touch_stochrsi_state_v1._dmi_adx",
+            "strategies.v2.ema99_double_touch_stochrsi_state_v1.dmi_adx_last",
             return_value=(20.0, 30.0, 10.0),
         ), patch(
             "strategies.v2.ema99_double_touch_stochrsi_state_v1._adx_series",
@@ -77,7 +77,7 @@ class Ema99DoubleTouchTests(unittest.TestCase):
 
     def test_adx_below_minimum_rejects_before_touch_replay(self):
         with patch(
-            "strategies.v2.ema99_double_touch_stochrsi_state_v1._dmi_adx",
+            "strategies.v2.ema99_double_touch_stochrsi_state_v1.dmi_adx_last",
             return_value=(19.99, 30.0, 10.0),
         ), patch(
             "strategies.v2.ema99_double_touch_stochrsi_state_v1._stoch_values",

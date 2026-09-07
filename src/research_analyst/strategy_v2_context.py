@@ -593,6 +593,7 @@ class SharedComputationContext:
                 )
                 tail = _rows_to_frame(_prefer_rows(raw))
                 prefix = previous_frame.filter(pl.col("timestamp") < repair_start)
+                frame = None
                 if not tail.is_empty():
                     frame = pl.concat([prefix, tail], how="diagonal_relaxed").sort("timestamp")
                     duplicate_timestamps = frame.group_by("timestamp").len().filter(pl.col("len") > 1)

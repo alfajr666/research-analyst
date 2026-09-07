@@ -239,10 +239,10 @@ database contention, and duplicate candidate churn.
 
 ## 11. Executor Compatibility
 
-The research analyst continues writing schema-version-1 JSON files to the shared
-`INTENT_INBOX`. The executor remains responsible for:
+The research analyst publishes schema-version-1 envelopes to the shared SQLite
+intent bus. The executor remains responsible for:
 
-- claiming/processing inbox files;
+- claiming/processing bus deliveries;
 - delivery-id deduplication;
 - expiry handling;
 - symbol and account allowlists;
@@ -253,7 +253,7 @@ The research analyst continues writing schema-version-1 JSON files to the shared
 The event-driven change must not make the analyst call executor APIs directly.
 Before implementation, verify the executor's file watcher/poll cadence and ensure
 the new producer does not rely on an in-memory notification reaching the executor.
-The file write is the cross-process contract.
+The shared SQLite bus is the cross-process contract.
 
 ## 12. Configuration
 
@@ -315,7 +315,7 @@ order filled
 ### Integration tests
 
 - Persist a completed 5m observation, publish a trigger, consume it, and assert a
-  selected candidate reaches `INTENT_INBOX`.
+  selected candidate reaches the shared intent bus.
 - Restart the evaluator between claim and completion and assert safe replay.
 - Replay several missed cutoffs in order.
 - Assert no duplicate alpha events or intents on trigger replay.

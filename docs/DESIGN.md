@@ -160,16 +160,17 @@ Geometry is validated before delivery (`validate_geometry`): LONG ⇒
 stop_loss`; limit intents additionally require minimum `INTENT_MIN_RR` (2.0 by
 default) and SL distance must meet `INTENT_MIN_STOP_DISTANCE_PCT` (0.1%);
 structural HTF-zone admission must also pass with a 0.5-3.0 ATR buffer. Invalid events are skipped (the advisory event
-still emits). The intent envelope is written atomically to `INTENT_INBOX` by
-`delivery_id`, idempotent on replay.
+still emits). The intent envelope is published to the shared SQLite intent bus
+by `delivery_id`, idempotent on replay.
 
 The analyst does not emit `order_type`. Entry order policy is selected solely by
 the receiving executor profile (`limit` with IOC by default, or an executor-
 configured market policy). `entry_price` is the research reference price and,
 when the executor selects limit, the submitted limit price.
 
-Enable: `INTENT_DELIVERY_ENABLED=true` and point `INTENT_INBOX` at the
-executor's `INTENT_INBOX` (e.g. `/home/ubuntu/bybit-executor/data/intents`).
+Enable: `INTENT_DELIVERY_ENABLED=true`, set an absolute `INTENT_BUS_DB`, and
+enable the intended bus target with `INTENT_BUS_BYBIT_ENABLED` or
+`INTENT_BUS_PROPR_ENABLED`.
 
 Position management is handled by the standalone PM and executor repositories.
 This repository only publishes the validated intent and its producer-owned target;

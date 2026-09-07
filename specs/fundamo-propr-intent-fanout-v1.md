@@ -26,9 +26,8 @@ placement, protection, exits, and execution receipts.
 In scope:
 
 - Research Analyst fan-out to `target=bybit` and `target=propr`.
-- Four strategy IDs currently assigned to Fundamo:
-  - `dual-zone-follower-v2`
-  - `dual-zone-short-follower-v2`
+- Current strategy IDs assigned to Fundamo include:
+  - `ema99-retest-adx-v1`
   - `ema20-pullback-h4-trend-v1`
   - `ema-stack-15m-adx-stochrsi-5m-v1`
 - Shared SQLite intent-bus delivery records and receipts.
@@ -53,8 +52,8 @@ Out of scope:
 - The authoritative bus is `/home/ubuntu/shared/intent-bus/intent_bus.sqlite3`.
 - `INTENT_BUS_DB` must remain an explicit absolute path.
 - Intent publication is gated by `INTENT_BUS_BYBIT_ENABLED`.
-- `execution_adapter.py` has legacy target-aware filesystem delivery, but this
-  feature must use the shared bus, not that compatibility path.
+- `execution_adapter.py` is not part of this delivery path; publication uses the
+  shared bus exclusively.
 
 ### Propr Executor
 
@@ -247,7 +246,7 @@ Use a temporary shared SQLite bus and hermetic executor processors:
 6. Make one consumer reject for position cap and the other accept.
 7. Assert both receipts are independent and correctly attributed.
 8. Replay the producer and assert no duplicate deliveries.
-9. Assert no filesystem legacy inbox was written.
+9. Assert no filesystem intent inbox was written.
 10. Run the real Propr consumer contract test against the adapted payload.
 
 ## Rollout

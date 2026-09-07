@@ -17,7 +17,6 @@ def temp_bus_db(monkeypatch):
     monkeypatch.setattr("config.INTENT_BUS_DB", path)
     monkeypatch.setattr("config.INTENT_BUS_BYBIT_ENABLED", True)
     monkeypatch.setattr("config.INTENT_BUS_PROPR_ENABLED", True)
-    monkeypatch.setattr("config.INTENT_BUS_LEGACY_INBOX_ENABLED", False)
     yield path
     for ext in ("", "-wal", "-shm"):
         p = path + ext

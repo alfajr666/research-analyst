@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 
 import polars as pl
 import config
-from strategies.v2.dual_zone_follower_v2 import evaluate_symbol
 from strategies.v2.ema20_pullback_h4_trend_v1 import evaluate_symbol as evaluate_ema20
 from strategy_plugins import _REGISTRY
 from intent_outbox import build_executor_intent
@@ -21,23 +20,8 @@ def bars(closes, *, opens=None, highs=None, lows=None, start="2026-08-31T00:00:0
 
 class FundamoStrategyTests(unittest.TestCase):
     def test_registry_has_new_strategies_and_cadences(self):
-        self.assertEqual(_REGISTRY["dual-zone-follower-v2"].cadence, "5m")
-        self.assertEqual(_REGISTRY["dual-zone-short-follower-v2"].cadence, "5m")
         self.assertEqual(_REGISTRY["ema20-pullback-h4-trend-v1"].cadence, "5m")
         self.assertEqual(_REGISTRY["ema-stack-15m-adx-stochrsi-5m-v1"].cadence, "5m")
-        self.assertNotIn("dual-zone-follower-v1", _REGISTRY)
-
-    def test_dual_zone_v2_emits_channel_a_with_locked_geometry(self):
-        close = [100 + i * .08 for i in range(100)]
-        event = evaluate_symbol(bars(close), asset="BTC", symbol="BTCUSDT",
-                                cutoff=None, direction="long")
-        self.assertIsNotNone(event)
-        self.assertEqual(event["strategy_id"], "dual-zone-follower-v2")
-        self.assertEqual(event["phase"], "channel_a")
-        self.assertEqual(event["entry_condition"]["price"], event["entry_price"])
-        self.assertEqual(event["horizon_minutes"], 5)
-        self.assertEqual(event["confidence"], 0.5)
-        self.assertLess(event["invalidation_price"], event["entry_price"])
 
     def test_ema20_pullback_requires_engulfing_and_builds_two_r_target(self):
         local = bars([100 + i for i in range(30)] + [124, 130],

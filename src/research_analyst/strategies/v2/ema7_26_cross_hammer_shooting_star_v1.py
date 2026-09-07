@@ -18,7 +18,7 @@ from strategy_v2_context import (
     wilder_atr,
     wilder_rsi,
 )
-from strategies.v2.dual_zone_follower_v2 import _dmi_adx
+from strategies.v2.adx import dmi_adx_last
 
 
 STRATEGY_ID = config.EMA7_26_CROSS_HAMMER_STRATEGY_ID
@@ -179,7 +179,7 @@ def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime
     ):
         return None
 
-    dmi = _dmi_adx(
+    dmi = dmi_adx_last(
         bars1h,
         config.EMA7_26_CROSS_ADX_LENGTH,
         config.EMA7_26_CROSS_ADX_SMOOTHING,

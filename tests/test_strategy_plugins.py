@@ -34,7 +34,9 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         self.assertTrue(retired.isdisjoint(config.STRATEGY_ENABLED_IDS))
         self.assertTrue(enabled.issubset(config.STRATEGY_ENABLED_IDS))
         self.assertIn("ema9-adx-stochrsi-state-v1", config.COMPACT_STRATEGY_IDS)
-        self.assertTrue(enabled - {"ema9-adx-stochrsi-state-v1"} <= config.FUNDAMO_STRATEGY_IDS)
+        self.assertTrue(
+            enabled - {"ema9-adx-stochrsi-state-v1"} <= config.FUNDAMO_STRATEGY_IDS
+        )
 
     def tearDown(self):
         config.STRATEGY_ENABLED_IDS = self.prev_enabled

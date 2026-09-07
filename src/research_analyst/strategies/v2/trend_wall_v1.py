@@ -10,7 +10,7 @@ from strategy_v2_context import (
     cutoff_from_id, evaluation_symbols, has_active_event, last_completed_bar_fresh,
     load_bars_for_interval,
 )
-from strategies.v2.dual_zone_follower_v2 import _dmi_adx
+from strategies.v2.adx import dmi_adx_last
 
 STRATEGY_ID = "trend-wall-v1"
 PLUGIN_VERSION = "v1"
@@ -22,7 +22,7 @@ def evaluate_symbol(bars15, bars1h, *, asset: str, symbol: str, cutoff, executio
     signal = bars15.row(-1, named=True)
     if signal["timestamp"] > cutoff:
         return None
-    dmi = _dmi_adx(bars1h, 14, 14)
+    dmi = dmi_adx_last(bars1h, 14, 14)
     if dmi is None:
         return None
     features1 = build_feature_frame(

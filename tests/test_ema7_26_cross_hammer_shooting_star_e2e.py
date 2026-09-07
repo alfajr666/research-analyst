@@ -33,7 +33,7 @@ class Ema7CrossHammerE2ETests(unittest.TestCase):
             ).alias("low"),
         )
         with patch(
-            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._dmi_adx",
+            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1.dmi_adx_last",
             return_value=(20.0, 30.0, 10.0),
         ), patch(
             "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._rsi_series",

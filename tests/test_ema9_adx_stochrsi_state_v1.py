@@ -39,7 +39,7 @@ class Ema9AdxStochRsiStateTests(unittest.TestCase):
             "strategies.v2.ema9_adx_stochrsi_state_v1._stoch_values",
             return_value=([50.0] * 80, k, d),
         ), patch(
-            "strategies.v2.ema9_adx_stochrsi_state_v1._dmi_adx",
+            "strategies.v2.ema9_adx_stochrsi_state_v1.dmi_adx_last",
             return_value=(21.0, 30.0, 10.0),
         ):
             event = evaluate_symbol(bars5, _bars(60, 60, end=cutoff), asset="BTC",
@@ -51,7 +51,7 @@ class Ema9AdxStochRsiStateTests(unittest.TestCase):
 
     def test_adx_at_threshold_rejects(self):
         with patch(
-            "strategies.v2.ema9_adx_stochrsi_state_v1._dmi_adx",
+            "strategies.v2.ema9_adx_stochrsi_state_v1.dmi_adx_last",
             return_value=(20.0, 30.0, 10.0),
         ):
             event = evaluate_symbol(
@@ -73,7 +73,7 @@ class Ema9AdxStochRsiStateTests(unittest.TestCase):
             "strategies.v2.ema9_adx_stochrsi_state_v1._stoch_values",
             return_value=([50.0] * 80, k, d),
         ), patch(
-            "strategies.v2.ema9_adx_stochrsi_state_v1._dmi_adx",
+            "strategies.v2.ema9_adx_stochrsi_state_v1.dmi_adx_last",
             return_value=(21.0, 10.0, 30.0),
         ):
             event = evaluate_symbol(bars5, _bars(60, 60, end=cutoff), asset="BTC",

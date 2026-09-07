@@ -1,4 +1,4 @@
-"""Fundamo EMA99 retest strategy with a confirmed 1H ADX filter."""
+"""EMA99 retest strategy with a confirmed 1H ADX filter."""
 
 from __future__ import annotations
 
@@ -8,16 +8,18 @@ from typing import Any
 
 import config
 from polars_indicators import dmi_adx_series
+from strategy_features import build_feature_frame, cached_feature_frame
 from strategy_v2_context import (
     cutoff_from_id,
     ema_series,
     evaluation_symbols,
+    get_shared_computation_context,
     has_active_event,
     load_bars_for_interval,
+    strategy_market_connection,
     wilder_atr,
     wilder_rsi,
 )
-from strategies.v2.dual_zone_follower_v2 import _dmi_adx
 
 
 STRATEGY_ID = config.EMA99_RETEST_STRATEGY_ID
@@ -60,8 +62,16 @@ def _adx_series(bars1h):
     ]
 
 
-def _expand_adx_to_5m(bars5m, bars1h):
-    adx_values = _adx_series(bars1h)
+def _expand_adx_to_5m(bars5m, bars1h, adx_values=None):
+    """Align a shared direct-1h ADX series to completed 5m bars."""
+    if adx_values is None:
+        adx_values = _adx_series(bars1h)
+    elif isinstance(adx_values, tuple) and len(adx_values) == 3:
+        adx_values, plus_di, minus_di = adx_values
+        adx_values = [
+            (value, plus_di, minus_di) if value is not None else None
+            for value in adx_values
+        ]
     timestamps = [_utc(value) for value in bars1h["timestamp"].to_list()]
     expanded = []
     for value in bars5m["timestamp"].to_list():
@@ -85,6 +95,7 @@ def _replay_cross_state(bars5m, adx_by_bar, fast=None, slow=None):
         "short_trigger_high": None,
         "entry": None,
     }
+    max_retest_distance = config.EMA99_RETEST_MAX_RETEST_DISTANCE_PCT / 100 + 1e-12
     for index in range(1, len(closes)):
         if fast[index] is None or slow[index] is None or fast[index - 1] is None or slow[index - 1] is None:
             continue
@@ -112,7 +123,7 @@ def _replay_cross_state(bars5m, adx_by_bar, fast=None, slow=None):
 
         if state["waiting_long"] and not state["traded_long"]:
             distance = (closes[index] - slow[index]) / slow[index]
-            if lows[index] <= slow[index] and closes[index] >= slow[index] and distance <= config.EMA99_RETEST_MAX_RETEST_DISTANCE_PCT / 100:
+            if lows[index] <= slow[index] and closes[index] >= slow[index] and distance <= max_retest_distance:
                 state.update({
                     "traded_long": True,
                     "waiting_long": False,
@@ -121,7 +132,7 @@ def _replay_cross_state(bars5m, adx_by_bar, fast=None, slow=None):
                 })
         if state["waiting_short"] and not state["traded_short"]:
             distance = (slow[index] - closes[index]) / slow[index]
-            if highs[index] >= slow[index] and closes[index] <= slow[index] and distance <= config.EMA99_RETEST_MAX_RETEST_DISTANCE_PCT / 100:
+            if highs[index] >= slow[index] and closes[index] <= slow[index] and distance <= max_retest_distance:
                 state.update({
                     "traded_short": True,
                     "waiting_short": False,
@@ -131,7 +142,16 @@ def _replay_cross_state(bars5m, adx_by_bar, fast=None, slow=None):
     return state
 
 
-def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime) -> dict | None:
+def evaluate_symbol(
+    bars5m,
+    bars1h,
+    *,
+    asset: str,
+    symbol: str,
+    cutoff: datetime,
+    features5m=None,
+    adx_values=None,
+) -> dict | None:
     """Evaluate both directions at one completed 5m cutoff."""
     cutoff = _utc(cutoff)
     bars5m = _at_cutoff(bars5m, cutoff)
@@ -140,17 +160,32 @@ def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime
             or not _fresh_completed(bars5m, cutoff, 5 * 60 + config.DATA_FRESHNESS_MAX_SECONDS)
             or not _fresh_completed(bars1h, cutoff, 60 * 60 + config.DATA_FRESHNESS_MAX_SECONDS)):
         return None
-
     closes = [float(value) for value in bars5m["close"].to_list()]
-    fast = ema_series(closes, config.EMA99_RETEST_FAST_EMA_LENGTH)
-    slow = ema_series(closes, config.EMA99_RETEST_SLOW_EMA_LENGTH)
-    rsi = wilder_rsi(closes, config.EMA99_RETEST_RSI_LENGTH)
-    atr = wilder_atr(bars5m, config.EMA99_RETEST_ATR_LENGTH)
-    if fast[-1] is None or slow[-1] is None or atr is None or atr <= 0:
+    if features5m is None:
+        features5m = build_feature_frame(
+            bars5m,
+            ema={
+                f"ema_{config.EMA99_RETEST_FAST_EMA_LENGTH}": config.EMA99_RETEST_FAST_EMA_LENGTH,
+                f"ema_{config.EMA99_RETEST_SLOW_EMA_LENGTH}": config.EMA99_RETEST_SLOW_EMA_LENGTH,
+            },
+            rsi={f"rsi_{config.EMA99_RETEST_RSI_LENGTH}": config.EMA99_RETEST_RSI_LENGTH},
+            atr={f"atr_{config.EMA99_RETEST_ATR_LENGTH}": config.EMA99_RETEST_ATR_LENGTH},
+        )
+    else:
+        features5m = _at_cutoff(features5m, cutoff)
+        if features5m.height != bars5m.height:
+            return None
+    fast = features5m[f"ema_{config.EMA99_RETEST_FAST_EMA_LENGTH}"].to_list()
+    slow = features5m[f"ema_{config.EMA99_RETEST_SLOW_EMA_LENGTH}"].to_list()
+    rsi = features5m[f"rsi_{config.EMA99_RETEST_RSI_LENGTH}"].to_list()
+    atr = features5m[f"atr_{config.EMA99_RETEST_ATR_LENGTH}"][-1]
+    if (fast[-1] is None or slow[-1] is None or rsi[-1] is None
+            or atr is None or atr <= 0):
         return None
 
+    adx_by_bar = _expand_adx_to_5m(bars5m, bars1h, adx_values)
     state = _replay_cross_state(
-        bars5m, _expand_adx_to_5m(bars5m, bars1h), fast=fast, slow=slow,
+        bars5m, adx_by_bar, fast=fast, slow=slow,
     )
     entry = state.get("entry")
     if not entry or entry["index"] != bars5m.height - 1:
@@ -164,7 +199,7 @@ def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime
             trigger + atr * config.EMA99_RETEST_ATR_STOP_MULTIPLIER)
     if entry_price <= 0 or stop <= 0 or (direction == "long" and stop >= entry_price) or (direction == "short" and stop <= entry_price):
         return None
-    dmi = _expand_adx_to_5m(bars5m, bars1h)[-1]
+    dmi = adx_by_bar[-1]
     adx_value = dmi[0] if isinstance(dmi, (tuple, list)) else dmi
     plus_di = dmi[1] if isinstance(dmi, (tuple, list)) and len(dmi) > 1 else None
     minus_di = dmi[2] if isinstance(dmi, (tuple, list)) and len(dmi) > 2 else None
@@ -193,7 +228,7 @@ def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str, cutoff: datetime
             "target_policy": "executor_derived_2r",
             "stop_policy": "trigger_extreme_plus_atr",
             "trigger_extreme": trigger,
-            "strategy_exits": {
+            "exit_reference": {
                 "long": "5m RSI > 72 and close > EMA26 by 0.5%",
                 "short": "5m RSI < 28 and close < EMA26 by 0.5%",
             },
@@ -269,18 +304,51 @@ def evaluate_stop_revision(bars5m, *, side: str, trigger_extreme: float, cutoff:
 
 def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
     cutoff = cutoff_from_id(str(snapshot.get("cutoff_at") or cutoff_id), snapshot.get("now"))
-    conn = config.get_db_connection(read_only=True, db_path=snapshot.get("market_db_path"))
+    conn, owns_conn = strategy_market_connection(snapshot.get("market_db_path"))
     try:
         events = []
+        context = get_shared_computation_context()
+        feature_spec = {
+            "ema": {
+                f"ema_{config.EMA99_RETEST_FAST_EMA_LENGTH}": config.EMA99_RETEST_FAST_EMA_LENGTH,
+                f"ema_{config.EMA99_RETEST_SLOW_EMA_LENGTH}": config.EMA99_RETEST_SLOW_EMA_LENGTH,
+            },
+            "rsi": {f"rsi_{config.EMA99_RETEST_RSI_LENGTH}": config.EMA99_RETEST_RSI_LENGTH},
+            "atr": {f"atr_{config.EMA99_RETEST_ATR_LENGTH}": config.EMA99_RETEST_ATR_LENGTH},
+        }
         for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
+            bars5m = load_bars_for_interval(conn, symbol, "5m", cutoff)
+            bars1h = load_bars_for_interval(conn, symbol, config.EMA99_RETEST_ADX_TIMEFRAME, cutoff)
+            features5m = cached_feature_frame(
+                snapshot,
+                f"ema99-retest-5m-v1:{asset}:{cutoff.isoformat()}",
+                bars5m,
+                lambda frame: build_feature_frame(frame, **feature_spec),
+                asset=asset,
+                interval="5m",
+                cutoff=cutoff,
+                feature_spec=feature_spec,
+            )
+            shared_adx = (
+                context.dmi_adx(
+                    symbol,
+                    config.EMA99_RETEST_ADX_TIMEFRAME,
+                    config.EMA99_RETEST_ADX_LENGTH,
+                    config.EMA99_RETEST_ADX_SMOOTHING,
+                )
+                if context is not None else None
+            )
             event = evaluate_symbol(
-                load_bars_for_interval(conn, symbol, "5m", cutoff),
-                load_bars_for_interval(conn, symbol, config.EMA99_RETEST_ADX_TIMEFRAME, cutoff),
+                bars5m,
+                bars1h,
                 asset=asset, symbol=symbol, cutoff=cutoff,
+                features5m=features5m,
+                adx_values=shared_adx,
             )
             if event and not has_active_event(STRATEGY_ID, asset, event["direction"], now=cutoff):
                 event["input_snapshot_id"] = cutoff_id
                 events.append(event)
         return events
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()

@@ -79,20 +79,20 @@ class SymbolScopeE2ETests(unittest.TestCase):
         write_feed(build_feed(records, boundary, generated_at=boundary))
 
     def test_rotating_plugin_runs_30_when_enabled_and_capped_when_disabled(self):
-        from strategies.v2 import dual_zone_follower_v2
+        from strategies.v2 import ema99_retest_adx_v1
         self._publish_test_feed()
 
         def event(*args, **kwargs):
             asset = kwargs["asset"]
-            return {"asset": asset, "strategy_id": "dual-zone-follower-v2"}
+            return {"asset": asset, "strategy_id": "ema99-retest-adx-v1", "direction": "long"}
 
         snapshot = {"market_db_path": str(self.db), "now": datetime(2026, 8, 18, 1, 15, tzinfo=timezone.utc)}
-        with patch.object(dual_zone_follower_v2, "load_bars_for_interval", return_value=None), \
-             patch.object(dual_zone_follower_v2, "_dmi_adx", return_value=(25.0, 30.0, 10.0)), \
-             patch.object(dual_zone_follower_v2, "evaluate_symbol", side_effect=event) as evaluate:
-            selected_events = dual_zone_follower_v2.run_plugin("cutoff-rotated", snapshot)
+        with patch.object(ema99_retest_adx_v1, "cached_feature_frame", return_value=None), \
+             patch.object(ema99_retest_adx_v1, "evaluate_symbol", side_effect=event) as evaluate, \
+             patch.object(ema99_retest_adx_v1, "has_active_event", return_value=False):
+            selected_events = ema99_retest_adx_v1.run_plugin("cutoff-rotated", snapshot)
             config.SYMBOL_ROTATION_ENABLED = False
-            all_events = dual_zone_follower_v2.run_plugin("cutoff-full", snapshot)
+            all_events = ema99_retest_adx_v1.run_plugin("cutoff-full", snapshot)
 
         self.assertEqual(len(selected_events), 34)
         self.assertEqual(len(all_events), 80)

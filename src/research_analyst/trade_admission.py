@@ -14,8 +14,6 @@ from entry_policy import evaluate_entry_policy
 POLICY_VERSION = "symbol-account-policy-v1"
 COMPACT_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 FUNDAMO_STRATEGIES = frozenset((
-    "ema99-retest-adx-fundamo-v1",
-    "dual-zone-follower-v2", "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
@@ -54,11 +52,9 @@ def admit_symbol_account(candidate: dict) -> dict:
     rejection_reason = None
     if strategy_id in COMPACT_STRATEGIES and (account != "hyro" or asset not in COMPACT_ASSETS):
         rejection_reason = f"compact Hyro policy permits only {', '.join(sorted(COMPACT_ASSETS))}"
-    elif strategy_id in FUNDAMO_STRATEGIES:
+    elif account == "fundamo":
         approved = {canonical_asset(asset) for asset in config.load_static_symbols()}
-        if account != "fundamo":
-            rejection_reason = "Fundamo strategy resolved to a non-Fundamo account"
-        elif asset not in approved:
+        if asset not in approved:
             rejection_reason = "asset is not in the approved universe"
     return {
         "symbol_account_gate": "pass" if rejection_reason is None else "fail",

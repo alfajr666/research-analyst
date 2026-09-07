@@ -80,11 +80,9 @@ second writer.
 ## Market Data
 
 Bybit is the production public source. The gateway streams completed `5m` bars
-and locally derives strategy-facing `15m`, `1h`, and `4h` bars from completed
-`5m` observations. For strategy `1h`/`4h` warmup, the engine may seed
-historical bars from the regime worker's direct Bybit REST cache, then hand off
-to the canonical 5m-derived tail. The handoff is engine-owned and invisible to
-strategies; see `specs/hybrid-htf-engine-v1.md`.
+and locally derives strategy-facing `15m` bars from completed `5m` observations.
+Strategy `1h`/`4h` frames come exclusively from the regime worker's direct Bybit
+REST cache; see `specs/direct-htf-engine-v1.md`.
 
 Closed bars may arrive with an end timestamp one millisecond before the
 boundary, such as `14:44:59.999` for the `14:45` bar. The resampler normalizes
@@ -112,10 +110,10 @@ regime-scope provenance.
 Strategies remain source-blind: they do not read watchlist configuration,
 rotation state, regime state, or account policy. In `REGIME_SESSION_MODE=enforce`,
 the router additionally restricts each plugin to its active market family. The
-    account-symbol policy remains a downstream admission gate. The strategy engine
-    uses a 5m-only market-data contract; executor PM snapshots remain 1m and
-    Binance OI rotation remains separate. See
-    `specs/no-1m-engine-and-strategy-rewrite-v1.md`.
+The account-symbol policy remains a downstream admission gate. The strategy engine
+uses a 5m-only market-data contract; executor PM snapshots remain 1m and
+Binance OI rotation remains separate. See
+`specs/no-1m-engine-and-strategy-rewrite-v1.md`.
 
 Canonical asset names are preserved throughout the pipeline. For example,
 `ANKRUSDT` maps to `ANKR` and `MARSCOINUSDT` maps to `MARSCOIN`; bare asset
@@ -151,9 +149,8 @@ The regime worker runs once per completed `5m` cutoff for the current
 subscription feed. For each asset it loads completed `5m` observations for
 realized-volatility inputs, reads direct `1h` and `4h` history from
 `data/regime.sqlite3`, computes in-house ADX and regime inputs, then persists an
-immutable score and gate decision. The engine uses the same direct cache as
-historical seed data before handing strategy HTF frames to the canonical
-`5m`-derived tail. Strategies remain source-blind.
+immutable score and gate decision. The engine uses the direct cache for strategy
+HTF frames. Strategies remain source-blind.
 
 The default ADX length and smoothing are both 14. This implementation requires
 57 complete `1h` and `4h` bars before the score is data-ready. During warmup,
@@ -161,7 +158,7 @@ the score is `insufficient_data` and the reason is
 `regime_score_insufficient_data`. This is expected fail-closed behavior. Do not
 reduce the requirement or invent higher-timeframe bars. New or re-entering
 assets fetch enough completed direct Bybit `1h`/`4h` history for the regime
-contract and configured hybrid strategy seed depth. The default hybrid target is
+contract and configured direct strategy seed depth. The default direct target is
 240 bars per timeframe, retaining at least 14 complete `1h` days and 45
 complete `4h` days. Gaps, duplicates, malformed candles, stale data, and
 missing exact-cutoff evidence block only the affected asset.
@@ -197,7 +194,7 @@ coexistence, and candidate-admission validation are complete.
 
 ## Live Strategy Set
 
-The current production allowlist contains 11 plugins:
+The current production allowlist contains 10 plugins:
 
 | Strategy | Cadence | Family | Account |
 | --- | --- | --- | --- |
@@ -205,8 +202,7 @@ The current production allowlist contains 11 plugins:
 | `bb-rsi-meanrev-v1` | 5m | mean_reversion | Hyro |
 | `williams-fractal-scalp-v1` | 5m | trend | Hyro |
 | `ema9-adx-stochrsi-state-v1` | 5m | trend | Hyro |
-| `dual-zone-follower-v2` | 5m | trend | Fundamo |
-| `dual-zone-short-follower-v2` | 5m | trend | Fundamo |
+| `ema99-retest-adx-v1` | 5m | trend | downstream router |
 | `ema20-pullback-h4-trend-v1` | 5m | trend | Fundamo |
 | `gold-trend-ema-bb-stoch-v1` | 5m | trend | Fundamo |
 | `mtf-exhaustion-reversal-v1` | 5m | reversal | Fundamo |
@@ -214,8 +210,8 @@ The current production allowlist contains 11 plugins:
 | `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Fundamo |
 
 Compact Hyro strategies are limited to `BTC`, `ETH`, `PAXG`, and `QQQ`.
-Fundamo Bybit deliveries route to `bybit/fundamo`. Propr fan-out is an
-independent shared-bus target.
+The downstream router currently maps the EMA99 delivery to `bybit/fundamo`.
+Propr fan-out is an independent shared-bus target.
 
 Production indicators use the tested in-house EMA, RSI, ATR, ADX, StochRSI, and
 Bollinger implementations. Replacing one with a TA library requires numerical
@@ -305,7 +301,6 @@ requires an explicit absolute `INTENT_BUS_DB`:
 
 - `INTENT_BUS_BYBIT_ENABLED=true` enables Bybit delivery.
 - `INTENT_BUS_PROPR_ENABLED=true` enables independent Propr fan-out.
-- `INTENT_BUS_LEGACY_INBOX_ENABLED=false` keeps the compatibility JSON inbox off.
 
 The analyst sends thesis and trade-plan fields only. The executor owns
 credentials, sizing, leverage, precision, orders, fills, protective stops,

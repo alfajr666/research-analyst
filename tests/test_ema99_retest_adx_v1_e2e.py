@@ -8,7 +8,7 @@ import config
 from intent_outbox import build_executor_intent, validate_geometry
 from strategy_plugins import _REGISTRY
 from trade_admission import admit
-from strategies.v2.ema99_retest_adx_fundamo_v1 import STRATEGY_ID, evaluate_symbol
+from strategies.v2.ema99_retest_adx_v1 import STRATEGY_ID, evaluate_symbol
 
 
 def _bars(count, minutes, close=100.0, end=None):
@@ -22,8 +22,17 @@ def _bars(count, minutes, close=100.0, end=None):
     ])
 
 
-class Ema99RetestFundamoE2ETests(unittest.TestCase):
-    def test_candidate_admits_and_derives_executor_target_for_fundamo(self):
+def _features(bars, fast, slow, *, rsi=50.0, atr=1.5):
+    return bars.with_columns(
+        pl.Series(f"ema_{config.EMA99_RETEST_FAST_EMA_LENGTH}", fast),
+        pl.Series(f"ema_{config.EMA99_RETEST_SLOW_EMA_LENGTH}", slow),
+        pl.Series(f"rsi_{config.EMA99_RETEST_RSI_LENGTH}", [rsi] * bars.height),
+        pl.Series(f"atr_{config.EMA99_RETEST_ATR_LENGTH}", [atr] * bars.height),
+    )
+
+
+class Ema99RetestE2ETests(unittest.TestCase):
+    def test_candidate_admits_and_derives_executor_target_for_downstream_route(self):
         cutoff = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
         bars5m = _bars(6, 5, close=100.2, end=cutoff).with_columns(
             pl.when(pl.arange(0, 6) == 5).then(pl.lit(100.05)).otherwise(pl.col("close")).alias("close"),
@@ -31,19 +40,15 @@ class Ema99RetestFundamoE2ETests(unittest.TestCase):
         )
         fast = [90.0, 95.0, 101.0, 102.0, 103.0, 104.0]
         slow = [100.0] * 6
+        features = _features(bars5m, fast, slow)
         with patch(
-            "strategies.v2.ema99_retest_adx_fundamo_v1.ema_series",
-            side_effect=[fast, slow],
-        ), patch(
-            "strategies.v2.ema99_retest_adx_fundamo_v1._expand_adx_to_5m",
+            "strategies.v2.ema99_retest_adx_v1._expand_adx_to_5m",
             return_value=[30.0] * 6,
-        ), patch(
-            "strategies.v2.ema99_retest_adx_fundamo_v1.wilder_atr",
-            return_value=1.5,
         ):
             event = evaluate_symbol(
                 bars5m, _bars(40, 60, end=cutoff), asset="BTC",
                 symbol="BTCUSDT", cutoff=cutoff,
+                features5m=features,
             )
         event["candidate_id"] = "ema99-retest-candidate"
         event["atr14_4h"] = 10.0
@@ -64,15 +69,16 @@ class Ema99RetestFundamoE2ETests(unittest.TestCase):
         }
         admission = admit(event, now=cutoff + timedelta(minutes=1))
         self.assertEqual(admission["hard_gate"], "pass", admission)
-        intent = build_executor_intent(event, account_id="hyro")
+        self.assertNotIn("account_id", event)
+        intent = build_executor_intent(event)
         self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "fundamo"))
         self.assertEqual(intent["metadata"]["target_source"], "producer_derived_2r")
         self.assertTrue(validate_geometry(intent)[0])
 
-    def test_one_registry_entry_is_not_enabled_or_active_by_default(self):
+    def test_one_registry_entry_is_enabled_and_active(self):
         self.assertIn(STRATEGY_ID, _REGISTRY)
-        self.assertNotIn(STRATEGY_ID, config.STRATEGY_ENABLED_IDS)
-        self.assertNotIn(STRATEGY_ID, config.STRATEGY_ACTIVE_IDS)
+        self.assertIn(STRATEGY_ID, config.STRATEGY_ENABLED_IDS)
+        self.assertIn(STRATEGY_ID, config.STRATEGY_ACTIVE_IDS)
 
 
 if __name__ == "__main__":

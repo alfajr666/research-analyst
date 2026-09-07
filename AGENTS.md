@@ -158,7 +158,7 @@ bar IDs/versions, availability, source mode, and readiness.
 
 ## Live Strategy Set
 
-The production allowlist currently contains 11 plugins:
+The production allowlist currently contains 10 plugins:
 
 | Strategy | Cadence | Family | Route |
 | --- | --- | --- | --- |
@@ -166,8 +166,7 @@ The production allowlist currently contains 11 plugins:
 | `bb-rsi-meanrev-v1` | 5m | mean_reversion | Bybit Hyro |
 | `williams-fractal-scalp-v1` | 5m | trend | Bybit Hyro |
 | `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit Hyro |
-| `dual-zone-follower-v2` | 5m | trend | Bybit Fundamo |
-| `dual-zone-short-follower-v2` | 5m | trend | Bybit Fundamo |
+| `ema99-retest-adx-v1` | 5m | trend | downstream router |
 | `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit Fundamo |
 | `gold-trend-ema-bb-stoch-v1` | 5m | trend | Bybit Fundamo |
 | `mtf-exhaustion-reversal-v1` | 5m | reversal | Bybit Fundamo |
@@ -175,8 +174,8 @@ The production allowlist currently contains 11 plugins:
 | `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Bybit Fundamo |
 
 Compact Hyro strategies are policy-limited to `BTC`, `ETH`, `PAXG`, and `QQQ`.
-The seven Fundamo strategies route to `bybit/fundamo`. Propr fan-out is
-independent and enabled only by its shared-bus switch.
+The downstream router currently maps the EMA99 delivery to `bybit/fundamo`.
+Propr fan-out is independent and enabled only by its shared-bus switch.
 
 Production strategies use the repository's tested in-house EMA, RSI, ATR, ADX,
 StochRSI, and Bollinger implementations. A TA library cannot replace them
@@ -217,11 +216,10 @@ requires an explicit absolute `INTENT_BUS_DB` and target switches:
 
 - `INTENT_BUS_BYBIT_ENABLED=true` enables Bybit delivery.
 - `INTENT_BUS_PROPR_ENABLED=true` additionally enables Propr fan-out.
-- `INTENT_BUS_LEGACY_INBOX_ENABLED=false` keeps legacy JSON inbox writing off.
 
 The executor owns credentials, sizing, leverage, venue precision, orders,
 fills, protective stops, take-profit execution, and receipts. Analyst logs must
-not claim execution state. The legacy filesystem inbox is compatibility-only.
+not claim execution state. The shared SQLite bus is the sole intent handoff.
 
 Alpha outbox events persist the admitted target in the top-level `targets`
 field. The publisher can recover that field for legacy events when

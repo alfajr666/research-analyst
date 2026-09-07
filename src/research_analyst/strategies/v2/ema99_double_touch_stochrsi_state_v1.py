@@ -20,7 +20,7 @@ from strategy_v2_context import (
     wilder_atr,
     wilder_rsi,
 )
-from strategies.v2.dual_zone_follower_v2 import _dmi_adx
+from strategies.v2.adx import dmi_adx_last
 
 
 STRATEGY_ID = config.EMA99_DOUBLE_TOUCH_STRATEGY_ID
@@ -170,7 +170,7 @@ def evaluate_symbol(bars5m, bars1h, *, asset: str, symbol: str,
         adx_values, plus_di, minus_di = adx_values
         dmi = (adx_values[-1], plus_di, minus_di) if adx_values and plus_di is not None and minus_di is not None else None
     else:
-        dmi = _dmi_adx(
+        dmi = dmi_adx_last(
             bars1h, config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
             config.EMA99_DOUBLE_TOUCH_ADX_LENGTH,
             symbol=symbol,

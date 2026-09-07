@@ -46,7 +46,7 @@ class Ema9AdxStochRsiStateE2ETests(unittest.TestCase):
             "strategies.v2.ema9_adx_stochrsi_state_v1._stoch_values",
             return_value=([50.0] * 80, k, d),
         ), patch(
-            "strategies.v2.ema9_adx_stochrsi_state_v1._dmi_adx",
+            "strategies.v2.ema9_adx_stochrsi_state_v1.dmi_adx_last",
             return_value=(21.0, 30.0, 10.0),
         ):
             event = evaluate_symbol(

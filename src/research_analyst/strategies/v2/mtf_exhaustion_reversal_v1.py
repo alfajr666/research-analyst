@@ -10,7 +10,7 @@ from strategy_v2_context import (
     cutoff_from_id, evaluation_symbols, has_active_event, last_completed_bar_fresh,
     get_shared_computation_context, load_bars_for_interval, strategy_market_connection,
 )
-from strategies.v2.dual_zone_follower_v2 import _dmi_adx
+from strategies.v2.adx import dmi_adx_last
 
 STRATEGY_ID = "mtf-exhaustion-reversal-v1"
 PLUGIN_VERSION = "v1"
@@ -57,7 +57,7 @@ def evaluate_symbol(bars5, bars1h, bars4h, bars15m, *, asset: str, symbol: str, 
         bars15m, vwma={"vwma": 96},
     )
     rsi4 = features4["rsi4"].to_list()
-    dmi = _dmi_adx(bars1h, 14, 14, symbol=symbol, interval="1h")
+    dmi = dmi_adx_last(bars1h, 14, 14, symbol=symbol, interval="1h")
     rsi1 = features1["rsi1"].to_list()
     raw, k, d = (features5[name].to_list() for name in ("stoch_raw", "stoch_k", "stoch_d"))
     if dmi is None or rsi1[-1] is None or any(value is None for value in (raw[-1], k[-1], k[-2], d[-1], d[-2])):

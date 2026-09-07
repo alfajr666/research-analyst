@@ -13,10 +13,9 @@ their candidate pool and route their executor intents exclusively to the
 Fundamo Bybit profile. Evaluation scope is governed by
 `specs/strategy-symbol-performance-rotation-v1.md`.
 
-The existing `dual-zone-follower-v1` and
-`dual-zone-short-follower-v1` implementations are retired. They must not remain
-enabled, registered as live plugins, or produce events after cutover. The
-enhanced dual-zone family replaces them.
+The former dual-zone strategy family is retired. Its IDs must not remain enabled,
+registered as live plugins, or produce events after cutover. The EMA99 retest
+strategy is the current replacement for that trend slot.
 
 ## Strategy IDs
 
@@ -24,7 +23,7 @@ Use these IDs unless an implementation review explicitly changes them:
 
 | Family | Long | Short |
 |---|---|---|
-| Enhanced dual-zone | `dual-zone-follower-v2` | `dual-zone-short-follower-v2` |
+| EMA99 retest ADX | `ema99-retest-adx-v1` | same bidirectional plugin |
 | EMA20 pullback H4 trend | `ema20-pullback-h4-trend-v1` | same bidirectional plugin |
 | EMA stack / ADX / StochRSI | `ema-stack-15m-adx-stochrsi-5m-v1` | same bidirectional plugin |
 
@@ -39,8 +38,7 @@ Use these IDs unless an implementation review explicitly changes them:
   and top-loser rotating slots from the listed assets every four hours, using
   the equal per-side split defined in
   `specs/strategy-symbol-performance-rotation-v1.md`.
-- Do not use discovery rotation, OI rotation, or the legacy 64-symbol
-  dual-zone reference list.
+- Do not use discovery rotation, OI rotation, or a legacy fixed symbol list.
 - Market data lookup uses the repository's canonical asset/native-symbol mapper.
 - Execution symbol expansion remains executor/outbox-owned.
 
@@ -101,7 +99,7 @@ admission later rejects.
 ## Required wiring
 
 1. Add the new IDs to the known strategy set and plugin registry.
-2. Remove both retired v1 dual-zone IDs from enabled defaults and live registry
+2. Remove all retired dual-zone IDs from enabled defaults and live registry
    wiring. Historical events remain immutable.
 3. Add all new IDs to the appropriate admission/purity classification used by
    the alpha outbox.
@@ -120,7 +118,7 @@ admission later rejects.
   rotation is disabled and the configured top-gainer/top-loser watchlist when
   rotation is enabled.
 - No new strategy intent contains `account_id=hyro`.
-- Retired dual-zone v1 IDs cannot be enabled accidentally as live plugins.
+- Retired dual-zone IDs cannot be enabled accidentally as live plugins.
 - An admission rejection is observable and does not cause the strategy to alter
   its emitted target or stop.
 - Duplicate cutoff execution produces no duplicate alpha event or intent.

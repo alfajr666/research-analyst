@@ -73,7 +73,7 @@ class Ema7CrossHammerTests(unittest.TestCase):
     def test_long_cross_uses_prior_hammer_and_current_atr_stop(self):
         cutoff = datetime(2026, 8, 1, tzinfo=timezone.utc)
         with patch(
-            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._dmi_adx",
+            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1.dmi_adx_last",
             return_value=(20.0, 30.0, 10.0),
         ), patch(
             "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._rsi_series",
@@ -96,7 +96,7 @@ class Ema7CrossHammerTests(unittest.TestCase):
     def test_short_cross_uses_prior_shooting_star_and_upper_stop(self):
         cutoff = datetime(2026, 8, 1, tzinfo=timezone.utc)
         with patch(
-            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._dmi_adx",
+            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1.dmi_adx_last",
             return_value=(20.0, 10.0, 30.0),
         ), patch(
             "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._rsi_series",
@@ -116,7 +116,7 @@ class Ema7CrossHammerTests(unittest.TestCase):
 
     def test_adx_below_threshold_rejects_before_setup_scan(self):
         with patch(
-            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._dmi_adx",
+            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1.dmi_adx_last",
             return_value=(19.99, 30.0, 10.0),
         ), patch(
             "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._find_setup",
@@ -131,7 +131,7 @@ class Ema7CrossHammerTests(unittest.TestCase):
 
     def test_nonfinite_adx_rejects_before_setup_scan(self):
         with patch(
-            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._dmi_adx",
+            "strategies.v2.ema7_26_cross_hammer_shooting_star_v1.dmi_adx_last",
             return_value=(math.nan, 30.0, 10.0),
         ), patch(
             "strategies.v2.ema7_26_cross_hammer_shooting_star_v1._find_setup",

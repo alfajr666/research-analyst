@@ -197,7 +197,7 @@ def _maybe_deliver_intent(
     if not complete_candidate:
         return "not_eligible"
     try:
-        from intent_outbox import build_executor_intent, validate_geometry, write_intent
+        from intent_outbox import build_executor_intent, validate_geometry
         if admission is None:
             from trade_admission import admit
             admission = admit(
@@ -212,14 +212,8 @@ def _maybe_deliver_intent(
         if not ok:
             print(f"intent skipped (geometry): {reason} for {payload.get('strategy_id')}/{payload.get('asset')}")
             return "rejected"
-        delivered = False
-        # Legacy filesystem inbox (kept during rollout unless disabled).
-        if getattr(config, "INTENT_BUS_LEGACY_INBOX_ENABLED", False):
-            created, _ = write_intent(intent, config.INTENT_INBOX, admission=admission)
-            delivered = delivered or created
         # Shared SQLite intent bus fan-out (spec 3.2, 7).
-        delivered = _maybe_publish_to_bus(intent) or delivered
-        return "written" if delivered else "not_delivered"
+        return "written" if _maybe_publish_to_bus(intent) else "not_delivered"
     except Exception as exc:  # never break the advisory emit path
         print(f"intent delivery error: {exc}")
         return "failed"

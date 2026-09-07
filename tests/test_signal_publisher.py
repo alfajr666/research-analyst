@@ -216,14 +216,6 @@ class SignalPublisherTests(unittest.TestCase):
             self.assertIn(value, message)
         self.assertNotIn("Confidence", message)
 
-    def test_telegram_format_labels_dual_zone_correctly(self):
-        payload = event(self.current_time, self.current_time + timedelta(hours=1))
-        payload["setup_class"] = "dual_zone_follower"
-        payload["strategy_id"] = "dual-zone-follower-v2"
-        message = format_signal(payload)
-        self.assertIn("Trend pullback", message)
-        self.assertNotIn("Impulse ignition", message)
-
     def test_delivers_telegram_and_discord_independently(self):
         payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
         self.write(payload)

@@ -42,7 +42,7 @@ class Ema99DoubleTouchE2ETests(unittest.TestCase):
             "strategies.v2.ema99_double_touch_stochrsi_state_v1._rsi5_series",
             return_value=[50.0] * 140,
         ), patch(
-            "strategies.v2.ema99_double_touch_stochrsi_state_v1._dmi_adx",
+            "strategies.v2.ema99_double_touch_stochrsi_state_v1.dmi_adx_last",
             return_value=(21.0, 30.0, 10.0),
         ), patch(
             "strategies.v2.ema99_double_touch_stochrsi_state_v1._adx_series",

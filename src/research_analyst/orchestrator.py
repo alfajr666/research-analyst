@@ -498,14 +498,6 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
         for iv, ivres in pres.items():
             print(f"Plugins [{iv}] for {cutoff_id}: { {k: v.get('emitted', v) for k,v in ivres.items() if not k.startswith('_')} }")
 
-        # Drop phase: after verification, drop legacy futures_data (opt-in via env for safety)
-        if os.getenv("DROP_LEGACY_FUTURES", "0").lower() in ("1", "true", "yes"):
-            try:
-                dropped = config.drop_legacy_futures_data(config.MARKET_DB_PATH)
-                if dropped:
-                    print("Legacy futures_data dropped as part of post-cutover.")
-            except Exception as de:
-                print(f"Drop err: {de}")
     except Exception as e:
         print(f"Cutoff/plugins error: {e}", file=sys.stderr)
         raise

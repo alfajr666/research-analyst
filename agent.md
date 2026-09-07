@@ -40,8 +40,7 @@ analyst code and never start duplicate writers.
 | `bb-rsi-meanrev-v1` | 5m | mean reversion | Bybit Hyro |
 | `williams-fractal-scalp-v1` | 5m | trend | Bybit Hyro |
 | `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit Hyro |
-| `dual-zone-follower-v2` | 5m | trend | Bybit Fundamo |
-| `dual-zone-short-follower-v2` | 5m | trend | Bybit Fundamo |
+| `ema99-retest-adx-v1` | 5m | trend | downstream router |
 | `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit Fundamo |
 | `gold-trend-ema-bb-stoch-v1` | 5m | trend | Bybit Fundamo |
 | `mtf-exhaustion-reversal-v1` | 5m | reversal | Bybit Fundamo |
@@ -217,11 +216,10 @@ The executor envelope is `schema_version: 1` JSON with `delivery_id`, `source`,
 `observed_at`, `entry_valid_until`, and non-sizing metadata. The default entry TTL
 is five minutes. Geometry requires `LONG: stop < entry < target` or
 `SHORT: target < entry < stop`, with RR at least `2.0` and stop distance `0.1%..5%`.
-Files are atomic and idempotent by `delivery_id`. PM decision files include
+Shared-bus deliveries are idempotent by `delivery_id`. PM decision files include
 `confidence` for action-bearing decisions, `reduce_fraction` for `REDUCE` and
 `NEAR_TP`, and `decision_scope=NEAR_TP` for `NEAR_TP`. The analyst never emits
 `quantity`, `risk_amount`, leverage, or `order_type`; the executor owns those.
 
-Compact strategies are forced to Bybit `hyro`; dual-zone strategies explicitly
-route to Bybit `fundamo`. Strategies without an explicit route use the global
-default account.
+Compact strategies are forced to Bybit `hyro`. Strategies without an explicit
+route use the global default account.

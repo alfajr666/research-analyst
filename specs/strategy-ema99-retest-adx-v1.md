@@ -1,9 +1,16 @@
-# Fundamo EMA99 Retest with 1H ADX v1
+# EMA99 Retest with 1H ADX v1
 
 ## Status
 
-Implementation specification. This strategy replaces the live dual-zone v2
-long and short plugins with one bidirectional Fundamo strategy.
+Revised implementation contract for the current direct-HTF, shared-computation,
+completed-5m engine. This strategy replaces the live dual-zone v2 long and
+short plugins with one bidirectional strategy after explicit rollout
+approval.
+
+This revision changes the engine integration boundary, not the EMA99 cross and
+retest thesis. It removes unsupported analyst-side position-management claims:
+Research Analyst produces candidate intents only. The executor owns venue
+protection, hard exits, fills, and position truth.
 
 The supplied Pine source is the behavioral reference. The implementation must
 use finalized bars only and must not reproduce TradingView's realtime 1H
@@ -11,20 +18,20 @@ lookahead/repainting behavior.
 
 ## Decision Summary
 
-- Canonical strategy ID: `ema99-retest-adx-fundamo-v1`.
+- Canonical strategy ID: `ema99-retest-adx-v1`.
 - One plugin evaluates both long and short directions.
 - Primary evaluation and execution reference timeframe: completed 5m bars.
-- Higher-timeframe filter: the previous completed 1h ADX/DMI observation.
+- Higher-timeframe filter: the latest eligible completed 1h ADX/DMI observation.
 - Long and short entries are stateful: qualifying EMA cross, then EMA99 retest.
-- The RSI/EMA26-spread exit is deterministic and authoritative.
-- The RSI/EMA26-spread exit is not delegated to the standalone PM.
-- ATR protection remains strategy-defined; the executor owns venue placement and
-  protection confirmation.
+- The proposed ATR invalidation remains strategy-defined; the executor owns
+  venue placement and protection confirmation.
 - The strategy does not define a take-profit target. The executor derives and
   manages its configured 2R protection policy.
 - The executor owns final order type, sizing, leverage, and venue behavior.
-- Bybit delivery is routed to the `fundamo` account. Any separately enabled
+- Downstream routing selects the executor destination. Any separately enabled
   Propr fan-out remains an independent downstream route.
+- Public alpha messages omit confidence until a separate calibration contract is
+  approved. The internal alpha schema may retain confidence for audit only.
 
 The retired IDs remain recognized only as legacy metadata during migration:
 
@@ -41,18 +48,17 @@ They must not remain active registrations after cutover.
 - Closed-bar 1h ADX filter and directional state arming.
 - Closed-bar EMA99 retest detection with wick tolerance.
 - One entry per qualifying cross and direction.
-- Closed-bar ATR stop calculation and subsequent stop revisions.
-- Closed-bar RSI/EMA26-spread mechanical exits.
-- Fundamo routing and existing admission controls.
+- Closed-bar ATR invalidation calculation.
+- Existing admission controls and downstream routing.
 - Durable state reconstruction from finalized market bars.
-- Durable mechanical exit decision delivery to the executor.
+- Replay and provenance tests for the candidate path.
 
 ### Out of scope
 
 - Strategy-owned take-profit levels.
 - Strategy-selected order type.
 - Strategy sizing, leverage, or account risk policy.
-- LLM selection of the RSI/spread exit.
+- Live strategy-specific exit or stop-revision delivery.
 - Intrabar, tick, or forming-candle decisions.
 - Sharing state between symbols.
 - Re-entry after an exit without a new qualifying EMA cross.
@@ -81,21 +87,58 @@ use the same values because they are one strategy.
 The 1h `+DI` and `-DI` values are calculated and recorded for observability,
 but they are not an entry gate. The supplied Pine strategy gates only on ADX.
 
+## Current Engine Boundary
+
+Production evaluation follows this path:
+
+```text
+regime.sqlite3 direct Bybit REST 1h history
+        |
+        +--> invocation-scoped direct HTF context --> 1h ADX/DMI
+
+market.sqlite3 committed completed 5m history
+        |
+        +--> shared computation context --> 5m EMA/RSI/ATR features
+
+5m features + direct 1h ADX/DMI
+        -> one bidirectional EMA99 plugin
+        -> raw candidate -> admission -> alpha event -> downstream router
+```
+
+The plugin is source-blind. Its pure evaluator receives cutoff-bound frames and
+materialized numerical inputs; it does not call Bybit, choose a database, write
+an event, perform admission, or open a second executor inbox. The thin runtime
+adapter may use the existing `strategy_market_connection`,
+`load_bars_for_interval`, `context.features`, and `context.dmi_adx` seams for
+direct unit-call compatibility and invocation-scoped loading. It must never
+compute 1h data from canonical 5m bars or bypass the direct HTF context.
+
+The registry declaration is authoritative for orchestration:
+
+- cadence: `5m`;
+- required intervals: `5m`, `1h`;
+- required features: 5m EMA26, EMA99, RSI14, and ATR14;
+- stateful: `true` because cross/retest state is replayed sequentially;
+- lookback: sufficient for the engine's direct seed and strategy warmup.
+
 ## Data and Point-in-Time Rules
 
 At a 5m cutoff `t`:
 
 1. The 5m input contains only candles whose source end is at or before `t`.
-2. The latest 1h input is the last completed 1h candle whose source end is at
-   or before `t`. A forming 1h candle is never used.
-3. EMA26, EMA99, RSI14, and ATR14 are calculated from completed 5m closes and
-   OHLC values.
-4. ADX, `+DI`, and `-DI` use Wilder/DMI semantics equivalent to the Pine
-   `ta.dmi(14, 14)` calculation, but with the confirmed 1h observation.
-5. Insufficient history produces no candidate or exit decision. It is an
+2. The 1h input comes only from the regime-owned direct history context. It
+   contains native bars whose source end is at or before `t`; a forming, future,
+   canonical-resampled, or mixed-source 1h bar is never used.
+3. EMA26, EMA99, RSI14, and ATR14 are materialized once by the shared 5m
+   computation context using the repository's in-house kernels.
+4. ADX, `+DI`, and `-DI` are materialized once by the shared direct-HTF context
+   using the repository's in-house Wilder/DMI contract equivalent to Pine
+   `ta.dmi(14, 14)`. The strategy gates only on ADX.
+5. Direct-history, feature, or indicator readiness failure produces no
+   candidate. It is an
    unavailable-data result, not a strategy error.
 6. Evaluation cadence is the completed 5m cutoff. No intrabar value can arm,
-   enter, stop-update, or exit a position.
+   enter, or change the candidate.
 
 ## Entry State Machine
 
@@ -199,7 +242,7 @@ itself authorize re-entry.
 
 The event remains an advisory entry thesis. It must include:
 
-- `strategy_id=ema99-retest-adx-fundamo-v1`;
+- `strategy_id=ema99-retest-adx-v1`;
 - `direction=long|short`;
 - `setup_class=ema99_retest_adx`;
 - `phase=long_retest|short_retest`;
@@ -212,10 +255,11 @@ The event remains an advisory entry thesis. It must include:
   ATR, ADX, `+DI`, `-DI`, cross type, retest distance, and trigger wick.
 
 `targets=[]` means the strategy intentionally supplies no target. It must not
-be omitted because the alpha event schema requires the field. Admission and
-intent construction may derive the executor's configured 2R target, but that
-derived value must not be written back as a strategy target or used in the
-strategy's entry/exit rules.
+be omitted because the alpha event schema requires the field. Admission may
+derive a target in its private admission proof, and the alpha outbox may persist
+that admitted target for delivery auditability. The derived value is never a
+strategy target and is never used in the strategy's entry or exit rules. The
+executor intent builder remains the owner of the final 2R delivery target.
 
 The executor continues to own:
 
@@ -234,25 +278,20 @@ long_stop  = long_trigger_low  - ATR14_5m[current_closed_bar] * 2.0
 short_stop = short_trigger_high + ATR14_5m[current_closed_bar] * 2.0
 ```
 
-At entry emission, `current_closed_bar` is the retest bar. After a position is
-open, every subsequent completed 5m bar recalculates the stop using the fixed
-trigger wick and the latest completed-bar ATR. The stop may therefore move as
-ATR changes, but the trigger wick never moves.
+At entry emission, `current_closed_bar` is the retest bar. The proposed stop is
+the candidate invalidation price and passes through normal admission. The
+executor owns final protection placement, venue precision, protection
+confirmation, hard exits, and later stop management. Research Analyst does not
+run a position loop, emit stop-revision decisions, or weaken a confirmed venue
+stop.
 
-Stop updates are mechanical protection revisions, not LLM decisions. A failed
-revision must never remove or weaken the last confirmed venue stop. The
-executor remains authoritative for applying, confirming, retrying, and
-recording each revision.
+The pure `evaluate_stop_revision` helper, if retained for offline parity
+research, is not part of the live analyst contract and must not be wired into
+the publisher or executor decision inbox.
 
-If the executor cannot yet accept an external mechanical stop revision, that
-capability is a prerequisite for Pine-faithful live activation. Freezing the
-initial ATR stop is explicitly not equivalent behavior.
+## Exit Reference
 
-## Mechanical Exit Policy
-
-The strategy exit is evaluated for open positions originating from the
-canonical strategy ID, using the same completed 5m cutoff as the strategy
-evaluation.
+The RSI/EMA26 exit formulas remain a research reference for the strategy thesis.
 
 ```text
 long_exit  = RSI14[t] > 72.0
@@ -265,22 +304,10 @@ short_exit = RSI14[t] < 28.0
 Both conditions are strict. Equality does not trigger an exit. RSI and spread
 must be true on the same completed 5m bar.
 
-When triggered:
-
-1. Persist a deterministic mechanical exit trigger before delivery.
-2. Include position ID, position revision, strategy ID, side, cutoff, RSI,
-   EMA26, close, spread, and the rule name in the trigger record.
-3. Write an executor `EXIT` decision with `controller=mechanical_strategy`.
-4. Do not call the LLM for that triggered exit.
-5. Do not allow an LLM `HOLD`, `REDUCE`, or other response to veto or replace
-   the triggered full exit.
-6. Let the executor own reduce-only close submission, reconciliation, retry,
-   and venue-confirmed closure.
-
-The standalone PM may continue its normal observation of positions,
-but it is not the authority for this strategy's RSI/spread exit. The mechanical
-decision must be idempotent by position ID, position revision, strategy policy,
-and 5m cutoff.
+No live exit decision is emitted by this repository. The standalone PM and
+executor remain governed by their own contracts; this strategy metadata cannot
+override them. Any future strategy-specific exit handoff requires a separate
+cross-repository specification and executor implementation.
 
 ## Admission and Routing
 
@@ -294,15 +321,17 @@ completed 5m cutoff
     -> hard admission and clash resolution
     -> alpha outbox
     -> executor intent construction
-    -> Fundamo delivery
+    -> shared SQLite intent bus -> downstream executor route
 ```
 
 Existing global admission remains in force, including freshness, directional
-stop geometry, stop-distance limits, and any configured ATR-based risk floor.
-Those controls are downstream policy and are not part of the Pine thesis.
+stop geometry, structural HTF zone checks, and the configured ATR-based risk
+policy. Those controls are downstream policy and are not part of the Pine
+thesis. The proposed strategy stop remains authoritative and is never mutated
+by admission.
 
 The strategy must not create a second analyst-local executor inbox. The shared
-intent bus remains the authoritative handoff, and the existing Fundamo route
+intent bus remains the authoritative handoff, and downstream routing
 must be resolved from the canonical strategy ID rather than caller overrides.
 
 ## Migration
@@ -316,19 +345,23 @@ retroactively to them.
 
 ### Cutover sequence
 
-1. Add the canonical strategy implementation and its mechanical exit policy in
-   disabled/shadow mode.
-2. Add the canonical ID to Fundamo routing and admission registries.
-3. Remove the two old IDs from active plugin registration while retaining their
-   legacy metadata and routing recognition.
+1. Keep the canonical strategy disabled while implementation and replay tests
+   run.
+2. Add the canonical ID to the registry, required-feature declaration, and
+   admission classification. Configure its destination in the downstream
+   router, not in the strategy.
+3. Verify direct 1h loading and shared 5m feature/DMI materialization at an
+   exact historical cutoff.
 4. Verify the canonical plugin evaluates both directions from one registration.
-5. Verify targetless strategy events produce executor-derived 2R intents.
-6. Verify mechanical exits and ATR revisions against mocked executor snapshots.
-7. Enable live evaluation for the canonical ID.
-8. Restart only the managed services required by the deployment through
-   `oxmgr`.
-9. Verify completed 5m cycles, zero invalid events, Fundamo routing, decision
-   delivery, and no LLM call on mechanical triggers.
+5. Verify targetless strategy events produce executor-derived 2R intents with a
+   passing admission proof.
+6. Remove the two old IDs from the active production allowlist while retaining
+   their legacy metadata and routing recognition.
+7. Enable the canonical ID only after replay, lookahead, admission, and paper
+   delivery checks pass.
+8. Restart only the managed services importing changed modules through `oxmgr`.
+9. Verify completed 5m cycles, valid events, downstream routing, independent
+   Propr fan-out behavior when enabled, and clean publisher state.
 
 No existing executor position or shared intent-bus record may be deleted as part
 of this strategy cutover.
@@ -348,25 +381,28 @@ of this strategy cutover.
 - State replay after restart matches uninterrupted replay.
 - Long and short are emitted through one plugin registration.
 
-### Protection and exits
+### Protection and exit references
 
 - Initial long/short ATR stops use the retest trigger wick.
 - Later stop revisions use the fixed trigger wick and current completed-bar ATR.
 - RSI/spread exit requires both conditions on the same closed 5m bar.
 - RSI and spread equality boundaries do not exit.
-- Mechanical exit decisions use the exact position ID and cutoff identity.
-- Mechanical exits do not call the LLM and cannot be vetoed.
-- Stop revision failure retains the last confirmed venue protection.
+- No analyst-side mechanical exit or stop-revision decision is delivered.
+- Executor and standalone-PM contracts remain unaffected by this plugin.
 
 ### Contract and operations
 
-- Candidate events contain `targets=[]`, not a strategy-generated target.
+- Strategy output events contain `targets=[]`; any admitted target persisted by
+  the outbox is delivery metadata, not strategy output.
 - Executor intent construction derives the configured 2R target downstream.
 - Entry order type is absent from the strategy event and selected by executor
   profile policy.
-- Fundamo routing cannot be overridden by stale or caller-supplied routing.
+- Strategy candidates contain no account or venue routing fields.
 - Legacy dual-zone positions remain identifiable and are not migrated silently.
 - Shared intent-bus delivery is idempotent.
+- No direct database or network access occurs inside pure strategy evaluation.
+- Direct HTF provenance is attached by the engine and matches the evaluation
+  cutoff.
 - Full repository tests, focused strategy tests, and `git diff --check` pass.
 
 ## Acceptance Criteria
@@ -374,17 +410,18 @@ of this strategy cutover.
 The replacement is ready for live activation only when all of the following
 hold:
 
-- Every evaluation uses only completed 5m and confirmed 1h data.
-- The implementation matches the defined cross, retest, ATR, and RSI/spread
+- Every evaluation uses committed completed 5m data and regime-owned direct 1h
+  data at the exact evaluation cutoff.
+- The implementation matches the defined cross, retest, and ATR invalidation
   rules on deterministic fixtures.
+- The plugin uses the shared computation/direct HTF contexts and declares its
+  required intervals, features, and stateful replay behavior.
 - Long and short behavior is exposed by one active strategy plugin.
 - No strategy-owned target or order-type behavior is present.
 - Executor-derived 2R intent delivery is verified without changing the alpha
   thesis.
-- Mechanical exits are durably delivered and cannot be delegated to or vetoed
-by the standalone PM.
-- Dynamic ATR stop revisions are supported and venue-confirmed, or live
-  activation is blocked.
+- No analyst-side PM loop, exit decision delivery, or stop-revision delivery is
+  introduced.
 - Existing legacy positions and records remain recoverable.
 - Production logs show successful 5m evaluations, valid event counts, clean
-  mechanical decision delivery, and healthy managed services.
+  candidate/intent delivery, and healthy managed services.

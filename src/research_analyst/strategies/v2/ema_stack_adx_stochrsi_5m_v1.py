@@ -3,7 +3,7 @@ from datetime import timedelta, timezone
 import config
 from strategy_features import build_feature_frame
 from strategy_v2_context import cutoff_from_id, evaluation_symbols, has_active_event, load_bars_for_interval
-from strategies.v2.dual_zone_follower_v2 import _dmi_adx
+from strategies.v2.adx import dmi_adx_last
 
 def evaluate_symbol(bars, trend, strength, *, asset, symbol, cutoff, direction,
                     features=None, trend_features=None):
@@ -20,7 +20,7 @@ def evaluate_symbol(bars, trend, strength, *, asset, symbol, cutoff, direction,
     c = bars["close"].to_list()
     e = [trend_row.get(f"ema{length}") for length in (20, 50, 100, 200)]
     atr, e200 = row.get("atr14"), row.get("ema200")
-    dmi = _dmi_adx(strength, 14, 14)
+    dmi = dmi_adx_last(strength, 14, 14)
     if not all(x and x>0 for x in e) or not atr or not e200 or (getattr(config, "EMA_STACK_USE_ADX", True) and (dmi is None or dmi[0] < getattr(config, "EMA_STACK_MIN_ADX", 20.0))): return None
     long=direction=="long"; stack=e[0]>e[1]>e[2]>e[3] if long else e[0]<e[1]<e[2]<e[3]
     if not stack or abs(e[0]-e[3])/e[3]>=.01: return None
@@ -41,7 +41,7 @@ def run_plugin(cutoff_id,snapshot):
         out=[]
         for symbol, a in evaluation_symbols(conn, cutoff, snapshot):
             b=load_bars_for_interval(conn,symbol,"5m",cutoff); t=load_bars_for_interval(conn,symbol,"15m",cutoff); h=load_bars_for_interval(conn,symbol,"1h",cutoff)
-            dmi=_dmi_adx(h,14,14)
+            dmi=dmi_adx_last(h,14,14)
             b_features = build_feature_frame(b, ema={"ema200": 200}, rsi={"rsi14": 14}, stoch={"stoch": (14, 14, 3, 3)}, atr={"atr14": 14})
             t_features = build_feature_frame(t, ema={f"ema{length}": length for length in (20, 50, 100, 200)})
             e=(evaluate_symbol(b,t,h,asset=a,symbol=symbol,cutoff=cutoff,direction="long",features=b_features,trend_features=t_features) or evaluate_symbol(b,t,h,asset=a,symbol=symbol,cutoff=cutoff,direction="short",features=b_features,trend_features=t_features)) if dmi and dmi[0] >= 20 else None

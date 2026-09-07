@@ -2,9 +2,9 @@
 
 The internal alpha event (alpha_outbox) is the advisory record consumed by
 Discord/signal_publisher. This module converts that event into the envelope the
-bybit-executor "Trade Intent Contract" (see bybit-executor/AGENTS.md) expects,
-and writes it to INTENT_INBOX. The executor polls that directory, rejects
-duplicate `delivery_id`s, and never trusts intent leverage.
+bybit-executor "Trade Intent Contract" (see bybit-executor/AGENTS.md) expects.
+The shared SQLite intent bus owns delivery and deduplication; the executor never
+trusts intent leverage.
 
 Geometry rules mirrored from the contract:
   LONG  -> stop_loss < entry_price < take_profit
@@ -18,19 +18,13 @@ from __future__ import annotations
 
 import json
 import math
-import os
-import tempfile
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import config
 from structural_stop import _normalise_closed_bar_timestamp
 
 FUNDAMO_STRATEGY_IDS = frozenset((
-    "ema99-retest-adx-fundamo-v1",
-    "dual-zone-follower-v2",
-    "dual-zone-short-follower-v2",
     "ema20-pullback-h4-trend-v1",
     "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1",
@@ -382,33 +376,3 @@ def validate_geometry(intent: dict) -> tuple[bool, str]:
     if stop_pct < min_stop:
         return False, f"stop distance {stop_pct:.4%} below minimum {min_stop:.4%}"
     return True, ""
-
-
-def write_intent(intent: dict, inbox_dir: Path | None = None, *, admission=None) -> tuple[bool, Path]:
-    """Atomically write an intent envelope to the inbox; returns (created, path).
-
-    `delivery_id` is the filename, so re-writing the same intent is idempotent at
-    the file level (the executor also dedupes by delivery_id in its journal).
-    """
-    inbox_dir = Path(inbox_dir if inbox_dir is not None else getattr(config, "INTENT_INBOX", None))
-    ok, reason = validate_intent_handoff(intent, admission, now=datetime.now(timezone.utc))
-    if not ok:
-        return False, inbox_dir / "blocked.json"
-    inbox_dir.mkdir(parents=True, exist_ok=True)
-    destination = inbox_dir / f"{intent['delivery_id']}.json"
-    if destination.exists():
-        return False, destination
-    serialized = json.dumps(intent, sort_keys=True, separators=(",", ":"), default=str) + "\n"
-    fd, temporary = tempfile.mkstemp(prefix=".intent-", suffix=".tmp", dir=inbox_dir)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(serialized)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.link(temporary, destination)
-        return True, destination
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass

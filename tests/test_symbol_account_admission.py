@@ -40,7 +40,7 @@ def test_candidate_account_cannot_override_compact_route():
 def test_compact_btc_and_fundamo_approved_symbol_pass():
     assert admit_symbol_account(_candidate("failed-break-v3", "BTC"))["symbol_account_gate"] == "pass"
     with patch("config.load_static_symbols", return_value=["SOL"]):
-        result = admit_symbol_account(_candidate("dual-zone-follower-v2", "SOL", "hyro"))
+        result = admit_symbol_account(_candidate("ema20-pullback-h4-trend-v1", "SOL", "hyro"))
     assert result["symbol_account_gate"] == "pass"
     assert result["resolved_account"] == "fundamo"
 
