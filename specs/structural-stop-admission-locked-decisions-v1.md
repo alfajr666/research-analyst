@@ -4,6 +4,10 @@
 
 Locked design register, agreed during the operator discussion on 2026-09-01.
 
+Superseded by the admission-owned contracts in
+`structural-sl-admission-v2.md` and `structural-sl-admission-v3.md`. This file
+remains as the earlier decision record for audit history.
+
 This document records the decisions that must not be changed implicitly during
 implementation. It is compatible with the existing runtime ownership contract
 and adds one explicit structural-stop policy exception to the generic advisory

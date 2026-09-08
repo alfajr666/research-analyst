@@ -13,7 +13,7 @@ This specification composes and makes normative the existing contracts in:
 - `specs/hybrid-htf-engine-v1.md`
 - `specs/polars-computation-migration-v1.md`
 - `specs/regime-history-bootstrap-v2.md`
-- `specs/structural-sl-admission-v2.md`
+- `specs/structural-sl-admission-v3.md`
 - `specs/reversal-regime-gate-v1.md`
 - `SPEC_DATABASE_RETENTION.md`
 

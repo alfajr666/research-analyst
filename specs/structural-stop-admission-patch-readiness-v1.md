@@ -8,6 +8,11 @@ This document is a pre-implementation audit and patch plan. It does not assert
 that the current runtime satisfies the target contract. No application code is
 changed by this document.
 
+The target contract described here was superseded by
+`specs/structural-sl-admission-v2.md` and its containment revision in
+`specs/structural-sl-admission-v3.md`. This document remains as historical
+readiness evidence.
+
 The target change adds an independent structural-stop admission gate while
 preserving the existing execution admission policy. The gate is not ready for
 live rejection until the data, provenance, warmup, and structural-reference

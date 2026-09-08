@@ -206,9 +206,9 @@ to risk, ATR-bounded stop distance, required data, symbol-account policy, and
 structural-stop rules. Before scoring, admission reads completed direct 1h/4h
 bars from regime-owned history only for assets that emitted candidates, builds
 one reusable context per asset/cutoff/timeframe, and selects the newest eligible
-4h zone before falling back to 1h. The selected zone's timeframe ATR14 is used
-for both proximity hard gates: long entry must be 0.5-3.0 ATR above zone high
-and its SL must be 0.5-3.0 ATR below zone low; shorts mirror those distances.
+4h zone before falling back to 1h. A long entry may be inside a bullish support
+zone or above its high; an outside entry must be 0.5-3.0 ATR above zone high,
+and its SL must be 0.5-3.0 ATR below zone low. Shorts mirror those rules.
 Missing, stale, invalid, opposing, cross-asset, incomplete, or out-of-band
 structure fails closed. Structural failure occurs before scoring and cannot be
 rescued by a soft context score. Clash resolution is deterministic and
@@ -226,7 +226,7 @@ used as a strategy score. Alpha, compatibility, and shared-bus handoffs must
 carry and verify a passing admission proof; direct intent writes without one
 are rejected.
 
-The normative contract is `specs/structural-sl-admission-v2.md`.
+The normative contract is `specs/structural-sl-admission-v3.md`.
 
 The analyst publishes only after admission and routing. The shared SQLite bus
 requires an explicit absolute `INTENT_BUS_DB` and target switches:

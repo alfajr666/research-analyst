@@ -31,6 +31,7 @@ def _finite_positive(value: Any) -> bool:
 STRUCTURAL_ATR_PERIOD = 14
 STRUCTURAL_MIN_ATR_MULTIPLE = 0.5
 STRUCTURAL_MAX_ATR_MULTIPLE = 3.0
+STRUCTURAL_ADMISSION_CONTRACT_VERSION = "structural-sl-admission-v3"
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -267,6 +268,7 @@ def admit_selected_structural_stop(
     result: dict[str, Any] = {
         "structural_stop_gate": "fail",
         "structural_stop_reasons": [],
+        "structural_admission_contract_version": STRUCTURAL_ADMISSION_CONTRACT_VERSION,
         "selected_zone_id": None,
         "selected_zone_kind": None,
         "selected_zone_asset": None,
@@ -279,6 +281,7 @@ def admit_selected_structural_stop(
         "selected_zone_low": None,
         "selected_zone_high": None,
         "selected_zone_boundary": None,
+        "entry_zone_location": None,
         "entry_zone_buffer": None,
         "entry_zone_buffer_atr": None,
         "structural_stop_buffer": None,
@@ -345,7 +348,12 @@ def admit_selected_structural_stop(
         result["structural_stop_reasons"].append(f"{timeframe} structural ATR source bar IDs are unavailable")
         return result
     boundary = zone["low"] if direction == "long" else zone["high"]
-    entry_buffer = float(entry) - zone["high"] if direction == "long" else zone["low"] - float(entry)
+    if direction == "long":
+        entry_location = "inside" if float(entry) <= zone["high"] else "above"
+        entry_buffer = 0.0 if entry_location == "inside" else float(entry) - zone["high"]
+    else:
+        entry_location = "inside" if float(entry) >= zone["low"] else "below"
+        entry_buffer = 0.0 if entry_location == "inside" else zone["low"] - float(entry)
     buffer = boundary - float(stop) if direction == "long" else float(stop) - boundary
     entry_buffer_atr = entry_buffer / float(atr)
     buffer_atr = buffer / float(atr)
@@ -362,6 +370,7 @@ def admit_selected_structural_stop(
         "selected_zone_low": zone["low"],
         "selected_zone_high": zone["high"],
         "selected_zone_boundary": boundary,
+        "entry_zone_location": entry_location,
         "entry_zone_buffer": entry_buffer,
         "entry_zone_buffer_atr": entry_buffer_atr,
         "structural_stop_buffer": buffer,
@@ -371,10 +380,11 @@ def admit_selected_structural_stop(
     })
     min_multiple = float(getattr(config, "STRUCTURAL_STOP_MIN_ATR_MULTIPLE", STRUCTURAL_MIN_ATR_MULTIPLE))
     max_multiple = float(getattr(config, "STRUCTURAL_STOP_MAX_ATR_MULTIPLE", STRUCTURAL_MAX_ATR_MULTIPLE))
-    if entry_buffer_atr < min_multiple:
-        result["structural_stop_reasons"].append("entry is too close to HTF zone")
-    if entry_buffer_atr > max_multiple:
-        result["structural_stop_reasons"].append("entry is too far from HTF zone")
+    if entry_location != "inside":
+        if entry_buffer_atr < min_multiple:
+            result["structural_stop_reasons"].append("entry is too close to HTF zone")
+        if entry_buffer_atr > max_multiple:
+            result["structural_stop_reasons"].append("entry is too far from HTF zone")
     if buffer_atr < min_multiple:
         result["structural_stop_reasons"].append("structural stop buffer is below minimum ATR multiple")
     if buffer_atr > max_multiple:

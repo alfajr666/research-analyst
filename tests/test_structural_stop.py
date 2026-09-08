@@ -6,11 +6,11 @@ from structural_stop import admit_selected_structural_stop, select_structural_zo
 NOW = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
 
 
-def _candidate(direction, stop):
+def _candidate(direction, stop, entry=100.0):
     return {
         "asset": "BTC",
         "direction": direction,
-        "entry_price": 100.0,
+        "entry_price": entry,
         "invalidation_price": stop,
         "observed_at": NOW.isoformat(),
     }
@@ -54,6 +54,97 @@ def test_short_stop_uses_upper_reference_and_atr_buffer():
 
     assert result["structural_stop_gate"] == "pass"
     assert result["structural_stop_buffer"] == 1.0
+
+
+def test_long_entry_inside_bullish_support_zone_is_allowed():
+    result = admit_selected_structural_stop(
+        _candidate("long", 93.5, entry=95.5), _context(),
+    )
+
+    assert result["structural_stop_gate"] == "pass"
+    assert result["entry_zone_location"] == "inside"
+    assert result["entry_zone_buffer"] == 0.0
+    assert result["entry_zone_buffer_atr"] == 0.0
+
+
+def test_short_entry_inside_bearish_resistance_zone_is_allowed():
+    result = admit_selected_structural_stop(
+        _candidate("short", 106.5, entry=104.5),
+        _context("bearish", low=104.0, high=105.0),
+    )
+
+    assert result["structural_stop_gate"] == "pass"
+    assert result["entry_zone_location"] == "inside"
+    assert result["entry_zone_buffer"] == 0.0
+    assert result["entry_zone_buffer_atr"] == 0.0
+
+
+def test_zone_boundary_entry_is_inside_for_both_directions():
+    long_result = admit_selected_structural_stop(
+        _candidate("long", 93.5, entry=96.0), _context(),
+    )
+    short_result = admit_selected_structural_stop(
+        _candidate("short", 106.5, entry=104.0),
+        _context("bearish", low=104.0, high=105.0),
+    )
+
+    assert long_result["entry_zone_location"] == "inside"
+    assert short_result["entry_zone_location"] == "inside"
+
+
+def test_outside_entry_proximity_bounds_remain_inclusive():
+    long_min = admit_selected_structural_stop(
+        _candidate("long", 93.5, entry=97.0), _context(),
+    )
+    long_below = admit_selected_structural_stop(
+        _candidate("long", 93.5, entry=96.99), _context(),
+    )
+    long_max = admit_selected_structural_stop(
+        _candidate("long", 93.5, entry=102.0), _context(),
+    )
+    long_above = admit_selected_structural_stop(
+        _candidate("long", 93.5, entry=102.01), _context(),
+    )
+    short_min = admit_selected_structural_stop(
+        _candidate("short", 106.5, entry=103.0),
+        _context("bearish", low=104.0, high=105.0),
+    )
+    short_below = admit_selected_structural_stop(
+        _candidate("short", 106.5, entry=103.01),
+        _context("bearish", low=104.0, high=105.0),
+    )
+    short_max = admit_selected_structural_stop(
+        _candidate("short", 106.5, entry=98.0),
+        _context("bearish", low=104.0, high=105.0),
+    )
+    short_above = admit_selected_structural_stop(
+        _candidate("short", 106.5, entry=97.99),
+        _context("bearish", low=104.0, high=105.0),
+    )
+
+    assert long_min["structural_stop_gate"] == "pass"
+    assert long_min["entry_zone_location"] == "above"
+    assert long_below["structural_stop_gate"] == "fail"
+    assert long_max["structural_stop_gate"] == "pass"
+    assert long_above["structural_stop_gate"] == "fail"
+    assert short_min["structural_stop_gate"] == "pass"
+    assert short_min["entry_zone_location"] == "below"
+    assert short_below["structural_stop_gate"] == "fail"
+    assert short_max["structural_stop_gate"] == "pass"
+    assert short_above["structural_stop_gate"] == "fail"
+
+
+def test_entry_on_wrong_side_of_directional_zone_is_rejected():
+    long_result = admit_selected_structural_stop(
+        _candidate("long", 93.5, entry=94.0), _context(),
+    )
+    short_result = admit_selected_structural_stop(
+        _candidate("short", 106.5, entry=106.0),
+        _context("bearish", low=104.0, high=105.0),
+    )
+
+    assert long_result["structural_stop_reasons"] == ["no eligible HTF structural zone"]
+    assert short_result["structural_stop_reasons"] == ["no eligible HTF structural zone"]
 
 
 def test_small_structural_buffer_fails_closed():

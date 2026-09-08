@@ -37,7 +37,7 @@ def _schema_v1_envelope():
         "asset": "ETH",
         "symbol": "ETH/USDT:USDT",
         "direction": "SHORT",
-        "entry_price": 3000.0,
+        "entry_price": 3150.0,
         "stop_loss": 3300.0,
         "take_profit": 2400.0,
         "take_profit_mode": "fixed_full_close",
@@ -63,18 +63,19 @@ def _schema_v1_envelope():
                 "structural_atr_period": 14, "structural_atr_source_bar_ids": ["bar-1"],
                 "structural_atr": 100.0, "selected_zone_low": 3100.0, "selected_zone_high": 3200.0,
                 "selected_zone_boundary": 3200.0,
-                "entry_zone_buffer": 100.0, "entry_zone_buffer_atr": 1.0,
+                "entry_zone_location": "inside", "entry_zone_buffer": 0.0, "entry_zone_buffer_atr": 0.0,
                 "structural_stop_buffer": 100.0, "structural_stop_buffer_atr": 1.0,
                 "atr14_4h": 100.0,
                 "data_freshness_seconds": 1.0,
                 "structural_context_cutoff": "2099-01-01T00:00:00Z",
+                "structural_admission_contract_version": "structural-sl-admission-v3",
                 "candidate_id": "ra-candidate-1",
             },
         },
     }
     envelope["metadata"]["admission_result"]["candidate_fingerprint"] = candidate_admission_fingerprint({
         "candidate_id": "ra-candidate-1", "strategy_id": "impulse-ignition-v1", "asset": "ETH",
-        "direction": "SHORT", "entry_price": 3000.0, "invalidation_price": 3300.0,
+        "direction": "SHORT", "entry_price": 3150.0, "invalidation_price": 3300.0,
         "take_profit": 2400.0, "observed_at": envelope["observed_at"],
         "valid_until": envelope["entry_valid_until"],
     })
@@ -131,6 +132,32 @@ def test_publish_rejects_intent_without_admission_proof(temp_bus_db):
     assert "admission proof is missing" in str(err)
 
 
+def test_publish_rejects_contained_entry_with_inconsistent_location_proof(temp_bus_db):
+    from intent_bus_publisher import publish_research_intent
+
+    envelope = _schema_v1_envelope()
+    envelope["metadata"]["admission_result"].pop("entry_zone_location")
+
+    ok, delivery_id, err = publish_research_intent(envelope, target="bybit")
+
+    assert ok is False
+    assert delivery_id is None
+    assert "entry_zone_location is inconsistent" in str(err)
+
+
+def test_publish_rejects_non_v3_admission_proof(temp_bus_db):
+    from intent_bus_publisher import publish_research_intent
+
+    envelope = _schema_v1_envelope()
+    envelope["metadata"]["admission_result"]["structural_admission_contract_version"] = "structural-sl-admission-v2"
+
+    ok, delivery_id, err = publish_research_intent(envelope, target="bybit")
+
+    assert ok is False
+    assert delivery_id is None
+    assert "structural_admission_contract_version is inconsistent" in str(err)
+
+
 def test_publish_propr_adapts_schema_v2_without_sizing(temp_bus_db):
     from intent_bus_publisher import publish_research_intent
     from intent_bus import IntentBus
@@ -146,7 +173,7 @@ def test_publish_propr_adapts_schema_v2_without_sizing(temp_bus_db):
         assert delivery.payload["strategy_id"] == "impulse-ignition-v1"
         assert delivery.payload["thesis_id"] == "ra-env-1"
         assert delivery.payload["symbol"] == "ETH"
-        assert delivery.payload["hints"]["entry"] == 3000.0
+        assert delivery.payload["hints"]["entry"] == 3150.0
         assert delivery.payload["hints"]["sl"] == 3300.0
         assert delivery.payload["hints"]["primary_tp"] == 2400.0
         assert not any(k in delivery.payload for k in ("quantity", "risk_amount", "leverage"))

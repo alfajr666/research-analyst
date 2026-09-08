@@ -4,6 +4,9 @@
 
 Locked design, agreed during the operator discussion on 2026-09-04.
 
+Superseded by `structural-sl-admission-v3.md`. This file remains as the prior
+contract record for audit history.
+
 This specification supersedes the producer-declared structural-reference rule
 in `structural-stop-admission-locked-decisions-v1.md`. Strategies remain blind
 to HTF zones. Admission discovers and validates the structural context after

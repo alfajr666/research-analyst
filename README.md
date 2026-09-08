@@ -258,8 +258,10 @@ assets that emitted candidates. It calculates one reusable Wilder ATR14 context
 per asset, cutoff, and timeframe, selects the newest eligible `4h` zone before
 falling back to `1h`, and evaluates both sides of the trade against that zone:
 
-- Long entry: `0.5-3.0 ATR` above the zone high; SL: `0.5-3.0 ATR` below the zone low.
-- Short entry: `0.5-3.0 ATR` below the zone low; SL: `0.5-3.0 ATR` above the zone high.
+- Long entry: inside a bullish support zone, or `0.5-3.0 ATR` above its high;
+  SL: `0.5-3.0 ATR` below the zone low.
+- Short entry: inside a bearish resistance zone, or `0.5-3.0 ATR` below its
+  low; SL: `0.5-3.0 ATR` above the zone high.
 
 Missing, stale, invalid, opposing, cross-asset, incomplete, or out-of-band
 structure fails closed before scoring. The strategy's proposed stop remains
@@ -278,7 +280,7 @@ Opposing candidates are resolved deterministically; an unresolved clash emits
 no intent. Missing or stale data is rejected by admission, not disguised as a
 score.
 
-See `specs/structural-sl-admission-v2.md` for the normative contract.
+See `specs/structural-sl-admission-v3.md` for the normative contract.
 
 ### Raw Discord Batch Status
 

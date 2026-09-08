@@ -22,7 +22,10 @@ from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, uuid5
 
 import config
-from structural_stop import _normalise_closed_bar_timestamp
+from structural_stop import (
+    STRUCTURAL_ADMISSION_CONTRACT_VERSION,
+    _normalise_closed_bar_timestamp,
+)
 
 FUNDAMO_STRATEGY_IDS = frozenset((
     "dual-zone-follower-v3",
@@ -212,6 +215,7 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         return False, "admission structural context no longer passes"
     for field in (
         "selected_zone_id", "selected_zone_kind", "selected_zone_asset", "selected_zone_timeframe",
+        "structural_admission_contract_version", "entry_zone_location",
         "selected_zone_state", "selected_zone_created_at", "selected_zone_confirmed_at",
         "selected_zone_coverage_status", "selected_zone_source_evidence_ids",
         "selected_zone_low", "selected_zone_high", "selected_zone_boundary",
@@ -234,6 +238,8 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
     if (
         not proof.get("selected_zone_id")
         or proof.get("selected_zone_timeframe") not in ("1h", "4h")
+        or proof.get("structural_admission_contract_version") != STRUCTURAL_ADMISSION_CONTRACT_VERSION
+        or proof.get("entry_zone_location") not in ("inside", "above", "below")
         or proof.get("structural_atr_method") != "wilder"
         or proof.get("structural_atr_period") != 14
         or not isinstance(proof.get("structural_atr_source_bar_ids"), list)
@@ -259,14 +265,21 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
     stop_multiple_recorded = proof.get("structural_stop_buffer_atr")
     if not all(isinstance(value, (int, float)) and math.isfinite(value) and value > 0 for value in (entry, stop, atr, low, high, boundary, generic_atr)):
         return False, "admission proof geometry is incomplete"
-    if not all(isinstance(value, (int, float)) and math.isfinite(value) and value > 0 for value in (entry_multiple_recorded, stop_multiple_recorded)):
+    if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in (entry_multiple_recorded, stop_multiple_recorded)):
         return False, "admission proof ATR multiples are incomplete"
+    if entry_multiple_recorded < 0 or stop_multiple_recorded <= 0:
+        return False, "admission proof ATR multiples are invalid"
     if low > high:
         return False, "admission proof zone bounds are invalid"
     expected_boundary = low if direction == "LONG" else high if direction == "SHORT" else None
     if expected_boundary is None or not math.isclose(boundary, expected_boundary, rel_tol=1e-9, abs_tol=1e-9):
         return False, "admission proof boundary is inconsistent"
-    entry_buffer = entry - high if direction == "LONG" else low - entry if direction == "SHORT" else None
+    entry_inside_zone = low <= entry <= high
+    entry_buffer = (
+        0.0 if entry_inside_zone else
+        entry - high if direction == "LONG" else
+        low - entry if direction == "SHORT" else None
+    )
     stop_buffer = low - stop if direction == "LONG" else stop - high if direction == "SHORT" else None
     if entry_buffer is None or stop_buffer is None:
         return False, "admission proof direction is invalid"
@@ -282,7 +295,21 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         return False, "admission stop ATR multiple is inconsistent"
     min_multiple = float(getattr(config, "STRUCTURAL_STOP_MIN_ATR_MULTIPLE", 0.5))
     max_multiple = float(getattr(config, "STRUCTURAL_STOP_MAX_ATR_MULTIPLE", 3.0))
-    if not min_multiple <= entry_multiple <= max_multiple:
+    location = proof.get("entry_zone_location")
+    if low <= entry <= high:
+        expected_location = "inside"
+    elif direction == "LONG" and entry > high:
+        expected_location = "above"
+    elif direction == "SHORT" and entry < low:
+        expected_location = "below"
+    else:
+        expected_location = None
+    if location != expected_location:
+        return False, "admission entry zone location is inconsistent"
+    if location == "inside":
+        if not math.isclose(entry_multiple, 0.0, rel_tol=1e-9, abs_tol=1e-9):
+            return False, "admission contained entry buffer is inconsistent"
+    elif not min_multiple <= entry_multiple <= max_multiple:
         return False, "admission entry buffer is outside policy"
     if not min_multiple <= stop_multiple <= max_multiple:
         return False, "admission stop buffer is outside policy"
