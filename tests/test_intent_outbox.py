@@ -1,11 +1,14 @@
 import unittest
+from datetime import datetime, timezone
 
 import config
 from intent_outbox import (
     build_executor_intent,
     to_ccxt_perp_symbol,
     validate_geometry,
+    verify_intent_admission,
 )
+from trade_admission import admit
 
 
 def _alpha_event(**over):
@@ -158,6 +161,57 @@ class IntentGeometryTests(unittest.TestCase):
             build_executor_intent(_alpha_event(order_type="market"))
         )
         self.assertTrue(ok, reason)
+
+
+def test_15m_proof_is_accepted_only_while_the_feature_is_enabled(monkeypatch):
+    observed = "2026-09-01T12:05:00Z"
+    event = {
+        "strategy_id": "impulse-ignition-v1",
+        "candidate_id": "candidate-15m-proof",
+        "asset": "BTC",
+        "direction": "long",
+        "entry_price": 104.0,
+        "invalidation_price": 98.0,
+        "targets": [120.0],
+        "valid_until": "2099-01-01T00:05:00Z",
+        "observed_at": observed,
+        "data_freshness_seconds": 1.0,
+        "structural_context": {
+            "asset": "BTC",
+            "cutoff": observed,
+            "zones": [{
+                "zone_id": "15m-zone", "asset": "BTC", "type": "fvg", "timeframe": "15m",
+                "direction": "bullish", "low": 100.0, "high": 101.0, "state": "active",
+                "created_at": "2026-09-01T12:00:00Z", "confirmed_at": "2026-09-01T12:00:00Z",
+                "coverage_status": "covered", "source_evidence_ids": ["5m-1"],
+                "source_mode": "market_5m_resampled", "source_exchange": "bybit",
+                "resampling_contract_version": "execution-5m-to-15m-v1",
+                "zone_detector_version": "structure-zones-v1",
+            }],
+            "atr_by_timeframe": {"4h": 10.0, "15m": 1.0},
+            "atr_source_bar_ids": {"4h": ["4h-1"], "15m": ["5m-1", "5m-2"]},
+            "frame_source_bar_ids": {"15m": ["5m-1", "5m-2"]},
+        },
+    }
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", True)
+    admission = admit(event, now=datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc),
+                      structural_context=event["structural_context"])
+    assert admission["hard_gate"] == "pass"
+    intent = build_executor_intent(event, admission=admission)
+    monkeypatch.setattr("structural_stop.build_structural_contexts", lambda *_args, **_kwargs: {"BTC": event["structural_context"]})
+
+    ok, reason = verify_intent_admission(intent)
+    assert ok, reason
+
+    intent["metadata"]["admission_result"]["structural_frame_bar_ids"] = ["changed"]
+    ok, reason = verify_intent_admission(intent)
+    assert not ok
+    assert "structural_frame_bar_ids is inconsistent" in reason
+
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False)
+    ok, reason = verify_intent_admission(intent)
+    assert not ok
+    assert "15m structural admission is disabled" in reason
 
 
 if __name__ == "__main__":
