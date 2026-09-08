@@ -226,8 +226,12 @@ The current production allowlist contains 12 plugins:
 | `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Fundamo |
 | `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Fundamo |
 
-Compact Hyro strategies are limited to `BTC`, `ETH`, `PAXG`, and `QQQ`.
-The downstream router currently maps the EMA99 delivery to `bybit/fundamo`.
+Compact strategies are hard-routed to Bybit Hyro and may trade only `BTC`, `ETH`,
+`PAXG`, and `QQQ`. A compact candidate is never delivered to Fundamo, even if
+its candidate metadata or a caller argument requests `account_id=fundamo`.
+Fundamo strategies are non-compact and may trade every asset in the cutoff-bound
+effective universe. The downstream router currently maps the EMA99 delivery to
+`bybit/fundamo`.
 Propr fan-out is an independent shared-bus target.
 
 Production indicators use the tested in-house EMA, RSI, ATR, ADX, StochRSI, and

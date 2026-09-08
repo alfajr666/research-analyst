@@ -10,11 +10,9 @@ from trade_admission import resolve
 
 def test_declared_covered_structure_reaches_executor_selection():
     previous = {
-        "STATIC_SYMBOLS_OVERRIDE": config.STATIC_SYMBOLS_OVERRIDE,
         "STRUCTURAL_STOP_ADMISSION_ENABLED": config.STRUCTURAL_STOP_ADMISSION_ENABLED,
     }
     try:
-        config.STATIC_SYMBOLS_OVERRIDE = "BTC"
         config.STRUCTURAL_STOP_ADMISSION_ENABLED = True
         observed = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
         candidate = {
@@ -44,7 +42,11 @@ def test_declared_covered_structure_reaches_executor_selection():
             },
         }
 
-        result = resolve([candidate], structural_contexts={"BTC": candidate["structural_context"]})
+        result = resolve(
+            [candidate],
+            structural_contexts={"BTC": candidate["structural_context"]},
+            effective_universe=["BTC"],
+        )
 
         assert result["selected_candidate_ids"] == ["candidate-1"]
         selected = result["results"][0]
@@ -58,11 +60,9 @@ def test_declared_covered_structure_reaches_executor_selection():
 
 def test_uncovered_structure_is_rejected_before_scoring():
     previous = {
-        "STATIC_SYMBOLS_OVERRIDE": config.STATIC_SYMBOLS_OVERRIDE,
         "STRUCTURAL_STOP_ADMISSION_ENABLED": config.STRUCTURAL_STOP_ADMISSION_ENABLED,
     }
     try:
-        config.STATIC_SYMBOLS_OVERRIDE = "BTC"
         config.STRUCTURAL_STOP_ADMISSION_ENABLED = True
         observed = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
         candidate = {
@@ -82,7 +82,11 @@ def test_uncovered_structure_is_rejected_before_scoring():
             },
         }
 
-        result = resolve([candidate], structural_contexts={"BTC": candidate["structural_context"]})
+        result = resolve(
+            [candidate],
+            structural_contexts={"BTC": candidate["structural_context"]},
+            effective_universe=["BTC"],
+        )
 
         assert result["selected_candidate_ids"] == []
         rejected = result["results"][0]

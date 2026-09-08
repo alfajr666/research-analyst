@@ -6,7 +6,7 @@ Implementation specification. No implementation is included in this document.
 
 ## Goal
 
-Deliver every admitted intent from the four active Fundamo strategy families to
+Deliver every admitted intent from active, non-compact Fundamo strategy families to
 both independent execution accounts:
 
 ```text
@@ -29,7 +29,16 @@ In scope:
 - Current strategy IDs assigned to Fundamo include:
   - `ema99-retest-adx-v1`
   - `ema20-pullback-h4-trend-v1`
-  - `ema-stack-15m-adx-stochrsi-5m-v1`
+  - `dual-zone-follower-v3`
+  - `dual-zone-short-follower-v3`
+  - `gold-trend-ema-bb-stoch-v1`
+  - `mtf-exhaustion-reversal-v1`
+  - `ema99-double-touch-stochrsi-state-v1`
+  - `ema7-26-cross-hammer-shooting-star-1h-adx-v1`
+
+Compact strategies are hard-routed to Bybit Hyro and are excluded from this
+fan-out. They may trade only `BTC`, `ETH`, `PAXG`, and `QQQ`; candidate metadata
+cannot override that route.
 - Shared SQLite intent-bus delivery records and receipts.
 - Propr consumer compatibility and end-to-end verification.
 - Per-target/account observability and idempotency.
@@ -94,7 +103,7 @@ The existing schema-v1 envelope is preserved:
 - `asset`, canonical perpetual `symbol`, direction, entry, stop, target
 - `entry_valid_until`, observed timestamp, strategy metadata
 
-The four strategy IDs must remain forcibly routed to Fundamo and must not be
+Fundamo strategy IDs must remain forcibly routed to Fundamo and must not be
 overridden by global defaults or caller arguments.
 
 ### Propr delivery
@@ -168,7 +177,7 @@ Document and validate separate controls:
 - Optional per-target producer delivery retry settings.
 - No account credentials or sizing settings in Research Analyst.
 
-The four strategy IDs remain hard-routed to Fundamo for `target=bybit`. Propr
+Fundamo strategy IDs remain hard-routed to Fundamo for `target=bybit`. Propr
 target delivery must identify the Propr executor/account through its own
 consumer configuration unless the shared-bus schema requires an explicit
 account field.
@@ -238,7 +247,7 @@ Never label a bus publication as execution, fill, or acceptance.
 
 Use a temporary shared SQLite bus and hermetic executor processors:
 
-1. Create one admitted four-strategy event.
+1. Create one admitted Fundamo-strategy event.
 2. Publish both target deliveries.
 3. Run a fake Bybit consumer and fake Propr consumer independently.
 4. Assert each claims only its target delivery.
@@ -262,7 +271,7 @@ Use a temporary shared SQLite bus and hermetic executor processors:
 ## Acceptance criteria
 
 - Every admitted event produces at most one durable delivery per target.
-- The four strategies continue routing to Fundamo on the Bybit target.
+- Fundamo strategies continue routing to Fundamo on the Bybit target.
 - Propr receives only `target=propr` deliveries.
 - Fundamo and Propr outcomes are independently recorded.
 - A rejection on either account does not suppress or mutate the other delivery.

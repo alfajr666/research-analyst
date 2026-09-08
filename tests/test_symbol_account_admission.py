@@ -34,15 +34,31 @@ def test_candidate_account_cannot_override_compact_route():
     assert result["symbol_account_gate"] == "fail"
     assert result["canonical_asset"] == "SOL"
     assert result["resolved_account"] == "hyro"
-    assert result["policy_version"] == "symbol-account-policy-v1"
+    assert result["policy_version"] == "symbol-account-policy-v2"
 
 
-def test_compact_btc_and_fundamo_approved_symbol_pass():
+def test_compact_btc_and_fundamo_watchlist_symbol_passes():
     assert admit_symbol_account(_candidate("failed-break-v3", "BTC"))["symbol_account_gate"] == "pass"
-    with patch("config.load_static_symbols", return_value=["SOL"]):
-        result = admit_symbol_account(_candidate("ema20-pullback-h4-trend-v1", "SOL", "hyro"))
+    result = admit_symbol_account(
+        _candidate("ema20-pullback-h4-trend-v1", "SOL", "hyro"),
+        effective_universe=["BTC", "SOL"],
+        effective_universe_version="universe-test",
+    )
     assert result["symbol_account_gate"] == "pass"
     assert result["resolved_account"] == "fundamo"
+    assert result["effective_universe_version"] == "universe-test"
+
+
+def test_fundamo_requires_effective_watchlist_scope():
+    result = admit_symbol_account(_candidate("ema20-pullback-h4-trend-v1", "SOL"))
+    assert result["symbol_account_gate"] == "fail"
+    assert result["rejection_reason"] == "effective watchlist universe is unavailable"
+
+
+def test_all_hyro_routes_require_permanent_assets():
+    result = admit_symbol_account(_candidate("unclassified-strategy", "SOL"))
+    assert result["symbol_account_gate"] == "fail"
+    assert result["rejection_reason"] == "Hyro policy permits only BTC, ETH, PAXG, QQQ"
 
 
 def test_symbol_rejection_happens_before_score():

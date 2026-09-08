@@ -3,8 +3,6 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
-
 import config
 from symbol_rotation import (
     build_feed,
@@ -145,23 +143,22 @@ class SymbolRotationTests(unittest.TestCase):
         records = [{"asset": asset, "as_of": boundary, "source": "test", "interval": "24h", "retrieved_at": boundary,
                     "reference_price": 100.0, "current_price": 100.0 + index}
                    for index, asset in enumerate(assets)]
-        with patch.object(config, "load_static_symbols", return_value=assets):
-            for total in (30, 40, 60):
-                config.SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT = total
-                feed = build_feed(records, boundary, generated_at=boundary)
-                self.assertEqual(feed["symbol_count"], total + 4)
-                self.assertEqual(feed["rotating_symbol_count"], total)
-                self.assertEqual(len(feed["gainers"]), total // 2)
-                self.assertEqual(len(feed["losers"]), total // 2)
-                self.assertEqual(len(set(feed["symbols"])), total + 4)
-                self.assertEqual(feed["permanent_symbols"], ["BTC", "ETH", "PAXG", "QQQUSDT"])
-                self.assertEqual(feed["symbols"][:4], feed["permanent_symbols"])
+        for total in (30, 40, 60):
+            config.SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT = total
+            feed = build_feed(records, boundary, generated_at=boundary)
+            self.assertEqual(feed["symbol_count"], total + 4)
+            self.assertEqual(feed["rotating_symbol_count"], total)
+            self.assertEqual(len(feed["gainers"]), total // 2)
+            self.assertEqual(len(feed["losers"]), total // 2)
+            self.assertEqual(len(set(feed["symbols"])), total + 4)
+            self.assertEqual(feed["permanent_symbols"], ["BTC", "ETH", "PAXG", "QQQUSDT"])
+            self.assertEqual(feed["symbols"][:4], feed["permanent_symbols"])
 
-            tied = [{"asset": asset, "as_of": boundary, "source": "test", "interval": "24h", "retrieved_at": boundary,
-                     "reference_price": 100.0, "current_price": 110.0}
-                    for asset in assets]
-            config.SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT = 30
-            feed = build_feed(tied, boundary, generated_at=boundary)
+        tied = [{"asset": asset, "as_of": boundary, "source": "test", "interval": "24h", "retrieved_at": boundary,
+                 "reference_price": 100.0, "current_price": 110.0}
+                for asset in assets]
+        config.SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT = 30
+        feed = build_feed(tied, boundary, generated_at=boundary)
         self.assertEqual([item["asset"] for item in feed["gainers"]], assets[:15])
         self.assertEqual([item["asset"] for item in feed["losers"]], assets[:15])
 
@@ -171,10 +168,9 @@ class SymbolRotationTests(unittest.TestCase):
         records = [{"asset": asset, "as_of": boundary, "source": "test", "interval": "24h", "retrieved_at": boundary,
                     "reference_price": 100.0, "current_price": 100.0 + index}
                    for index, asset in enumerate(assets)]
-        with patch.object(config, "load_static_symbols", return_value=assets):
-            previous = build_feed(records, boundary, generated_at=boundary)
-            retained = build_feed([], boundary.replace(hour=2), previous_feed=previous)
-            fallback = build_feed([], boundary.replace(hour=8), previous_feed=previous)
+        previous = build_feed(records, boundary, generated_at=boundary)
+        retained = build_feed([], boundary.replace(hour=2), previous_feed=previous)
+        fallback = build_feed([], boundary.replace(hour=8), previous_feed=previous)
         self.assertEqual(retained["feed_id"], previous["feed_id"])
         self.assertEqual(fallback["feed_id"], previous["feed_id"])
         self.assertEqual(fallback["watchlist_entry_count"], previous["watchlist_entry_count"])
@@ -209,6 +205,27 @@ class SymbolRotationTests(unittest.TestCase):
         self.assertTrue(all(symbol in current["symbols"] for symbol in PERMANENT_SYMBOLS))
         self.assertEqual(current["status"], "ready")
         self.assertTrue(validate_feed(current))
+
+    def test_legacy_feed_never_restores_static_symbols_before_refresh(self):
+        boundary = datetime(2026, 8, 18, tzinfo=timezone.utc)
+        legacy = {
+            "schema_version": 1,
+            "feed_id": "legacy-feed",
+            "algorithm_version": "performance-24h-v1",
+            "generated_at": boundary.isoformat().replace("+00:00", "Z"),
+            "valid_from": boundary.isoformat().replace("+00:00", "Z"),
+            "valid_until": (boundary + timedelta(hours=4)).isoformat().replace("+00:00", "Z"),
+            "permanent_symbols": list(PERMANENT_SYMBOLS),
+            "rotating_symbol_count": 30,
+            "symbol_count": 6,
+            "gainers": [],
+            "losers": [],
+            "symbols": ["SOL", "ADA", *PERMANENT_SYMBOLS],
+            "status": "ready",
+        }
+        selected, metadata = effective_state_at(legacy, boundary + timedelta(minutes=1))
+        self.assertEqual(selected, ["BTC", "ETH", "PAXG", "QQQ"])
+        self.assertEqual(metadata["status"], "permanent_fallback")
 
     def test_refreshes_rotation_at_each_four_hour_boundary(self):
         boundary = datetime(2026, 8, 18, tzinfo=timezone.utc)
@@ -279,15 +296,14 @@ class SymbolRotationTests(unittest.TestCase):
     def test_future_and_stale_data_are_not_ranked_and_feed_is_atomic(self):
         boundary = datetime(2026, 8, 18, tzinfo=timezone.utc)
         assets = [f"COIN{index:02d}" for index in range(92)]
-        with patch.object(config, "load_static_symbols", return_value=assets):
-            invalid = build_feed([{
-                "asset": assets[0], "as_of": boundary.replace(hour=1), "source": "test",
-                "interval": "24h", "retrieved_at": boundary.replace(hour=1),
-                "reference_price": 100.0, "current_price": 200.0,
-            }], boundary, generated_at=boundary)
-            self.assertEqual(invalid["status"], "fallback")
-            path = Path(self.directory.name) / "feed.json"
-            write_feed(invalid, path)
+        invalid = build_feed([{
+            "asset": assets[0], "as_of": boundary.replace(hour=1), "source": "test",
+            "interval": "24h", "retrieved_at": boundary.replace(hour=1),
+            "reference_price": 100.0, "current_price": 200.0,
+        }], boundary, generated_at=boundary)
+        self.assertEqual(invalid["status"], "fallback")
+        path = Path(self.directory.name) / "feed.json"
+        write_feed(invalid, path)
         self.assertEqual(read_feed(path, boundary)["feed_id"], invalid["feed_id"])
 
     def test_watchlist_refreshes_ttl_and_expires_at_exact_cutoff(self):
@@ -299,10 +315,9 @@ class SymbolRotationTests(unittest.TestCase):
              "current_price": 100.0 + index}
             for index, asset in enumerate(assets)
         ]
-        with patch.object(config, "load_static_symbols", return_value=assets):
-            initial = build_feed(records, boundary, generated_at=boundary)
-            later = boundary + timedelta(hours=4)
-            refreshed = build_feed(records, later, generated_at=later, previous_feed=initial)
+        initial = build_feed(records, boundary, generated_at=boundary)
+        later = boundary + timedelta(hours=4)
+        refreshed = build_feed(records, later, generated_at=later, previous_feed=initial)
 
         selected = initial["watchlist_entries"][0]
         refreshed_entry = next(
@@ -331,8 +346,7 @@ class SymbolRotationTests(unittest.TestCase):
             for index, asset in enumerate(assets)
         ]
         config.SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS = 10
-        with patch.object(config, "load_static_symbols", return_value=assets):
-            feed = build_feed(records, boundary, generated_at=boundary)
+        feed = build_feed(records, boundary, generated_at=boundary)
         self.assertEqual(feed["symbol_count"], 10)
         self.assertEqual(feed["effective_symbol_count"], 10)
         self.assertEqual(feed["watchlist_entry_count"], 6)

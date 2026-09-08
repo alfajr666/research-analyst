@@ -65,7 +65,10 @@ class Ema7CrossHammerE2ETests(unittest.TestCase):
             "atr_by_timeframe": {"4h": 1.0},
             "atr_source_bar_ids": {"4h": ["bar-1"]},
         }
-        self.assertEqual(admit(event, now=observed + timedelta(minutes=1))["hard_gate"], "pass")
+        self.assertEqual(
+            admit(event, now=observed + timedelta(minutes=1), effective_universe=["BTC"])["hard_gate"],
+            "pass",
+        )
         intent = build_executor_intent(event)
         self.assertAlmostEqual(intent["take_profit"], 109.0)
         self.assertEqual(intent["stop_loss"], 97.0)

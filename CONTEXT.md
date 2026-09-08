@@ -2,12 +2,14 @@
 
 ## Market Universe
 
-- **Approved universe**: the canonical set of currently approved tradeable
-  assets.
+- **Performance pool**: the valid Bybit linear USDT-perpetual ticker universe
+  available to the rotation snapshot.
+- **Effective universe**: the cutoff-bound unexpired watchlist plus the four
+  permanent assets: `BTC`, `ETH`, `PAXG`, and `QQQ`.
 - **Subscription universe**: the assets whose market updates are currently
   delivered by the market-data gateway.
 - **Performance source**: the source of point-in-time price performance used to
-  rank the approved universe.
+  rank the performance pool.
 - **Rotation feed**: a versioned publication of the subscription universe and
   the evidence used to select it.
 
@@ -18,6 +20,10 @@
 - **Candidate**: a strategy's proposed trade, before execution admission.
 - **Symbol-account-strategy policy**: the rule defining which account may trade
   which canonical symbol for a given strategy.
+- **Compact Hyro policy**: compact strategies are hard-routed to Hyro and may
+  trade only the four permanent assets. They are never delivered to Fundamo;
+  candidate metadata cannot override the route. Fundamo strategies may trade any
+  asset in the effective universe.
 - **Hard gate**: a deterministic rejection that prevents a candidate from
   proceeding to scoring or execution publication.
 - **Market regime**: the current completed-bar behavior of an asset, such as

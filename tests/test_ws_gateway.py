@@ -21,11 +21,10 @@ def test_plan_bybit_streams_shards():
     assert shards[0][0] == "kline.5.BASE0USDT"
 
 
-def test_gateway_static_mode_is_independent_from_compact_evaluation_universe(monkeypatch):
-    monkeypatch.setattr(config, "load_static_symbols", lambda: ["BTC", "ETH", "PAXG", "QQQ", "SOL"])
+def test_gateway_disabled_rotation_mode_is_permanent_only(monkeypatch):
     monkeypatch.setattr(config, "SYMBOL_ROTATION_ENABLED", False)
     monkeypatch.setattr(config, "EXECUTOR_SNAPSHOT_DIR", "")
-    assert wsg.select_universe() == ["BTC", "ETH", "PAXG", "QQQ", "SOL"]
+    assert wsg.select_universe() == ["BTC", "ETH", "PAXG", "QQQ"]
     assert config.COMPACT_STRATEGY_ASSETS == frozenset({"BTC", "ETH", "PAXG", "QQQ"})
 
 

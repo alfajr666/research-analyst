@@ -3,15 +3,15 @@
 ## Status
 
 Implementation specification for a multi-timeframe strategy using the universal
-mechanical exit sidecar. Default scope is always the Bybit Fundamo account and
-all 97 static symbols.
+mechanical exit sidecar. Default scope is the Bybit Fundamo account and the
+cutoff-bound effective rotation universe.
 
 ## Identity and Scope
 
 ```text
 strategy_id: ema99-wall-stochrsi-v1
 plugin_version: v1
-universe: symbols/static_universe.json (97 symbols)
+universe: effective rotation watchlist plus permanent assets
 entry timeframe: 5m
 context timeframe: 1h
 account route: bybit/fundamo
@@ -232,8 +232,9 @@ exchange_id: bybit
 account_id: fundamo
 ```
 
-The 97-symbol static universe is loaded from `config.load_static_symbols()`.
-No compact asset set, discovery watchlist, or rotation feed is permitted.
+The effective rotation watchlist and permanent assets are supplied by the
+evaluator for each cutoff. This Fundamo strategy does not use a compact Hyro
+asset set or a repository static symbol list.
 
 ## Logging and Observability
 
@@ -279,7 +280,8 @@ llm_reductions{direction}
 5. StochRSI crossovers match the current/previous extreme allowance.
 6. Flat-range StochRSI follows the defined zero behavior.
 7. Long and short stops use the prior five completed 1h bars plus/minus 2 ATR.
-8. All 97 static symbols are evaluated.
+8. Every asset in the cutoff-bound effective watchlist plus permanent assets is
+   evaluated.
 9. Events route only to `bybit/fundamo` and contain no `order_type`.
 10. Fixed TP is absent for analyst-managed mode.
 11. Mechanical long/short exits produce trigger events with full TA inputs.

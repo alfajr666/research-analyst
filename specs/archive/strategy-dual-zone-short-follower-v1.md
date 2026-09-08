@@ -1,5 +1,8 @@
 # Dual-Zone Short Follower v1
 
+> Archived historical specification. Its static-universe references are
+> superseded by `specs/strategy-symbol-performance-rotation-v1.md`.
+
 ## Goal
 
 Evaluate all 97 configured static symbols on completed 5m candles and emit

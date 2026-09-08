@@ -67,7 +67,7 @@ class Ema99RetestE2ETests(unittest.TestCase):
             "atr_by_timeframe": {"4h": 1.0},
             "atr_source_bar_ids": {"4h": ["bar-1"]},
         }
-        admission = admit(event, now=cutoff + timedelta(minutes=1))
+        admission = admit(event, now=cutoff + timedelta(minutes=1), effective_universe=["BTC"])
         self.assertEqual(admission["hard_gate"], "pass", admission)
         self.assertNotIn("account_id", event)
         intent = build_executor_intent(event)

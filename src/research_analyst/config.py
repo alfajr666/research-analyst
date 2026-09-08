@@ -136,11 +136,6 @@ ANALYST_SCHEMA_TABLES = frozenset({
 })
 
 
-# Static agreed symbol universe from the approved tradeable-assets snapshot.
-# Persisted in the repo at symbols/static_universe.json so it is version-controlled and
-# survives restarts/prunes. Canonical bases (e.g. BTC); expand to XUSDT perps at load time.
-STATIC_SYMBOLS_PATH = os.getenv("STATIC_SYMBOLS_PATH", str(BASE_DIR / "symbols" / "static_universe.json"))
-STATIC_SYMBOLS_OVERRIDE = os.getenv("STATIC_SYMBOLS", "").strip()
 # Upstream performance rotation.
 SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 SYMBOL_ROTATION_REFRESH_HOURS = int(os.getenv("SYMBOL_ROTATION_REFRESH_HOURS", os.getenv("SYMBOL_ROTATION_CADENCE_HOURS", "4")))
@@ -183,7 +178,7 @@ COMPACT_STRATEGY_IDS = frozenset((
     "ema9-adx-stochrsi-state-v1",
 ))
 FUNDAMO_STRATEGY_IDS = frozenset((
-    "dual-zone-follower-v3", "dual-zone-short-follower-v3",
+    "dual-zone-follower-v3", "dual-zone-short-follower-v3", "ema99-retest-adx-v1",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
@@ -323,22 +318,6 @@ WS_BACKFILL_HOURS = int(os.getenv("WS_BACKFILL_HOURS", "6"))
 BYBIT_WS_SOURCE = "bybit_ws"
 BINANCE_WS_SOURCE = "binance_ws"
 WS_DATA_PURITY = "pure_ws"
-
-
-def load_static_symbols() -> List[str]:
-    """Return canonical base symbols for the static universe (uppercased)."""
-    import json as _json
-    if STATIC_SYMBOLS_OVERRIDE:
-        return [s.strip().upper() for s in STATIC_SYMBOLS_OVERRIDE.split(",") if s.strip()]
-    p = Path(STATIC_SYMBOLS_PATH)
-    if p.exists():
-        try:
-            data = _json.loads(p.read_text())
-            syms = data.get("symbols") or data.get("crypto_static") or []
-            return [str(s).upper() for s in syms]
-        except Exception:
-            return []
-    return []
 
 
 def expand_perp_symbols(bases: List[str], venue: str = "bybit") -> List[str]:

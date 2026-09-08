@@ -8,9 +8,10 @@ and repair requirements are defined by
 
 ## Purpose
 
-Add three strategy families that use the approved 92-symbol static universe as
-their candidate pool and route their executor intents exclusively to the
-Fundamo Bybit profile. Evaluation scope is governed by
+Fundamo-routed strategy families evaluate the cutoff-bound effective watchlist
+plus permanent assets and route their executor intents exclusively to the Fundamo
+Bybit profile. Compact strategies are a separate Hyro-only portfolio and are
+never delivered to Fundamo. Evaluation scope is governed by
 `specs/strategy-symbol-performance-rotation-v1.md`.
 
 The former dual-zone strategy family is retired. Its IDs must not remain enabled,
@@ -19,24 +20,31 @@ strategy is the current replacement for that trend slot.
 
 ## Strategy IDs
 
-Use these IDs unless an implementation review explicitly changes them:
+The current Fundamo-routed IDs are:
 
-| Family | Long | Short |
-|---|---|---|
-| EMA99 retest ADX | `ema99-retest-adx-v1` | same bidirectional plugin |
-| EMA20 pullback H4 trend | `ema20-pullback-h4-trend-v1` | same bidirectional plugin |
-| EMA stack / ADX / StochRSI | `ema-stack-15m-adx-stochrsi-5m-v1` | same bidirectional plugin |
+| Strategy ID | Route |
+|---|---|
+| `dual-zone-follower-v3` | Bybit Fundamo |
+| `dual-zone-short-follower-v3` | Bybit Fundamo |
+| `ema99-retest-adx-v1` | Bybit Fundamo |
+| `ema20-pullback-h4-trend-v1` | Bybit Fundamo |
+| `gold-trend-ema-bb-stoch-v1` | Bybit Fundamo |
+| `mtf-exhaustion-reversal-v1` | Bybit Fundamo |
+| `ema99-double-touch-stochrsi-state-v1` | Bybit Fundamo |
+| `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | Bybit Fundamo |
+
+Compact strategy IDs are not part of this portfolio. They are hard-routed to
+Bybit Hyro and restricted to the permanent assets.
 
 ## Universe
 
-- Source is `config.load_static_symbols()` backed by
-  `symbols/static_universe.json`.
-- The list currently contains exactly 92 canonical base assets.
-- When performance rotation is disabled, evaluate every listed asset on every
-  applicable completed cutoff.
-- When performance rotation is enabled, evaluate the configurable top-gainer
-  and top-loser rotating slots from the listed assets every four hours, using
-  the equal per-side split defined in
+- When performance rotation is enabled, evaluate every asset in the effective
+  cutoff-bound watchlist plus the permanent assets on every applicable completed
+  cutoff. The watchlist is selected from the valid Bybit linear USDT-perpetual
+  ticker universe and maintained by the rotation feed.
+- When rotation is disabled or unavailable, evaluate the permanent-only safe
+  scope.
+- The rotation feed uses the equal per-side split defined in
   `specs/strategy-symbol-performance-rotation-v1.md`.
 - Do not use discovery rotation, OI rotation, or a legacy fixed symbol list.
 - Market data lookup uses the repository's canonical asset/native-symbol mapper.
@@ -104,8 +112,8 @@ admission later rejects.
 3. Add all new IDs to the appropriate admission/purity classification used by
    the alpha outbox.
 4. Add explicit downstream routing entries for every new ID to Fundamo.
-5. Apply symbol-account-strategy policy downstream; compact Hyro restrictions
-   must not be implemented inside strategy code.
+5. Apply symbol-account-strategy policy downstream; compact Hyro restrictions and
+   route forcing must not be implemented inside strategy code.
 6. Add configuration prefixes and documented defaults without changing global
    intent sizing ownership.
 7. Preserve plugin failure isolation: one strategy or symbol failure must not
@@ -114,9 +122,9 @@ admission later rejects.
 
 ## Acceptance criteria
 
-- A complete run attempts all assets in the configured effective universe when
-  rotation is disabled and the configured top-gainer/top-loser watchlist when
-  rotation is enabled.
+- A complete run attempts all assets in the configured effective watchlist plus
+  permanent assets when rotation is enabled, and permanent assets only when it
+  is disabled or unavailable.
 - No new strategy intent contains `account_id=hyro`.
 - Retired dual-zone IDs cannot be enabled accidentally as live plugins.
 - An admission rejection is observable and does not cause the strategy to alter

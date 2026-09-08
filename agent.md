@@ -49,18 +49,18 @@ analyst code and never start duplicate writers.
 | `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Bybit Fundamo |
 | `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Bybit Fundamo |
 
-The approved policy universe remains `symbols/static_universe.json` and currently
-contains 92 Bybit-compatible bases. It remains the admission policy universe and
-performance-ranking pool, not an instruction to evaluate all 92 assets. The
-permanent subscription symbols are BTC, ETH, PAXG, and QQQUSDT (canonical asset
-`QQQ`). The upstream rotation feed selects the configured equal split of top 24h
-gainers and losers at fixed four-hour UTC boundaries, then maintains a durable
-sticky watchlist. The default watchlist TTL is 72 hours and the hard effective
+The legacy `symbols/static_universe.json` policy list has been removed. The
+upstream rotation feed ranks the valid Bybit linear USDT-perpetual ticker pool,
+selects the configured equal split of top 24h gainers and losers at fixed
+four-hour UTC boundaries, and maintains a durable sticky watchlist. The effective
+universe is the unexpired watchlist plus BTC, ETH, PAXG, and QQQUSDT (canonical
+asset `QQQ`). The default watchlist TTL is 72 hours and the hard effective
 universe cap is 80 symbols, including permanents. A stale or missing feed may
 continue unexpired entries without refreshing them; expired entries are removed
-and the universe fails closed to permanents. Fresh OPEN executor-position assets
-may extend gateway market-data subscriptions for lifecycle context, but never
-extend the evaluator universe.
+and the universe fails closed to permanents. Compact Hyro strategies are limited
+to the four permanent assets; Fundamo strategies may use every effective-universe
+asset. Fresh OPEN executor-position assets may extend gateway market-data
+subscriptions for lifecycle context, but never extend the evaluator universe.
 Registration is controlled by
 `STRATEGY_ENABLED_IDS`; activation is also constrained by
 `STRATEGY_ACTIVE_IDS` and `plugin_states`. Registered strategy plugins are not
@@ -178,7 +178,7 @@ untracked.
 git diff --check
 ```
 
-When diagnosing missing output, inspect static universe and active IDs, fresh
+When diagnosing missing output, inspect the rotation feed and active IDs, fresh
 completed observations, trigger spool/claims, cutoff/features, plugin results,
 raw-signal statuses, alpha outbox/ledger, executor inbox, snapshots, and PM
 decisions. Report advisory, selected, accepted, and filled as distinct states.
@@ -224,5 +224,7 @@ Shared-bus deliveries are idempotent by `delivery_id`. PM decision files include
 `NEAR_TP`, and `decision_scope=NEAR_TP` for `NEAR_TP`. The analyst never emits
 `quantity`, `risk_amount`, leverage, or `order_type`; the executor owns those.
 
-Compact strategies are forced to Bybit `hyro`. Strategies without an explicit
+Compact strategies are forced to Bybit `hyro` and may trade only the four
+permanent assets. They are never delivered to Fundamo, and candidate metadata or
+caller arguments cannot override that route. Strategies without an explicit
 route use the global default account.

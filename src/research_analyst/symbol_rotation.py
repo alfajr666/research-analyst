@@ -39,16 +39,9 @@ def rotation_boundary(value: datetime, refresh_hours: int | None = None) -> date
     return datetime.fromtimestamp(epoch - epoch % seconds, tz=timezone.utc)
 
 
-def approved_assets() -> list[str]:
-    """Load the only pool allowed to participate in performance ranking."""
-    seen: set[str] = set()
-    result = []
-    for asset in config.load_static_symbols():
-        canonical = str(asset).strip().upper()
-        if canonical and canonical not in seen:
-            seen.add(canonical)
-            result.append(canonical)
-    return sorted(result)
+def fallback_assets() -> list[str]:
+    """Return the permanent-only scope used when rotation is unavailable."""
+    return sorted(PERMANENT_ASSETS)
 
 
 def _target_sides() -> int:
@@ -209,7 +202,7 @@ def rank_performance(records: Iterable[Mapping[str, object]], boundary: datetime
                      source_cutoff: datetime | None = None) -> dict:
     """Return deterministic equal-sided selections and validation metadata."""
     boundary = _utc(source_cutoff) if source_cutoff is not None else rotation_boundary(boundary)
-    assets = approved_assets() if pool is None else sorted({str(x).upper().removesuffix("USDT") for x in pool})
+    assets = fallback_assets() if pool is None else sorted({str(x).upper().removesuffix("USDT") for x in pool})
     permanent = [asset for asset in PERMANENT_ASSETS if asset in assets or pool is None]
     ranking_pool = [asset for asset in assets if asset not in PERMANENT_ASSETS]
     lookback = int(getattr(config, "SYMBOL_ROTATION_LOOKBACK_HOURS", 24))
@@ -551,13 +544,7 @@ def effective_state_at(feed: Mapping[str, object] | None, at: datetime | None = 
         return list(PERMANENT_ASSETS), metadata
 
     if feed.get("schema_version") == LEGACY_SCHEMA_VERSION:
-        if _feed_valid(feed, cutoff):
-            symbols = sorted({_canonical_asset(symbol) for symbol in feed.get("symbols", [])})
-            metadata = dict(feed)
-            metadata["effective_universe_version"] = _effective_universe_version(symbols, [])
-            metadata["freshness_state"] = feed.get("status", "ready")
-            return symbols, metadata
-        fallback = _fallback_feed(rotation_boundary(cutoff), cutoff, "legacy feed expired")
+        fallback = _fallback_feed(rotation_boundary(cutoff), cutoff, "legacy feed requires refresh")
         metadata = dict(fallback)
         metadata["status"] = "permanent_fallback"
         metadata["freshness_state"] = "permanent_fallback"
@@ -796,7 +783,7 @@ def _db_performance_records(conn, boundary: datetime, pool: Iterable[str] | None
     """Adapt retained completed bars into a point-in-time performance snapshot."""
     boundary = rotation_boundary(boundary)
     start = boundary - timedelta(hours=int(getattr(config, "SYMBOL_ROTATION_LOOKBACK_HOURS", 24)))
-    pool = sorted({str(asset).upper() for asset in (pool if pool is not None else approved_assets())})
+    pool = sorted({str(asset).upper() for asset in (pool if pool is not None else fallback_assets())})
     if not pool:
         return []
     placeholders = ",".join("?" for _ in pool)
@@ -931,7 +918,7 @@ def refresh_feed(conn, boundary: datetime, *, records: Iterable[Mapping[str, obj
 
 def subscription_assets(at: datetime | None = None) -> tuple[list[str], dict]:
     """Return the rotation selections plus permanent assets for subscriptions."""
-    assets = approved_assets()
+    assets = fallback_assets()
     if not getattr(config, "SYMBOL_ROTATION_ENABLED", True):
         assets = _cap_assets(assets)
         metadata = {

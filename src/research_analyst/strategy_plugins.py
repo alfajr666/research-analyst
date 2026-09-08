@@ -784,7 +784,13 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         cutoff,
         regime_db_path=config.REGIME_DB_PATH,
     )
-    decision = resolve(candidates, structural_contexts=structural_contexts, now=now)
+    decision = resolve(
+        candidates,
+        structural_contexts=structural_contexts,
+        now=now,
+        effective_universe=attempted_symbols,
+        effective_universe_version=feed_metadata.get("effective_universe_version"),
+    )
     selected = set(decision["selected_candidate_ids"])
     by_id = {ev["candidate_id"]: ev for ev in candidates}
     for result in decision["results"]:

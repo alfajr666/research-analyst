@@ -30,6 +30,7 @@ from structural_stop import (
 FUNDAMO_STRATEGY_IDS = frozenset((
     "dual-zone-follower-v3",
     "dual-zone-short-follower-v3",
+    "ema99-retest-adx-v1",
     "ema20-pullback-h4-trend-v1",
     "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1",
@@ -203,6 +204,8 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         "observed_at": intent.get("observed_at"),
         "valid_until": intent.get("entry_valid_until"),
         "data_freshness_seconds": proof.get("data_freshness_seconds"),
+        "effective_universe_assets": proof.get("effective_universe_assets"),
+        "effective_universe_version": proof.get("effective_universe_version"),
     }
     if proof.get("candidate_fingerprint") != candidate_admission_fingerprint(candidate):
         return False, "admission proof candidate fingerprint is inconsistent"
@@ -210,7 +213,12 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
     if not isinstance(context, dict):
         return False, "admission structural context is missing"
     from trade_admission import admit
-    recomputed = admit(candidate, structural_context=context)
+    recomputed = admit(
+        candidate,
+        structural_context=context,
+        effective_universe=proof.get("effective_universe_assets"),
+        effective_universe_version=proof.get("effective_universe_version"),
+    )
     if recomputed.get("hard_gate") != "pass":
         return False, "admission structural context no longer passes"
     for field in (
@@ -222,6 +230,7 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         "structural_atr", "structural_atr_period", "structural_atr_method",
         "structural_atr_source_bar_ids", "entry_zone_buffer", "entry_zone_buffer_atr",
         "structural_stop_buffer", "structural_stop_buffer_atr", "structural_context_cutoff",
+        "effective_universe_assets", "effective_universe_version",
     ):
         if field in ("selected_zone_low", "selected_zone_high", "selected_zone_boundary", "structural_atr",
                      "entry_zone_buffer", "entry_zone_buffer_atr", "structural_stop_buffer", "structural_stop_buffer_atr"):
@@ -233,7 +242,7 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         elif field in ("selected_zone_created_at", "selected_zone_confirmed_at"):
             if not _same_timestamp(recomputed.get(field), proof.get(field)):
                 return False, f"admission proof {field} is inconsistent"
-        elif recomputed.get(field) != proof.get(field):
+        elif recomputed.get(field) != proof.get(field, [] if field == "effective_universe_assets" else ""):
             return False, f"admission proof {field} is inconsistent"
     if (
         not proof.get("selected_zone_id")
@@ -343,7 +352,11 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         except (KeyError, TypeError, ValueError, OverflowError):
             return False, "admission proof zone timestamps are invalid"
     strategy_id = metadata.get("strategy_id")
-    symbol_policy = admit_symbol_account({"strategy_id": strategy_id, "asset": intent.get("asset")})
+    symbol_policy = admit_symbol_account(
+        {"strategy_id": strategy_id, "asset": intent.get("asset")},
+        effective_universe=proof.get("effective_universe_assets"),
+        effective_universe_version=proof.get("effective_universe_version"),
+    )
     if symbol_policy["symbol_account_gate"] != "pass":
         return False, "admission proof symbol-account policy is invalid"
     if intent.get("exchange_id") != "bybit" or intent.get("account_id") != symbol_policy["resolved_account"]:

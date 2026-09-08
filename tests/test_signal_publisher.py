@@ -20,7 +20,7 @@ def event(observed_at, valid_until):
         "schema_version": 1,
         "alpha_id": "a-1",
         "strategy_id": "continuation-breakout-v1",
-        "asset": "SOL",
+        "asset": "BTC",
         "direction": "long",
         "setup_class": "continuation_breakout",
         "phase": "confirmed_expansion",
@@ -33,10 +33,10 @@ def event(observed_at, valid_until):
         "targets": [150.2, 151.0],
         "data_freshness_seconds": 1.0,
         "structural_context": {
-            "asset": "SOL",
+            "asset": "BTC",
             "cutoff": observed_at.isoformat(),
             "zones": [{
-                "zone_id": "zone-signal", "asset": "SOL", "type": "order_block", "timeframe": "4h",
+                "zone_id": "zone-signal", "asset": "BTC", "type": "order_block", "timeframe": "4h",
                 "direction": "bullish", "low": 144.0, "high": 144.2, "state": "active",
                 "created_at": (observed_at - timedelta(hours=4)).isoformat(),
                 "confirmed_at": (observed_at - timedelta(hours=4)).isoformat(),
@@ -212,7 +212,7 @@ class SignalPublisherTests(unittest.TestCase):
     def test_format_contains_portable_signal_fields(self):
         payload = event(self.current_time, self.current_time + timedelta(hours=1))
         message = format_signal(payload)
-        for value in ("Continuation", "SOL", "LONG", "Confirmed expansion", "breakout above", "142.7", "150.2", "151", "2026-08-16 11:30 UTC", "2026-08-16 10:30 UTC"):
+        for value in ("Continuation", "BTC", "LONG", "Confirmed expansion", "breakout above", "142.7", "150.2", "151", "2026-08-16 11:30 UTC", "2026-08-16 10:30 UTC"):
             self.assertIn(value, message)
         self.assertNotIn("Confidence", message)
 
@@ -233,7 +233,7 @@ class SignalPublisherTests(unittest.TestCase):
         self.assertEqual(len(telegram.messages), 1)
         self.assertEqual(len(discord.messages), 1)
         self.assertIn("ALPHA SIGNAL", telegram.messages[0])
-        self.assertIn("**ALPHA SIGNAL · LONG · SOL**", discord.messages[0])
+        self.assertIn("**ALPHA SIGNAL · LONG · BTC**", discord.messages[0])
         channels = sorted(row[0] for row in self.rows("SELECT channel FROM signal_deliveries"))
         self.assertEqual(channels, ["discord", "telegram"])
 
@@ -267,7 +267,7 @@ class SignalPublisherTests(unittest.TestCase):
     def test_discord_format_matches_style_a(self):
         payload = event(self.current_time, self.current_time + timedelta(hours=1))
         message = format_discord_signal(payload)
-        self.assertIn("**ALPHA SIGNAL · LONG · SOL**", message)
+        self.assertIn("**ALPHA SIGNAL · LONG · BTC**", message)
         self.assertIn("Continuation", message)
         self.assertNotIn("Confidence", message)
 

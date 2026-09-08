@@ -1,5 +1,8 @@
 # Dual-Zone Follower v1
 
+> Archived historical specification. Its static-universe references are
+> superseded by `specs/strategy-symbol-performance-rotation-v1.md`.
+
 ## Status
 
 Build specification. Adopt the supplied strategy's intent, parameters, and

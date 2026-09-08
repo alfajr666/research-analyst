@@ -4,25 +4,17 @@
 
 Use public WebSocket ingestion rather than provider polling for the live market
 feed. The gateway maintains a continuous, resampled market-data feed for the
-static universe
-static universe (plus optional rotation). Evaluators keep reading the same
+rotation watchlist plus permanent assets. Evaluators keep reading the same
 `source_observations` tables; only the ingestion path changes.
 
-## Static universe (persistent, approved snapshot)
+## Dynamic subscription universe
 
-The agreed symbol list is sourced from the approved `propr_python.tradeable_assets`
-CRYPTO snapshot and persisted in the repo at
-**`symbols/static_universe.json`** (version-controlled, survives restarts/prunes). It stores
-canonical bases (e.g. `BTC`); `config.expand_perp_symbols(base, venue)` maps them to
-`BTCUSDT` perps per venue at load time.
-
-- Loaded via `config.load_static_symbols()` (env override `STATIC_SYMBOLS` comma list or
-  `STATIC_SYMBOLS_PATH`).
-- The approved snapshot yields **97 bases** (not 150). To reach 150, extend the JSON —
-  do not invent symbols. The file records `count` and `cap_target` for audit.
-- The symbol-rotation worker publishes the active performance feed. The gateway
-  consumes that feed and falls back to the approved static universe when it is
-  unavailable or not ready.
+The symbol-rotation worker ranks the valid Bybit linear USDT-perpetual ticker
+snapshot and publishes a versioned feed. The effective universe is the feed's
+unexpired sticky watchlist plus `BTC`, `ETH`, `PAXG`, and `QQQUSDT`. If the feed
+is unavailable, invalid, or expired, the gateway falls back to those permanent
+symbols only. There is no repository static symbol list and no static admission
+allowlist.
 
 ## Defaults
 
@@ -40,11 +32,12 @@ WebSocket topic.
 ## Capacity (no exhaustion risk)
 
 - **Bybit V5**: per-connection topic cap is low → **shard** symbols across a pool.
-  ~10–20 symbols/connection ⇒ ~8–15 connections for 150 symbols. Use a
+  ~10–20 symbols/connection ⇒ a small pool at the configured 80-symbol cap. Use a
   `ConnectionPool` that balances symbols and reconnects per-shard.
 - **Binance** (when enabled): single combined stream supports ≤1024 streams ⇒ one
   connection covers everything. Subscribe paced at ≤5 msg/s at startup.
-- Throughput: 97 symbols × 2 topics (5m+markPrice) ≈ 194 streams; markPrice peak ~97/s. Trivial.
+- Throughput at the default cap: 80 symbols × 2 topics (5m+markPrice) ≈ 160
+  streams; markPrice peak ~80/s. Trivial.
 
 ## Components
 

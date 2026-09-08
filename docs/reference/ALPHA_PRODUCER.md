@@ -223,8 +223,8 @@ orchestrator -> raw data + active watchlists -> evaluators -> alpha outbox
 
 | Process | Cadence | Watchlist | Responsibility |
 | --- | --- | --- | --- |
-| `ws_gateway` | continuous | static/optional rotated universe | Bybit WS 5m/mark; local resampling |
-| `orchestrator` | configured cutoff loop | strategy-specific assets / static universe | Finalized cutoffs, active plugins, admission, delivery |
+| `ws_gateway` | continuous | rotated watchlist plus permanent assets | Bybit WS 5m/mark; local resampling |
+| `orchestrator` | configured cutoff loop | cutoff-bound effective universe | Finalized cutoffs, active plugins, admission, delivery |
 | raw Discord batch | 30m UTC windows | captured candidates | Non-blocking observation delivery |
 
 The outbox is append-only and deduplicated by strategy, asset, direction, and

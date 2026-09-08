@@ -5,16 +5,18 @@ import hashlib
 import json
 import math
 from datetime import datetime, timezone
+from typing import Iterable
 
 import config
 from structural_stop import _normalise_closed_bar_timestamp, admit_selected_structural_stop
 from entry_policy import evaluate_entry_policy
 
 
-POLICY_VERSION = "symbol-account-policy-v1"
+POLICY_VERSION = "symbol-account-policy-v2"
 COMPACT_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 FUNDAMO_STRATEGIES = frozenset((
     "dual-zone-follower-v3", "dual-zone-short-follower-v3",
+    "ema99-retest-adx-v1",
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
@@ -45,18 +47,43 @@ def resolved_account(strategy_id: object) -> str:
     return str(route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro"))
 
 
-def admit_symbol_account(candidate: dict) -> dict:
-    """Apply the deterministic symbol/account safety boundary before scoring."""
+def _policy_assets(candidate: dict, effective_universe: Iterable[object] | None) -> list[str]:
+    if effective_universe is None:
+        effective_universe = candidate.get("effective_universe_assets")
+        if effective_universe is None:
+            proof = candidate.get("_admission_result")
+            if isinstance(proof, dict):
+                effective_universe = proof.get("effective_universe_assets")
+    if isinstance(effective_universe, dict):
+        effective_universe = effective_universe.get("assets")
+    if isinstance(effective_universe, (str, bytes)):
+        return []
+    return sorted({canonical_asset(asset) for asset in (effective_universe or []) if canonical_asset(asset)})
+
+
+def admit_symbol_account(
+    candidate: dict,
+    *,
+    effective_universe: Iterable[object] | None = None,
+    effective_universe_version: object | None = None,
+) -> dict:
+    """Apply the cutoff-bound symbol/account safety boundary before scoring."""
     strategy_id = str(candidate.get("strategy_id") or "")
     asset = canonical_asset(candidate.get("asset"))
     account = resolved_account(strategy_id)
+    policy_assets = _policy_assets(candidate, effective_universe)
+    proof = candidate.get("_admission_result")
+    proof_version = proof.get("effective_universe_version") if isinstance(proof, dict) else None
     rejection_reason = None
     if strategy_id in COMPACT_STRATEGIES and (account != "hyro" or asset not in COMPACT_ASSETS):
         rejection_reason = f"compact Hyro policy permits only {', '.join(sorted(COMPACT_ASSETS))}"
+    elif account == "hyro" and asset not in COMPACT_ASSETS:
+        rejection_reason = f"Hyro policy permits only {', '.join(sorted(COMPACT_ASSETS))}"
     elif account == "fundamo":
-        approved = {canonical_asset(asset) for asset in config.load_static_symbols()}
-        if asset not in approved:
-            rejection_reason = "asset is not in the approved universe"
+        if not policy_assets:
+            rejection_reason = "effective watchlist universe is unavailable"
+        elif asset not in set(policy_assets):
+            rejection_reason = "asset is not in the effective watchlist universe"
     return {
         "symbol_account_gate": "pass" if rejection_reason is None else "fail",
         "strategy_id": strategy_id,
@@ -64,6 +91,12 @@ def admit_symbol_account(candidate: dict) -> dict:
         "resolved_account": account,
         "policy_version": POLICY_VERSION,
         "rejection_reason": rejection_reason,
+        "effective_universe_assets": policy_assets,
+        "effective_universe_version": str(
+            effective_universe_version
+            if effective_universe_version is not None
+            else candidate.get("effective_universe_version") or proof_version or ""
+        ),
     }
 
 
@@ -153,9 +186,15 @@ def admit(
     candidate: dict,
     now: datetime | None = None,
     structural_context: dict | None = None,
+    effective_universe: Iterable[object] | None = None,
+    effective_universe_version: object | None = None,
 ) -> dict:
     """Return an auditable hard-gate result, including structural admission."""
-    symbol_policy = admit_symbol_account(candidate)
+    symbol_policy = admit_symbol_account(
+        candidate,
+        effective_universe=effective_universe,
+        effective_universe_version=effective_universe_version,
+    )
     reasons = []
     if symbol_policy["symbol_account_gate"] != "pass":
         reasons.append(f"symbol-account policy: {format_symbol_account_rejection(symbol_policy)}")
@@ -250,6 +289,8 @@ def resolve(
     *,
     structural_contexts: dict[str, dict] | None = None,
     now: datetime | None = None,
+    effective_universe: Iterable[object] | None = None,
+    effective_universe_version: object | None = None,
 ) -> dict:
     eligible = []
     results = []
@@ -268,7 +309,11 @@ def resolve(
                 "score_status": "not_evaluated",
             })
             continue
-        symbol_policy = admit_symbol_account(candidate)
+        symbol_policy = admit_symbol_account(
+            candidate,
+            effective_universe=effective_universe,
+            effective_universe_version=effective_universe_version,
+        )
         if symbol_policy["symbol_account_gate"] != "pass":
             results.append({
                 "candidate_id": candidate.get("candidate_id"),
@@ -282,7 +327,13 @@ def resolve(
             continue
         asset = canonical_asset(candidate.get("asset"))
         structural_context = (structural_contexts or {}).get(asset)
-        admission = admit(candidate, now=now, structural_context=structural_context)
+        admission = admit(
+            candidate,
+            now=now,
+            structural_context=structural_context,
+            effective_universe=effective_universe,
+            effective_universe_version=effective_universe_version,
+        )
         scored = score(candidate) if admission["hard_gate"] == "pass" else {"score_status": "not_evaluated"}
         result = {
             "candidate_id": candidate.get("candidate_id"),

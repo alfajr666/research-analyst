@@ -44,11 +44,11 @@ boundary, not a performance optimization.
 
 ## Terminology
 
-- **Approved universe**: the 92 canonical bases in
-  `symbols/static_universe.json`.
+- **Performance pool**: the valid Bybit linear USDT-perpetual ticker universe
+  available to the rotation snapshot. There is no repository static symbol list.
 - **Performance source**: the lightweight, point-in-time source used to obtain
   24-hour performance for every approved symbol.
-- **Rotation plugin**: the module that ranks the approved universe and publishes
+- **Rotation plugin**: the module that ranks the performance pool and publishes
   a versioned subscription feed. It is not a strategy plugin.
 - **Rotation feed**: the durable snapshot consumed by the gateway subscription
   supervisor.
@@ -61,8 +61,8 @@ boundary, not a performance optimization.
 
 ## Invariants
 
-1. The performance source is the valid Bybit linear USDT ticker universe; the
-   approved universe remains the symbol-account-strategy policy universe.
+1. The performance source is the valid Bybit linear USDT ticker universe. The
+   effective subscription universe is the rotation watchlist plus permanents.
 2. Strategies never call the rotation plugin or inspect rotation configuration.
 3. Strategies evaluate every symbol delivered by their evaluator input.
 4. The gateway never subscribes to an empty universe because of a feed failure.
@@ -74,27 +74,35 @@ boundary, not a performance optimization.
 
 ## Strategy Delivery
 
-The evaluator passes the same subscription universe to every active strategy
-applicable to the cutoff. No strategy may contain an asset allowlist or call
-`config.load_static_symbols()` to decide whether to evaluate a symbol.
+The evaluator passes the same effective subscription universe to every active
+strategy applicable to the cutoff. No strategy may contain an asset allowlist or
+decide whether to evaluate a symbol from account or rotation policy.
 
-The compact strategies remain restricted for trading through admission:
+All active strategies receive the same effective universe. Admission then applies
+the account policy: compact strategies are hard-routed to Hyro and restricted to
+permanent assets, while Fundamo strategies are hard-routed to Fundamo and may use
+the effective universe. Candidate account metadata cannot override these routes.
 
 ```text
-failed-break-v3                    -> hyro    -> BTC, ETH, PAXG, QQQUSDT
-bb-rsi-meanrev-v1                 -> hyro    -> BTC, ETH, PAXG, QQQUSDT
-williams-fractal-scalp-v1         -> hyro    -> BTC, ETH, PAXG, QQQUSDT
-ema9-continuation-stochrsi-v1     -> hyro    -> BTC, ETH, PAXG, QQQUSDT
-dual-zone-follower-v2             -> fundamo -> approved universe
-dual-zone-short-follower-v2      -> fundamo -> approved universe
-ema20-pullback-h4-trend-v1        -> fundamo -> approved universe
-ema-stack-15m-adx-stochrsi-5m-v1  -> fundamo -> approved universe
+failed-break-v3                                  -> hyro    -> BTC, ETH, PAXG, QQQUSDT
+bb-rsi-meanrev-v1                               -> hyro    -> BTC, ETH, PAXG, QQQUSDT
+williams-fractal-scalp-v1                       -> hyro    -> BTC, ETH, PAXG, QQQUSDT
+ema9-adx-stochrsi-state-v1                      -> hyro    -> BTC, ETH, PAXG, QQQUSDT
+dual-zone-follower-v3                           -> fundamo -> effective watchlist universe
+dual-zone-short-follower-v3                     -> fundamo -> effective watchlist universe
+ema99-retest-adx-v1                             -> fundamo -> effective watchlist universe
+ema20-pullback-h4-trend-v1                      -> fundamo -> effective watchlist universe
+gold-trend-ema-bb-stoch-v1                      -> fundamo -> effective watchlist universe
+mtf-exhaustion-reversal-v1                      -> fundamo -> effective watchlist universe
+ema99-double-touch-stochrsi-state-v1            -> fundamo -> effective watchlist universe
+ema7-26-cross-hammer-shooting-star-1h-adx-v1    -> fundamo -> effective watchlist universe
 ```
 
 All strategies calculate candidates for every symbol in the subscription
-universe. The hard gate rejects compact candidates for non-compact symbols
-before scoring and intent publication. When rotation is disabled, the same gate
-remains in force across all 92 symbols.
+universe. The hard gate rejects compact candidates for non-permanent symbols
+before scoring and intent publication. Fundamo candidates are admitted for any
+asset in the cutoff-bound effective watchlist universe. If rotation is disabled
+or unavailable, the safe scope is permanent-only.
 
 ## Configuration
 
@@ -117,20 +125,20 @@ rotating count must be a positive even number. The split is always equal:
 
 The permanent symbols are removed from the ranking pool before selecting the
 rotating sides, so they cannot consume rotating slots or be removed by ranking.
-When `SYMBOL_ROTATION_ENABLED=false`, the subscription universe is the approved
-universe passed through the sticky watchlist cap. This setting controls the
-upstream subscription universe and does not alter strategy code or
-symbol-account-strategy policy. See
+When `SYMBOL_ROTATION_ENABLED=false`, the subscription universe is the
+permanent-only safe scope. This setting controls the upstream subscription
+universe and does not alter strategy code or symbol-account-strategy policy. See
 `specs/sticky-symbol-watchlist-and-scope-router-v1.md`.
 
 ## Performance Source
 
-The rotation plugin must obtain performance for all approved symbols without
-depending on heavy candle subscriptions for the currently selected symbols.
+The rotation plugin must obtain performance for every eligible ticker in the
+performance pool without depending on heavy candle subscriptions for the
+currently selected symbols.
 Acceptable adapters include:
 
 - a lightweight exchange 24-hour ticker snapshot for all valid linear USDT contracts;
-- a low-frequency bar source retained for the approved policy universe;
+- a low-frequency bar source retained for the performance pool;
 - an external authoritative performance feed.
 
 The preferred adapter is a four-hour ticker snapshot with an explicit
@@ -207,7 +215,7 @@ The current startup-only `select_universe()` path must be replaced or extended
 with a supervisor that:
 
 1. Loads a valid feed before opening heavy WebSocket subscriptions.
-2. Uses the capped approved universe when rotation is disabled.
+2. Uses the permanent-only scope when rotation is disabled.
 3. Reconciles subscriptions at each feed version change.
 4. Cancels streams for removed symbols and starts streams for added symbols.
 5. Does not block WebSocket reads while computing or loading a feed.
@@ -253,7 +261,7 @@ Expose or persist:
 
 - feed ID and algorithm version;
 - refresh boundary and validity interval;
-- approved count;
+- performance-pool count;
 - qualified count;
 - configured rotating slot count;
 - gainers and losers selected;
@@ -263,8 +271,7 @@ Expose or persist:
 - symbol-account-strategy hard-gate rejection counts.
 
 Evaluation observability must report actual attempted symbols. It must not use a
-static `strategy_count * 92` approximation when the feed contains another
-number.
+fixed symbol-count approximation when the feed contains another number.
 
 ## Acceptance Criteria
 
@@ -274,14 +281,14 @@ number.
    44 or 64 subscriptions respectively.
 3. Permanent BTC, ETH, PAXG, and QQQUSDT are present in every non-empty feed.
 4. Rotation is recalculated only at four-hour UTC boundaries.
-5. Rotation disabled produces the deterministically capped approved universe.
+5. Rotation disabled produces the permanent-only scope.
 6. Every active strategy evaluates every subscribed symbol without local symbol
    filtering.
 7. Compact candidates for SOL are rejected for the Hyro account while compact
    candidates for BTC and QQQUSDT are eligible for further admission.
-8. Fundamo candidates for any approved subscribed symbol pass the
+8. Fundamo candidates for any effective-watchlist symbol pass the
    symbol-account-strategy gate, subject to normal price and risk gates.
-9. Discovery and Binance OI feeds cannot replace the approved performance pool.
+9. Discovery and Binance OI feeds cannot replace the Bybit performance pool.
 10. Missing performance data retains a valid feed or falls back visibly to the
     permanent symbols; it never silently fabricates rankings.
 11. A gateway restart and feed replay are idempotent.
@@ -305,7 +312,7 @@ number.
 ### Subscription supervisor integration tests
 
 - Feed version changes reconcile the effective capped universe at each boundary.
-- Rotation disabled reconciles to the deterministically capped approved universe.
+- Rotation disabled reconciles to the permanent-only scope.
 - Repeated feed versions do not duplicate streams.
 - Refresh failure retains the previous feed.
 - Expiry falls back to the permanent symbols.
@@ -316,12 +323,12 @@ number.
 - A probe strategy receives every symbol in the subscription universe.
 - No strategy imports or calls rotation policy.
 - Compact Hyro symbols pass only for BTC, ETH, PAXG, and QQQUSDT.
-- Non-compact Fundamo symbols pass for approved assets.
+- Fundamo symbols pass for effective-watchlist assets.
 - Rejections are recorded before scoring and intent publication.
 
 ### End-to-end tests
 
-1. Seed 92 approved symbols and a deterministic all-92 performance snapshot.
+1. Seed a deterministic Bybit ticker snapshot with more than 30 eligible assets.
 2. Run the rotation plugin and atomically publish a 34-symbol feed.
 3. Start the gateway subscription supervisor and assert 34 subscriptions,
    including all four permanent symbols.

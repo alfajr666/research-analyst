@@ -12,8 +12,8 @@
 A research-grade, venue-neutral **discovery + strategy-evaluation** engine for
 crypto perpetuals. It continuously:
 
-1. Maintains a market-data feed for a **static 97-symbol universe** (sourced from
-    an approved tradeable-assets snapshot), with an optional **performance-rotated subscription feed**.
+1. Maintains a market-data feed for the **performance-rotated watchlist plus
+    permanent assets**.
 2. Evaluates **strategies as plugins** on **5m / 15m** bars, using **HTF
     (1h/4h) swing + FVG/OB** context from the regime-owned direct cache.
 3. Emits a **trade intent** per evaluation — a falsifiable directional thesis
@@ -37,7 +37,7 @@ The engine **never holds exchange credentials and never places orders**.
                  └───────────────────────────┬─────────────────────────────┘
                                              │ source_observations (ws_bars)
                                              ▼
-   static_universe.json (approved snapshot, 97)  ──►  discovery / universe selection
+    Bybit ticker snapshot  ──►  rotation feed / effective universe selection
                                              │
                                              ▼
                  ┌─────────────────────────────────────────────────────────┐
@@ -62,9 +62,9 @@ The engine **never holds exchange credentials and never places orders**.
 
 | Module | Responsibility |
 | --- | --- |
-| `config.py` | Env-driven config, SQLite schemas (`init_db`), **static-universe loader** (`load_static_symbols`, `expand_perp_symbols`), WS toggles. |
+| `config.py` | Env-driven config, SQLite schemas (`init_db`), symbol expansion (`expand_perp_symbols`), WS toggles. |
 | `orchestrator.py` | Main loop. `_run_pipeline()` runs ingest → scanner → prune → confluence alerts → regime evaluator → cutoff → feature materialization → plugins → outcome eval → `health.json`. |
-| `symbol_rotation.py` | Publishes the versioned performance-ranked subscription feed with a static-universe fallback. |
+| `symbol_rotation.py` | Publishes the versioned performance-ranked subscription feed with a permanent-only fallback. |
 | `strategy_plugins.py` | Plugin **registry + invocation**. `StrategyPlugin` dataclass, `STRATEGY_ENABLED_IDS`, `invoke_plugins_for_cutoff()` (failure-isolated). |
 | `strategy_v2_context.py` | Shared TA context: direct cutoff-bound 1h/4h loading, auxiliary 15m resampling, `ema_last`, `atr_last`, `structure_bias_4h`, `zone_bias_4h`, `compute_htf_zones`, `compression_ok`, `zone_stack_and_ltf_scores`, `has_active_event`. |
 | `structure_zones.py` | **HTF FVG + Order Block** detection (`detect_fvg`, `detect_order_blocks`, `compute_atr`) on caller-supplied cutoff-bound 1h/4h bars. Advisory zones. |
@@ -79,7 +79,6 @@ The engine **never holds exchange credentials and never places orders**.
 | `ws_gateway.py` | Sole market writer: Bybit public 5m stream, recent execution backfill, and auxiliary 15m resampling. |
 | `llm_client.py` + `research_*.py` | Provider-neutral bounded LLM client + research coordinator (advisory only today). |
 | `specs/` | ADR-style specs, including the direct HTF and event-driven evaluation contracts. |
-| `symbols/static_universe.json` | **Persistent static universe** (approved CRYPTO snapshot, 97 bases). Version-controlled. |
 
 ---
 
@@ -143,7 +142,7 @@ Mapping (internal α-event → executor intent):
 | `delivery_id` | `alpha_id` (stable; executor journal dedupes) |
 | `source` | `INTENT_SOURCE` (default `research-analyst`) |
 | `exchange_id` | `INTENT_EXCHANGE_ID` (default `bybit`) |
-| `account_id` | `INTENT_ACCOUNT_ID` (default `hyro`; compact strategies are forced here) |
+| `account_id` | Per-strategy route; compact strategies are forced to `hyro`, Fundamo strategies are hard-routed to `fundamo`, otherwise `INTENT_ACCOUNT_ID` (default `hyro`) |
 | `asset` | `asset` |
 | `symbol` | `to_ccxt_perp_symbol(asset)` → `BTC/USDT:USDT` |
 | `direction` | `direction` upper (`long/bullish`→`LONG`, `short/bearish`→`SHORT`) |
@@ -178,18 +177,20 @@ the executor remains strategy-dumb but safety-authoritative.
 
 ---
 
-## 6. Static universe & rotation
+## 6. Effective universe & rotation
 
-- **Static (97 symbols).** `symbols/static_universe.json` is the persisted,
-  git-tracked source, generated from an approved `propr_python.tradeable_assets`
-  `CRYPTO` type. Canonical bases (e.g. `BTC`).
-  - `config.load_static_symbols()` reads it (env override `STATIC_SYMBOLS`, or
-    `STATIC_SYMBOLS_PATH`).
-  - `config.expand_perp_symbols(base, venue)` → `BTCUSDT` perps for Bybit/Binance.
-- **Rotation.** The symbol-rotation worker publishes a versioned performance feed;
-  `ws_gateway` consumes it and falls back to the static universe when necessary.
-- **Capacity.** 97 symbols × (5m kline + markPrice) ≈ 194 streams — well within
-  Bybit's sharded-pool and Binance's 1024-stream limits (see `specs/ws-ingestion.md`).
+- **Performance pool.** The rotation worker ranks the valid Bybit linear
+  USDT-perpetual ticker snapshot; no repository static symbol list is used.
+- **Effective universe.** `ws_gateway` consumes the rotation feed's unexpired
+  sticky watchlist plus `BTC`, `ETH`, `PAXG`, and `QQQUSDT`. Invalid or expired
+  feeds fail closed to those permanent symbols.
+- **Account policy.** Compact strategies are forced to Hyro and admit only the
+  four permanent assets; they are never delivered to Fundamo. Fundamo strategies
+  admit every asset in the cutoff-bound effective universe. Candidate metadata and
+  caller arguments cannot override either route. This policy is checked during
+  admission, not in strategy plugins.
+- **Capacity.** The default 80-symbol effective-universe cap produces at most
+  160 5m/markPrice streams (see `specs/ws-ingestion.md`).
 
 ---
 
@@ -244,9 +245,9 @@ the executor remains strategy-dumb but safety-authoritative.
   = `{id, version, required_datasets, optional_datasets, run}`.
 - **Enable/disable:** `config.STRATEGY_ENABLED_IDS` (allowlist), plus
   `STRATEGY_ACTIVE_IDS` and `plugin_states`. Active plugins form the live admission
-  set; legacy compact strategies retain their restricted assets while Dual-Zone
-  strategies evaluate the static universe. Other registered plugins remain available
-  for research.
+  set; compact Hyro strategies retain their four permanent-asset restriction while
+  Fundamo strategies evaluate the effective watchlist universe. Other registered
+  plugins remain available for research.
 - **Active/inactive [TARGET nuance]:** currently "enabled" = participates in the
   cutoff. Add a **runtime `active` flag** (per-plugin, toggleable without restart)
   distinct from the compiled `enabled` allowlist, so a strategy can be
@@ -324,8 +325,6 @@ through pruning.
 
 | Env | Default | Purpose |
 | --- | --- | --- |
-| `STATIC_SYMBOLS_PATH` | `symbols/static_universe.json` | Persistent static universe. |
-| `STATIC_SYMBOLS` | "" | Comma override of the universe. |
 | `WS_BYBIT_ENABLED` | `true` | Primary public WS source. |
 | `WS_BINANCE_ENABLED` | `false` | Opt-in WS source. |
 | `WS_STREAM_TIMEFRAMES` | `5m` | Base streamed TF (15m resampled from 5m). |
@@ -341,7 +340,7 @@ through pruning.
 
 ## 15. Build order (recommended)
 
-1. **Static universe** — ✅ done (`symbols/static_universe.json` + `config` loaders).
+1. **Rotation feed** — ✅ done (versioned watchlist plus permanent-only fallback).
 2. **WS ingestion** — `ws_gateway.py` (ConnectionPool/StreamRouter/IngestBuffer) +
    `ResampleWorker`; Backfill seed; purity stamping. (`specs/ws-ingestion.md`)
 3. **Swing enrichment** — expose swing levels from `structure_zones` as advisory
@@ -363,15 +362,15 @@ through pruning.
      `config.PRUNE_INTERVAL_DAYS` (5m=30d, 15m=90d, 1h/4h=365d; `0` disables a tier).
     Uncovered intervals fall back to the legacy `futures_retention_days`.
   9. **Performance rotation** ✅ — the symbol-rotation worker publishes the
-     versioned feed consumed by `ws_gateway`; the gateway retains static symbols
-     as the deterministic fallback.
+      versioned feed consumed by `ws_gateway`; the gateway retains permanent
+      symbols as the deterministic fallback.
 
 ---
 
 ## 16. Open items
 
-- **Count:** the approved CRYPTO snapshot currently yields **97** bases, not 150.
-  Working set = 97 unless the universe is extended.
+- **Universe:** the effective working set is the rotation watchlist plus four
+  permanent assets, capped at 80 symbols; no static snapshot is maintained.
 - **Swing levels** are enrichment inside `structure_zones` (scored like FVG/OB), not
   a standalone detector.
 - **Binance WS** off by default; enable only after Bybit path is proven.

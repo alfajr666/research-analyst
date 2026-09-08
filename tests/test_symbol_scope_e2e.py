@@ -13,13 +13,11 @@ class SymbolScopeE2ETests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.db = Path(self.directory.name) / "market.db"
         self.previous = {
-            "STATIC_SYMBOLS_OVERRIDE": config.STATIC_SYMBOLS_OVERRIDE,
             "SYMBOL_ROTATION_ENABLED": config.SYMBOL_ROTATION_ENABLED,
             "SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT": config.SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT,
             "SYMBOL_ROTATION_FEED_PATH": config.SYMBOL_ROTATION_FEED_PATH,
         }
         self.assets = [f"COIN{index:02d}" for index in range(92)]
-        config.STATIC_SYMBOLS_OVERRIDE = ",".join(self.assets)
         config.SYMBOL_ROTATION_ENABLED = True
         config.SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT = 30
         config.SYMBOL_ROTATION_FEED_PATH = self.db.with_name("rotation-feed.json")
@@ -95,8 +93,8 @@ class SymbolScopeE2ETests(unittest.TestCase):
             all_events = ema99_retest_adx_v1.run_plugin("cutoff-full", snapshot)
 
         self.assertEqual(len(selected_events), 34)
-        self.assertEqual(len(all_events), 80)
-        self.assertEqual(evaluate.call_count, 114)
+        self.assertEqual(len(all_events), 4)
+        self.assertEqual(evaluate.call_count, 38)
         self.assertNotIn("JUNK", {event["asset"] for event in selected_events + all_events})
 
     def test_feed_supervisor_reconciles_and_falls_back_to_feed_symbols(self):
@@ -132,7 +130,7 @@ class SymbolScopeE2ETests(unittest.TestCase):
 
         config.SYMBOL_ROTATION_ENABLED = False
         full, disabled_metadata = subscription_state(next_boundary + timedelta(minutes=1))
-        self.assertEqual(len(full), 80)
+        self.assertEqual(len(full), 4)
         self.assertEqual(disabled_metadata["status"], "disabled")
 
         config.SYMBOL_ROTATION_ENABLED = True
@@ -156,8 +154,8 @@ class SymbolScopeE2ETests(unittest.TestCase):
             disabled_events = bb_rsi_meanrev_v1.run_plugin("compact-disabled", snapshot)
 
         self.assertEqual(len(enabled_events), 34)
-        self.assertEqual(len(disabled_events), 80)
-        self.assertEqual(evaluate.call_count, 114)
+        self.assertEqual(len(disabled_events), 4)
+        self.assertEqual(evaluate.call_count, 38)
 
 
 if __name__ == "__main__":

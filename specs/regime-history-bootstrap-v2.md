@@ -270,9 +270,9 @@ backfill job tables on its writer connection.
 - Delete old rows before any throttled compaction.
 - `VACUUM` must run only on the regime worker's writer connection.
 
-At 336 1h bars and 270 4h bars per asset for 92 assets, the direct cache is
-approximately 55,700 raw bars. Storage remains negligible compared with the
-existing market database.
+At 336 1h bars and 270 4h bars per asset for the 80-symbol effective-universe
+cap, the direct cache is approximately 48,500 raw bars. Storage remains
+negligible compared with the existing market database.
 
 ## 9. Failure Semantics
 
@@ -289,13 +289,13 @@ existing market database.
 
 ## 10. Resource Budget
 
-For 34 active assets and 92 approved assets:
+For a 34-symbol normal feed and an 80-symbol effective-universe cap:
 
 ```text
 Live WebSocket topics:          34 x 5m = 34
 Regime 1h/4h WebSocket topics:  0
-Initial direct 1h rows:         92 x 336 ~= 30,900
-Initial direct 4h rows:         92 x 270 ~= 24,800
+Initial direct 1h rows:         80 x 336 ~= 26,900
+Initial direct 4h rows:         80 x 270 ~= 21,600
 Initial direct history requests: paginated, independently retried per asset
 Regime DB writers:               1
 Market DB writers:               1
@@ -330,7 +330,7 @@ version and affected strategy replay results.
 ## 12. Explicit Non-Goals
 
 - No direct 1h/4h WebSocket subscription.
-- No continuous 1h/4h stream for the full approved universe.
+- No continuous 1h/4h stream for the full effective rotation universe.
 - No direct 1h/4h history written by the gateway.
 - No direct 1h/4h history used outside the engine hybrid contract.
 - No reduction of the 57-bar ADX readiness requirement.

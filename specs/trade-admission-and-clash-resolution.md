@@ -36,16 +36,12 @@ disagree or agree on the same symbol?**
 
 ## Scope
 
-This policy applies to the four live compact strategies:
-
-- `failed-break-v3`
-- `bb-rsi-meanrev-v1`
-- `williams-fractal-scalp-v1`
-- `ema9-continuation-stochrsi-v1`
-
-It applies before intent delivery to the exclusively configured `bybit / hyro`
-executor route. Advisory alpha events may retain candidates that do not become
-executor intents.
+This policy applies to every live strategy candidate. Compact strategies are
+hard-routed to Bybit Hyro and restricted to the four permanent assets. Fundamo
+strategies are hard-routed to Bybit Fundamo and may use the cutoff-bound effective
+universe. Candidate account metadata cannot override these routes. It applies
+before intent delivery. Advisory alpha events may retain candidates that do not
+become executor intents.
 
 ## Candidate Contract
 

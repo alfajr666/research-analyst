@@ -938,7 +938,7 @@ async def run_async() -> None:
         print(f"[ws_gateway] repaired {repaired} legacy 5m boundary aliases")
     bases, feed = subscription_state()
     if not bases:
-        print("[ws_gateway] empty universe; check static_universe.json and symbol rotation feed")
+        print("[ws_gateway] empty universe; check the symbol rotation feed")
         return
     print(f"[ws_gateway] universe={len(bases)} symbols; bybit={config.WS_BYBIT_ENABLED} binance={config.WS_BINANCE_ENABLED}; streamed TFs={STREAMED_TFS}")
     _HEALTH["subscribed_count"] = len(bases)
