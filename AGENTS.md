@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-05
+**Last reviewed:** 2026-09-08
 
 This repository is a read-and-decide market research service. It produces
 auditable candidates and validated trade intents. It does not hold exchange
@@ -182,6 +182,21 @@ Propr fan-out is independent and enabled only by its shared-bus switch.
 Production strategies use the repository's tested in-house EMA, RSI, ATR, ADX,
 StochRSI, and Bollinger implementations. A TA library cannot replace them
 without numerical parity tests and an explicit strategy-version change.
+
+## Discord Signal Batch Table
+
+Raw-signal batch messages use a fixed-width table with explicit `asset name` and
+`strategy` columns:
+
+```text
+asset name  side   strategy                 desc
+──────────  ─────  ───────────────────────  ────
+ASTR        SHORT  dual-zone-short-foll...  PASS
+```
+
+Strategy values longer than the 23-character display column are shortened with
+`...` for readability. This is display-only; the raw and canonical strategy
+IDs remain unchanged.
 
 ## Admission And Delivery
 

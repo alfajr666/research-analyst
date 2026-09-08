@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-09-07
+**Last reviewed:** 2026-09-08
 
 Research Analyst is a read-and-decide market research service. It consumes
 public market data, evaluates versioned strategy plugins, records auditable
@@ -61,6 +61,21 @@ turn a successful evaluation into a failed market pipeline.
 All production services are managed by `oxmgr`. Never start a second gateway,
 regime worker, or orchestrator manually. Position management is owned by the
 separate `standalone-llm-pm` service.
+
+## Discord Signal Batch Format
+
+Raw-signal batch messages use a fixed-width table so asset names, sides, and
+strategy names remain easy to scan:
+
+```text
+asset name  side   strategy                 desc
+──────────  ─────  ───────────────────────  ────
+ASTR        SHORT  dual-zone-short-foll...  PASS
+```
+
+The `strategy` display column is limited to 23 characters; longer strategy
+values receive a `...` suffix. This only shortens the notification text. Raw
+candidate records and canonical strategy IDs are never truncated.
 
 ## Database Ownership
 

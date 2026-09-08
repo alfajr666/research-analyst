@@ -134,10 +134,23 @@ def test_render_shows_all_raw_candidates_as_strategy_pass(monkeypatch):
 
     message = render(rows, datetime(2026, 8, 29, 5, 30, tzinfo=timezone.utc))
 
-    assert "strat                    desc" in message
+    assert "asset name  side   strategy                 desc" in message
     assert "NIULAI" in message
     assert "BTC" in message
     assert message.count("PASS") == 2
+
+
+def test_render_truncates_long_strategy_names(monkeypatch):
+    monkeypatch.setattr(config, "RAW_SIGNAL_DISCORD_BATCH_MINUTES", 30)
+    rows = [(
+        "raw-id", "candidate-id", "dual-zone-short-follower-v3", "ASTR", "short",
+        "2026-08-29T05:40:00Z", "{}", None,
+    )]
+
+    message = render(rows, datetime(2026, 8, 29, 5, 30, tzinfo=timezone.utc))
+
+    assert "ASTR        SHORT  dual-zone-short-foll...  PASS" in message
+    assert "dual-zone-short-follower-v3" not in message
 
 
 def test_render_shows_raw_candidate_without_admission_status(monkeypatch):

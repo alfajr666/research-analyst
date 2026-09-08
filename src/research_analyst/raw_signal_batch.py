@@ -86,15 +86,19 @@ def _display_reason(value, limit=60):
     text = " ".join(str(value).split())
     return text if len(text) <= limit else text[:limit - 3].rstrip() + "..."
 
+def _display_text(value, limit):
+    text = str(value)
+    return text if len(text) <= limit else text[:limit - 3].rstrip() + "..."
+
 def render(rows, start, skipped_symbols=0):
     end = start + timedelta(minutes=config.RAW_SIGNAL_DISCORD_BATCH_MINUTES)
     lines = [f"📊 SIGNAL · research-analyst · {config.RAW_SIGNAL_DISCORD_BATCH_MINUTES}m",
              f"window {start:%H:%M}–{end:%H:%M} UTC", "```",
-             "asset  side   strat                    desc",
-             "─────  ─────  ───────────────────────  ────"]
+             "asset name  side   strategy                 desc",
+             "──────────  ─────  ───────────────────────  ────"]
     for row in rows[:5]:
         lines.append(
-            f"{row[3]:<5}  {row[4].upper():<5}  {row[2]:<23}  PASS"
+            f"{row[3]:<10}  {row[4].upper():<5}  {_display_text(row[2], 23):<23}  PASS"
         )
     lines.append("```")
     remaining = max(0, len(rows) - 5)
