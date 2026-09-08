@@ -32,6 +32,11 @@ STRUCTURAL_ATR_PERIOD = 14
 STRUCTURAL_MIN_ATR_MULTIPLE = 0.5
 STRUCTURAL_MAX_ATR_MULTIPLE = 3.0
 STRUCTURAL_ADMISSION_CONTRACT_VERSION = "structural-sl-admission-v3"
+STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION = "structural-sl-admission-v4-15m"
+STRUCTURAL_15M_SOURCE_MODE = "market_5m_resampled"
+STRUCTURAL_15M_SOURCE_EXCHANGE = "bybit"
+STRUCTURAL_15M_RESAMPLING_CONTRACT_VERSION = "execution-5m-to-15m-v1"
+STRUCTURAL_ZONE_DETECTOR_VERSION = "structure-zones-v1"
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -64,23 +69,49 @@ def _bar_window_is_covered(bars: Any, timeframe: str, required: int, cutoff: dat
     """Require a contiguous, sufficiently warm direct-history window."""
     if bars is None or getattr(bars, "height", 0) < required:
         return False
-    required_columns = {"timestamp", "open", "high", "low", "close", "bar_id"}
+    required_columns = {"timestamp", "open", "high", "low", "close"}
+    if timeframe == "15m":
+        required_columns.add("source_observation_ids")
+    else:
+        required_columns.add("bar_id")
     if not required_columns.issubset(set(getattr(bars, "columns", []))):
         return False
-    for row in bars.select(sorted(required_columns)).to_dicts():
+    if timeframe == "15m" and "source" not in bars.columns:
+        return False
+    validation_columns = set(required_columns)
+    if timeframe == "15m":
+        validation_columns.add("source")
+        if "source_provenance" in bars.columns:
+            validation_columns.add("source_provenance")
+    for row in bars.select(sorted(validation_columns)).to_dicts():
         try:
             prices = [float(row[key]) for key in ("open", "high", "low", "close")]
         except (TypeError, ValueError):
             return False
-        if (
-            not all(math.isfinite(price) and price > 0 for price in prices)
-            or prices[2] > min(prices[0], prices[3])
-            or prices[1] < max(prices[0], prices[3])
-            or not str(row["bar_id"]).strip()
-        ):
+        if not all(math.isfinite(price) and price > 0 for price in prices):
             return False
+        if prices[2] > min(prices[0], prices[3]) or prices[1] < max(prices[0], prices[3]):
+            return False
+        if timeframe != "15m" and not str(row["bar_id"]).strip():
+            return False
+        if timeframe == "15m":
+            source_ids = row["source_observation_ids"]
+            if (
+                not isinstance(source_ids, list)
+                or not source_ids
+                or not all(isinstance(value, str) and value.strip() for value in source_ids)
+            ):
+                return False
+            sources = row.get("source_provenance") or [row.get("source")]
+            if not all(
+                source in {"bybit_rest", getattr(config, "BYBIT_WS_SOURCE", "bybit_ws")}
+                for source in sources
+            ):
+                return False
     timestamps = [_timestamp(value) for value in bars["timestamp"].to_list()]
-    seconds = 3600 if timeframe == "1h" else 14400
+    seconds = {"15m": 900, "1h": 3600, "4h": 14400}.get(timeframe)
+    if seconds is None:
+        return False
     if not all(
         left is not None and right is not None
         and int((right - left).total_seconds()) == seconds
@@ -90,12 +121,14 @@ def _bar_window_is_covered(bars: Any, timeframe: str, required: int, cutoff: dat
     if timestamps[-1] is None:
         return False
     cutoff = _utc(cutoff)
-    expected_end = cutoff.replace(
-        hour=cutoff.hour - cutoff.hour % (1 if timeframe == "1h" else 4),
-        minute=0,
-        second=0,
-        microsecond=0,
-    )
+    expected_end = cutoff.replace(second=0, microsecond=0)
+    if timeframe == "15m":
+        expected_end = expected_end.replace(minute=expected_end.minute - expected_end.minute % 15)
+    else:
+        expected_end = expected_end.replace(
+            hour=cutoff.hour - cutoff.hour % (1 if timeframe == "1h" else 4),
+            minute=0,
+        )
     return timestamps[-1] == expected_end
 
 
@@ -162,13 +195,16 @@ def select_structural_zone(
     entry: float,
     cutoff: datetime,
 ) -> dict[str, Any] | None:
-    """Choose the latest eligible directional zone, with 4h priority."""
+    """Choose the latest eligible directional zone, with configured priority."""
     wanted = "bullish" if direction == "long" else "bearish" if direction == "short" else None
     asset = _canonical_asset(asset)
     if wanted is None or not _finite_positive(entry):
         return None
     cutoff = _utc(cutoff)
-    for timeframe in ("4h", "1h"):
+    timeframes = ("4h", "1h")
+    if getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False):
+        timeframes += ("15m",)
+    for timeframe in timeframes:
         eligible = []
         for raw in zones:
             zone = _normalise_zone(raw, asset, timeframe)
@@ -197,6 +233,7 @@ def build_structural_contexts(
     cutoff: datetime,
     *,
     regime_db_path: str | None = None,
+    market_db_path: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Build HTF zones and ATR only for assets that emitted candidates."""
     assets = sorted({_canonical_asset(candidate.get("asset")) for candidate in candidates if candidate.get("asset")})
@@ -207,26 +244,42 @@ def build_structural_contexts(
             "zones": [],
             "atr_by_timeframe": {},
             "atr_source_bar_ids": {},
+            "frame_source_bar_ids": {},
             "coverage_status": {},
+            "timeframe_provenance": {},
         }
         for asset in assets
     }
     if not assets:
         return contexts
+    regime_conn = None
+    market_conn = None
     try:
         from regime_history import load_regime_1h_bars, load_regime_4h_bars
-        from strategy_v2_context import wilder_atr
+        from strategy_v2_context import load_bars_for_interval, wilder_atr
         from structure_zones import detect_fvg, detect_order_blocks
-        conn = config.get_db_connection(
+        regime_conn = config.get_db_connection(
             read_only=True,
             db_path=regime_db_path or config.REGIME_DB_PATH,
         )
+        if getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False):
+            market_conn = config.get_db_connection(
+                read_only=True,
+                db_path=market_db_path or config.MARKET_DB_PATH,
+            )
     except Exception:
+        if regime_conn is not None:
+            regime_conn.close()
+        if market_conn is not None:
+            market_conn.close()
         return contexts
     try:
         for asset in assets:
             for timeframe, loader in (("4h", load_regime_4h_bars), ("1h", load_regime_1h_bars)):
-                bars = loader(conn, asset, cutoff)
+                contexts[asset]["timeframe_provenance"][timeframe] = {
+                    "source_mode": "bybit_rest_direct",
+                }
+                bars = loader(regime_conn, asset, cutoff)
                 required = int(getattr(
                     config,
                     f"REGIME_{'4H' if timeframe == '4h' else '1H'}_READINESS_BARS",
@@ -252,8 +305,57 @@ def build_structural_contexts(
                     normalised = _normalise_zone(source_zone, asset, timeframe)
                     if normalised is not None:
                         contexts[asset]["zones"].append(normalised)
+            if market_conn is not None:
+                timeframe = "15m"
+                contexts[asset]["timeframe_provenance"][timeframe] = {
+                    "source_mode": STRUCTURAL_15M_SOURCE_MODE,
+                    "source_exchange": STRUCTURAL_15M_SOURCE_EXCHANGE,
+                    "resampling_contract_version": STRUCTURAL_15M_RESAMPLING_CONTRACT_VERSION,
+                    "zone_detector_version": STRUCTURAL_ZONE_DETECTOR_VERSION,
+                }
+                bars = load_bars_for_interval(
+                    market_conn,
+                    asset,
+                    timeframe,
+                    cutoff,
+                    int(getattr(config, "STRUCTURAL_15M_LOOKBACK_DAYS", 16)),
+                )
+                required = int(getattr(config, "STRUCTURAL_15M_READINESS_BARS", 57))
+                covered = _bar_window_is_covered(bars, timeframe, required, cutoff)
+                contexts[asset]["coverage_status"][timeframe] = "covered" if covered else "incomplete"
+                if covered:
+                    atr = wilder_atr(bars, STRUCTURAL_ATR_PERIOD)
+                    if atr is None or not math.isfinite(atr) or atr <= 0:
+                        contexts[asset]["coverage_status"][timeframe] = "invalid_atr"
+                    else:
+                        contexts[asset]["atr_by_timeframe"][timeframe] = atr
+                        source_ids = sorted({
+                            str(item_id)
+                            for row in bars["source_observation_ids"].to_list()
+                            for item_id in row
+                            if item_id
+                        })
+                        contexts[asset]["atr_source_bar_ids"][timeframe] = source_ids
+                        contexts[asset]["frame_source_bar_ids"][timeframe] = source_ids
+                        for zone in detect_fvg(bars, atr=atr, tf=timeframe) + detect_order_blocks(bars, atr=atr, tf=timeframe):
+                            source_zone = dict(zone)
+                            source_zone.setdefault("asset", asset)
+                            source_zone.setdefault("coverage_status", "covered")
+                            source_zone.setdefault("source_mode", STRUCTURAL_15M_SOURCE_MODE)
+                            source_zone.setdefault("source_exchange", STRUCTURAL_15M_SOURCE_EXCHANGE)
+                            source_zone.setdefault(
+                                "resampling_contract_version", STRUCTURAL_15M_RESAMPLING_CONTRACT_VERSION,
+                            )
+                            source_zone.setdefault("zone_detector_version", STRUCTURAL_ZONE_DETECTOR_VERSION)
+                            source_zone.setdefault("confirmed_at", source_zone.get("created_at"))
+                            normalised = _normalise_zone(source_zone, asset, timeframe)
+                            if normalised is not None:
+                                contexts[asset]["zones"].append(normalised)
     finally:
-        conn.close()
+        if regime_conn is not None:
+            regime_conn.close()
+        if market_conn is not None:
+            market_conn.close()
     return contexts
 
 
@@ -292,6 +394,8 @@ def admit_selected_structural_stop(
         "structural_atr_source_bar_ids": [],
         "structural_context_cutoff": None,
     }
+    if getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False):
+        result["structural_admission_contract_version"] = STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION
     if not isinstance(context, dict):
         result["structural_stop_gate"] = "unavailable"
         result["structural_stop_reasons"].append("structural context is unavailable")
@@ -332,7 +436,16 @@ def admit_selected_structural_stop(
         cutoff=context_cutoff,
     )
     if zone is None:
-        result["structural_stop_reasons"].append("no eligible HTF structural zone")
+        if getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False):
+            fifteen_status = (context.get("coverage_status") or {}).get("15m")
+            if fifteen_status is None:
+                result["structural_stop_reasons"].append("15m structural context unavailable")
+            elif fifteen_status != "covered":
+                result["structural_stop_reasons"].append("15m structural frame incomplete or gapped")
+            else:
+                result["structural_stop_reasons"].append("no eligible 15m HTF structural zone")
+        else:
+            result["structural_stop_reasons"].append("no eligible HTF structural zone")
         return result
     timeframe = zone["timeframe"]
     atr = (context.get("atr_by_timeframe") or {}).get(timeframe)
@@ -378,17 +491,33 @@ def admit_selected_structural_stop(
         "structural_atr": float(atr),
         "structural_atr_source_bar_ids": source_bar_ids,
     })
+    if timeframe == "15m":
+        result["structural_admission_contract_version"] = STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION
+        result.update({
+            "structural_15m_zones_enabled": True,
+            "structural_source_mode": zone.get("source_mode"),
+            "structural_source_exchange": zone.get("source_exchange"),
+            "structural_resampling_contract_version": zone.get("resampling_contract_version"),
+            "structural_zone_detector_version": zone.get("zone_detector_version"),
+            "structural_frame_bar_ids": list(
+                (context.get("frame_source_bar_ids") or {}).get("15m", source_bar_ids)
+            ),
+        })
     min_multiple = float(getattr(config, "STRUCTURAL_STOP_MIN_ATR_MULTIPLE", STRUCTURAL_MIN_ATR_MULTIPLE))
     max_multiple = float(getattr(config, "STRUCTURAL_STOP_MAX_ATR_MULTIPLE", STRUCTURAL_MAX_ATR_MULTIPLE))
     if entry_location != "inside":
         if entry_buffer_atr < min_multiple:
-            result["structural_stop_reasons"].append("entry is too close to HTF zone")
+            result["structural_stop_reasons"].append(f"entry is too close to {timeframe} zone")
         if entry_buffer_atr > max_multiple:
-            result["structural_stop_reasons"].append("entry is too far from HTF zone")
+            result["structural_stop_reasons"].append(f"entry is too far from {timeframe} zone")
     if buffer_atr < min_multiple:
-        result["structural_stop_reasons"].append("structural stop buffer is below minimum ATR multiple")
+        result["structural_stop_reasons"].append(
+            f"{timeframe + ' ' if timeframe == '15m' else ''}structural stop buffer is below minimum ATR multiple"
+        )
     if buffer_atr > max_multiple:
-        result["structural_stop_reasons"].append("structural stop buffer is above maximum ATR multiple")
+        result["structural_stop_reasons"].append(
+            f"{timeframe + ' ' if timeframe == '15m' else ''}structural stop buffer is above maximum ATR multiple"
+        )
     if not result["structural_stop_reasons"]:
         result["structural_stop_gate"] = "pass"
     return result

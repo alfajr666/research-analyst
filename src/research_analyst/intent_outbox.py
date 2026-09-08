@@ -24,6 +24,11 @@ from uuid import NAMESPACE_URL, uuid5
 import config
 from structural_stop import (
     STRUCTURAL_ADMISSION_CONTRACT_VERSION,
+    STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION,
+    STRUCTURAL_15M_RESAMPLING_CONTRACT_VERSION,
+    STRUCTURAL_15M_SOURCE_EXCHANGE,
+    STRUCTURAL_15M_SOURCE_MODE,
+    STRUCTURAL_ZONE_DETECTOR_VERSION,
     _normalise_closed_bar_timestamp,
 )
 
@@ -212,10 +217,33 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
     context = metadata.get("structural_context")
     if not isinstance(context, dict):
         return False, "admission structural context is missing"
+    contract_version = proof.get("structural_admission_contract_version")
+    feature_enabled = bool(getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False))
+    if (
+        proof.get("selected_zone_timeframe") == "15m"
+        and not feature_enabled
+    ):
+        return False, "15m structural admission is disabled"
+    if contract_version == STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION and not feature_enabled:
+        return False, "v4 structural admission is disabled"
+    if contract_version == STRUCTURAL_ADMISSION_CONTRACT_VERSION and feature_enabled:
+        return False, "v3 admission proof is invalid while 15m admission is enabled"
+    admission_context = context
+    if contract_version == STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION:
+        from structural_stop import build_structural_contexts
+        live_context = build_structural_contexts(
+            [candidate],
+            _normalise_closed_bar_timestamp(candidate["observed_at"]),
+            regime_db_path=config.REGIME_DB_PATH,
+            market_db_path=config.MARKET_DB_PATH,
+        ).get(canonical_asset(candidate.get("asset")))
+        if not isinstance(live_context, dict):
+            return False, "15m structural context is unavailable"
+        admission_context = live_context
     from trade_admission import admit
     recomputed = admit(
         candidate,
-        structural_context=context,
+        structural_context=admission_context,
         effective_universe=proof.get("effective_universe_assets"),
         effective_universe_version=proof.get("effective_universe_version"),
     )
@@ -244,10 +272,14 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
                 return False, f"admission proof {field} is inconsistent"
         elif recomputed.get(field) != proof.get(field, [] if field == "effective_universe_assets" else ""):
             return False, f"admission proof {field} is inconsistent"
+    if contract_version == STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION and (
+        recomputed.get("structural_source_mode") != proof.get("structural_source_mode")
+    ):
+        return False, "15m admission proof source mode is inconsistent"
     if (
         not proof.get("selected_zone_id")
-        or proof.get("selected_zone_timeframe") not in ("1h", "4h")
-        or proof.get("structural_admission_contract_version") != STRUCTURAL_ADMISSION_CONTRACT_VERSION
+        or proof.get("selected_zone_timeframe") not in ("1h", "4h", "15m")
+        or contract_version not in (STRUCTURAL_ADMISSION_CONTRACT_VERSION, STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION)
         or proof.get("entry_zone_location") not in ("inside", "above", "below")
         or proof.get("structural_atr_method") != "wilder"
         or proof.get("structural_atr_period") != 14
@@ -260,6 +292,37 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         or not proof["selected_zone_source_evidence_ids"]
     ):
         return False, "admission proof provenance is incomplete"
+    if proof.get("selected_zone_timeframe") == "15m":
+        if not feature_enabled:
+            return False, "15m structural admission is disabled"
+        if contract_version != STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION:
+            return False, "15m admission proof contract is invalid"
+        if (
+            proof.get("structural_15m_zones_enabled") is not True
+            or proof.get("structural_source_mode") != STRUCTURAL_15M_SOURCE_MODE
+            or proof.get("structural_source_exchange") != STRUCTURAL_15M_SOURCE_EXCHANGE
+            or proof.get("structural_resampling_contract_version") != STRUCTURAL_15M_RESAMPLING_CONTRACT_VERSION
+            or proof.get("structural_zone_detector_version") != STRUCTURAL_ZONE_DETECTOR_VERSION
+            or not isinstance(proof.get("structural_frame_bar_ids"), list)
+            or not proof["structural_frame_bar_ids"]
+        ):
+            return False, "15m admission proof source provenance is incomplete"
+        for field in (
+            "structural_15m_zones_enabled", "structural_source_mode", "structural_source_exchange",
+            "structural_resampling_contract_version", "structural_zone_detector_version",
+            "structural_frame_bar_ids",
+        ):
+            if recomputed.get(field) != proof.get(field):
+                return False, f"15m admission proof {field} is inconsistent"
+    elif proof.get("selected_zone_timeframe") in ("1h", "4h"):
+        expected_version = (
+            STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION
+            if feature_enabled else STRUCTURAL_ADMISSION_CONTRACT_VERSION
+        )
+        if contract_version != expected_version:
+            return False, "higher-timeframe admission proof contract is invalid"
+    else:
+        return False, "admission proof timeframe is invalid"
     if canonical_asset(proof.get("selected_zone_asset")) != canonical_asset(intent.get("asset")):
         return False, "admission proof asset is inconsistent"
     entry = intent.get("entry_price")

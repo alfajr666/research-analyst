@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-07
+**Last reviewed:** 2026-09-08
 
 ## Mission and boundaries
 
@@ -31,6 +31,16 @@ ingestion are not live defaults. Binance is opt-in.
 
 Market and analyst databases are separate. Use read-only market connections from
 analyst code and never start duplicate writers.
+
+Structural admission currently has the optional 15m fallback enabled in the
+managed orchestrator. The selector precedence is `4h direct > 1h direct > 15m`
+only when no eligible stronger zone exists. The 15m frame is built from
+cutoff-bound, completed market-owned 5m bars in memory; it is not a strategy
+input, regime-session input, or persisted structural-zone row. The proposed
+strategy stop remains authoritative. Disable or enable this behavior only with
+`STRUCTURAL_15M_ZONES_ENABLED` through an `oxmgr` restart; it is independent of
+`EVAL_INTERVALS` and `LSR_V1_USE_15M_EPHEMERAL_FVG`. See
+`specs/structural-sl-admission-v4-15m-zones.md`.
 
 ## Live strategy set
 
@@ -75,6 +85,11 @@ regime, or account policy. Account-symbol admission remains a downstream hard
 gate. The strategy engine evaluates on completed 5m cutoffs; direct 1h/4h setup
 frames remain separate regime-owned inputs. Binance OI rotation and executor
 position snapshots remain separate; the latter is a 1m PM handoff contract.
+
+The effective structural admission contract is v4 while 15m fallback is
+enabled. Selected 15m proofs include the market source, 5m-to-15m resampling,
+detector, frame evidence, ATR evidence, and exact cutoff. Final intent
+verification rehydrates the cutoff-bound context before accepting the proof.
 
 Trade intents are published through the shared SQLite intent bus configured by
 the absolute `INTENT_BUS_DB`. The shared bus is the sole intent handoff. Do not
@@ -167,9 +182,10 @@ Use host `oxmgr` definitions for one gateway and one orchestrator role. The
 standalone-llm-pm service is managed separately. The gateway publishes durable
 completed-5m evaluation triggers and
 the orchestrator consumes them; there is no timer-based evaluation fallback. Do
-not launch duplicate database writers. Keep intent delivery off until paper
-execution and protection checks pass. Keep secrets and runtime artifacts
-untracked.
+not launch duplicate database writers. The current deployment has
+`STRUCTURAL_15M_ZONES_ENABLED=true`; changing it requires a managed restart and
+fresh-cutoff log verification. Keep intent delivery off until paper execution
+and protection checks pass. Keep secrets and runtime artifacts untracked.
 
 ```bash
 ./venv/bin/python src/research_analyst/config.py

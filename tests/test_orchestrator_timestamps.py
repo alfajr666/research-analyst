@@ -23,13 +23,21 @@ class OrchestratorTimestampTests(unittest.TestCase):
 
     def test_summarizes_interval_results_before_reading_summary(self):
         summary = _summarize_interval_results(
-            {"strategy": {"emitted": 2}, "skipped": {"skipped": "cadence 15m"}},
+            {
+                "strategy": {"emitted": 2},
+                "skipped": {"skipped": "cadence 15m"},
+                "_structural_admission": {
+                    "structural_15m_zones_enabled": True,
+                    "15m_ready_assets": 1,
+                },
+            },
             ["BTC", "ETH"],
             {"feed_id": "feed-1"},
         )
         self.assertEqual(summary["strategy_evaluations"], 2)
         self.assertEqual(summary["strategies"]["strategy"]["status"], "completed")
         self.assertEqual(summary["strategies"]["skipped"]["status"], "skipped")
+        self.assertEqual(summary["structural_admission"]["15m_ready_assets"], 1)
 
     def test_cutoff_provenance_is_limited_to_matching_closed_bar(self):
         with TemporaryDirectory() as directory:

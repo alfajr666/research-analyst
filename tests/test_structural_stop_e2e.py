@@ -160,3 +160,92 @@ def test_stale_direct_history_cannot_supply_structural_context():
 
     assert contexts["BTC"]["coverage_status"] == {"4h": "incomplete", "1h": "incomplete"}
     assert contexts["BTC"]["atr_by_timeframe"] == {}
+
+
+def test_enabled_15m_context_uses_canonical_market_frame_and_provenance(monkeypatch):
+    observed = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
+    fifteen_minute_bars = pl.DataFrame({
+        "timestamp": [observed.replace(minute=0) - timedelta(minutes=15 * (56 - index)) for index in range(57)],
+        "open": [100.0 + index for index in range(57)],
+        "high": [101.0 + index for index in range(57)],
+        "low": [99.0 + index for index in range(57)],
+        "close": [100.0 + index for index in range(57)],
+        "volume": [1.0] * 57,
+        "source": ["bybit_ws"] * 57,
+        "source_provenance": [["bybit_ws"]] * 57,
+        "source_observation_ids": [[f"5m-{index}-a", f"5m-{index}-b"] for index in range(57)],
+    })
+    candidate = {"candidate_id": "candidate-15m", "asset": "BTC"}
+    zone = {
+        "type": "fvg", "timeframe": "15m", "direction": "bullish", "low": 98.0, "high": 99.0,
+        "state": "active", "created_at": observed - timedelta(minutes=15),
+        "source_evidence_ids": ["5m-55-a", "5m-56-a"],
+    }
+    connection = MagicMock()
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", True)
+
+    def detect_fvg(_bars, *, tf, **_kwargs):
+        return [zone] if tf == "15m" else []
+
+    with patch("structural_stop.config.get_db_connection", return_value=connection), \
+            patch("regime_history.load_regime_4h_bars", return_value=pl.DataFrame()), \
+            patch("regime_history.load_regime_1h_bars", return_value=pl.DataFrame()), \
+            patch("strategy_v2_context.load_bars_for_interval", return_value=fifteen_minute_bars) as load_15m, \
+            patch("strategy_v2_context.wilder_atr", return_value=1.0), \
+            patch("structure_zones.detect_fvg", side_effect=detect_fvg), \
+            patch("structure_zones.detect_order_blocks", return_value=[]):
+        contexts = build_structural_contexts([candidate], observed, market_db_path="market.db")
+
+    assert load_15m.call_args.args[1:4] == ("BTC", "15m", observed)
+    context = contexts["BTC"]
+    assert context["coverage_status"]["15m"] == "covered"
+    assert context["atr_source_bar_ids"]["15m"] == sorted(
+        f"5m-{index}-{suffix}" for index in range(57) for suffix in ("a", "b")
+    )
+    assert context["zones"][0]["timeframe"] == "15m"
+    assert context["zones"][0]["source_mode"] == "market_5m_resampled"
+
+
+def test_enabled_15m_context_fails_closed_on_a_gap(monkeypatch):
+    observed = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
+    timestamps = [observed.replace(minute=0) - timedelta(minutes=15 * (56 - index)) for index in range(57)]
+    timestamps[30] += timedelta(minutes=15)
+    bars = pl.DataFrame({
+        "timestamp": timestamps,
+        "open": [100.0] * 57,
+        "high": [101.0] * 57,
+        "low": [99.0] * 57,
+        "close": [100.0] * 57,
+        "source": ["bybit_ws"] * 57,
+        "source_provenance": [["bybit_ws"]] * 57,
+        "source_observation_ids": [[f"5m-{index}"] for index in range(57)],
+    })
+    connection = MagicMock()
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", True)
+
+    with patch("structural_stop.config.get_db_connection", return_value=connection), \
+            patch("regime_history.load_regime_4h_bars", return_value=pl.DataFrame()), \
+            patch("regime_history.load_regime_1h_bars", return_value=pl.DataFrame()), \
+            patch("strategy_v2_context.load_bars_for_interval", return_value=bars):
+        contexts = build_structural_contexts([{"asset": "BTC"}], observed)
+
+    assert contexts["BTC"]["coverage_status"]["15m"] == "incomplete"
+    assert contexts["BTC"]["atr_by_timeframe"].get("15m") is None
+
+
+def test_disabled_15m_context_does_not_open_or_mention_market_fallback(monkeypatch):
+    observed = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
+    connection = MagicMock()
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False)
+
+    with patch("structural_stop.config.get_db_connection", return_value=connection), \
+            patch("regime_history.load_regime_4h_bars", return_value=pl.DataFrame()), \
+            patch("regime_history.load_regime_1h_bars", return_value=pl.DataFrame()), \
+            patch("strategy_v2_context.load_bars_for_interval") as load_15m:
+        contexts = build_structural_contexts([{"asset": "BTC"}], observed, market_db_path="market.db")
+
+    load_15m.assert_not_called()
+    context = contexts["BTC"]
+    assert "15m" not in context["coverage_status"]
+    assert "15m" not in context["atr_by_timeframe"]
+    assert "15m" not in context["timeframe_provenance"]

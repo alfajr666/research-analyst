@@ -380,6 +380,7 @@ def check_and_alert_confluences(conn):
 
 def _summarize_interval_results(results, symbols, feed_metadata):
     attempted_symbols = results.get("_attempted_symbols", len(symbols))
+    structural_admission = results.get("_structural_admission")
     strategy_summary = {
         strategy_id: {
             "status": "completed" if isinstance(result, dict) and "emitted" in result else "skipped" if isinstance(result, dict) and "skipped" in result else "failed" if isinstance(result, dict) and "failed" in result else "unknown",
@@ -398,6 +399,7 @@ def _summarize_interval_results(results, symbols, feed_metadata):
             item.get("attempted_symbols", 0) for item in strategy_summary.values()
         ),
         "strategy_scopes": results.get("_strategy_scopes", {}),
+        "structural_admission": structural_admission if isinstance(structural_admission, dict) else {},
     }
 
 

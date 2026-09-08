@@ -7,6 +7,11 @@ containment. This revision changes entry location semantics only. The 4h > 1h
 priority, proposed stop authority, and structural stop buffer policy remain
 unchanged.
 
+The optional `15m` admission fallback is specified separately in
+`specs/structural-sl-admission-v4-15m-zones.md`. With
+`STRUCTURAL_15M_ZONES_ENABLED=false`, this v3 contract remains the effective
+behavior and proof contract.
+
 ## 1. Decision
 
 Every candidate selected for execution must pass generic execution admission and

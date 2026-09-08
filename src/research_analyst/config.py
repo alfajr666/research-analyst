@@ -414,6 +414,13 @@ STRUCTURAL_STOP_MIN_ATR_MULTIPLE = float(os.getenv("STRUCTURAL_STOP_MIN_ATR_MULT
 STRUCTURAL_STOP_MAX_ATR_MULTIPLE = float(os.getenv("STRUCTURAL_STOP_MAX_ATR_MULTIPLE", "3.0"))
 if STRUCTURAL_STOP_MIN_ATR_MULTIPLE < 0 or STRUCTURAL_STOP_MAX_ATR_MULTIPLE < STRUCTURAL_STOP_MIN_ATR_MULTIPLE:
     raise ValueError("STRUCTURAL_STOP ATR multiples must be non-negative and ordered")
+STRUCTURAL_15M_ZONES_ENABLED = os.getenv("STRUCTURAL_15M_ZONES_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+STRUCTURAL_15M_LOOKBACK_DAYS = int(os.getenv("STRUCTURAL_15M_LOOKBACK_DAYS", "16"))
+STRUCTURAL_15M_READINESS_BARS = int(os.getenv("STRUCTURAL_15M_READINESS_BARS", "57"))
+if STRUCTURAL_15M_LOOKBACK_DAYS <= 0 or STRUCTURAL_15M_READINESS_BARS <= 0:
+    raise ValueError("STRUCTURAL_15M lookback and readiness must be positive")
+if STRUCTURAL_15M_READINESS_BARS < max(3, 14, 20 + 2):
+    raise ValueError("STRUCTURAL_15M_READINESS_BARS is insufficient for zone detection")
 # Per-strategy routing to executor profiles (exchange/account). JSON map keyed by
 # strategy_id; each value may override any of: exchange_id, account_id, source,
 # take_profit_mode, validity_minutes. Strategies not listed fall back to

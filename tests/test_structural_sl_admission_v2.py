@@ -136,3 +136,61 @@ def test_structural_admission_is_enabled_by_default():
     assert config.STRUCTURAL_STOP_ADMISSION_ENABLED is True
     assert config.STRUCTURAL_STOP_MIN_ATR_MULTIPLE == 0.5
     assert config.STRUCTURAL_STOP_MAX_ATR_MULTIPLE == 3.0
+
+
+def test_15m_zones_are_not_selected_when_disabled(monkeypatch):
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False)
+
+    selected = select_structural_zone(
+        [_zone("15m-only", "15m", datetime(2026, 9, 4, 12, tzinfo=timezone.utc))],
+        asset="BTC", direction="long", entry=104.0, cutoff=NOW,
+    )
+
+    assert selected is None
+
+
+def test_15m_zones_are_a_fallback_after_1h(monkeypatch):
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", True)
+    selected = select_structural_zone(
+        [
+            _zone("one-hour", "1h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc)),
+            _zone("fifteen-minute", "15m", datetime(2026, 9, 4, 12, tzinfo=timezone.utc)),
+        ],
+        asset="BTC", direction="long", entry=104.0, cutoff=NOW,
+    )
+
+    assert selected["zone_id"] == "one-hour"
+
+
+def test_15m_structural_admission_records_v4_source_provenance(monkeypatch):
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", True)
+    context = _context([
+        _zone("fifteen-minute", "15m", datetime(2026, 9, 4, 12, tzinfo=timezone.utc)),
+    ], atr_4h=10.0, atr_1h=10.0)
+    context["atr_by_timeframe"]["15m"] = 1.0
+    context["atr_source_bar_ids"]["15m"] = ["5m-1", "5m-2"]
+    context["zones"][0]["source_mode"] = "market_5m_resampled"
+
+    result = admit_selected_structural_stop(_candidate(98.0), context)
+
+    assert result["structural_stop_gate"] == "pass"
+    assert result["structural_admission_contract_version"] == "structural-sl-admission-v4-15m"
+    assert result["selected_zone_timeframe"] == "15m"
+    assert result["structural_source_mode"] == "market_5m_resampled"
+
+
+def test_stronger_zone_failure_does_not_fall_back_to_15m(monkeypatch):
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", True)
+    context = _context([
+        _zone("4h-zone", "4h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc)),
+        _zone("15m-zone", "15m", datetime(2026, 9, 4, 12, tzinfo=timezone.utc)),
+    ])
+    context["atr_by_timeframe"]["15m"] = 1.0
+    context["atr_source_bar_ids"]["15m"] = ["15m-1"]
+    context["zones"][1]["source_mode"] = "market_5m_resampled"
+
+    result = admit_selected_structural_stop(_candidate(99.5), context)
+
+    assert result["structural_stop_gate"] == "fail"
+    assert result["selected_zone_timeframe"] == "4h"
+    assert "structural stop buffer is below minimum ATR multiple" in result["structural_stop_reasons"]

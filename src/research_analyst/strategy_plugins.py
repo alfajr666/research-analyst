@@ -17,7 +17,11 @@ from alpha_outbox import write_event, dedupe_key
 from raw_signal_batch import capture, record_evaluation_coverage, record_status
 from entry_policy import annotate_candidate
 from trade_admission import canonical_asset, resolve
-from structural_stop import build_structural_contexts
+from structural_stop import (
+    STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION,
+    STRUCTURAL_ADMISSION_CONTRACT_VERSION,
+    build_structural_contexts,
+)
 from strategy_v2_context import (
     completed_cycle_for,
     direct_htf_context, direct_htf_context_active,
@@ -783,6 +787,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         candidates,
         cutoff,
         regime_db_path=config.REGIME_DB_PATH,
+        market_db_path=snapshot.get("market_db_path") or market_db_path or config.MARKET_DB_PATH,
     )
     decision = resolve(
         candidates,
@@ -791,6 +796,38 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         effective_universe=attempted_symbols,
         effective_universe_version=feed_metadata.get("effective_universe_version"),
     )
+    structural_15m_enabled = bool(getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False))
+    timeframe_counts = {timeframe: 0 for timeframe in ("4h", "1h", "15m", "none")}
+    fifteen_rejections: dict[str, int] = {}
+    for admission in decision["results"]:
+        timeframe = admission.get("selected_zone_timeframe")
+        timeframe_counts[timeframe if timeframe in timeframe_counts else "none"] += 1
+        for reason in admission.get("structural_stop_reasons", []):
+            if "15m" in reason:
+                fifteen_rejections[reason] = fifteen_rejections.get(reason, 0) + 1
+    loaded_15m = sum(
+        1 for context in structural_contexts.values()
+        if "15m" in (context.get("coverage_status") or {})
+    )
+    ready_15m = sum(
+        1 for context in structural_contexts.values()
+        if (context.get("coverage_status") or {}).get("15m") == "covered"
+    )
+    results["_structural_admission"] = {
+        "structural_15m_zones_enabled": structural_15m_enabled,
+        "structural_contract_version": (
+            STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION
+            if structural_15m_enabled else STRUCTURAL_ADMISSION_CONTRACT_VERSION
+        ),
+        "candidate_assets": len(structural_contexts),
+        "15m_loaded_assets": loaded_15m,
+        "15m_ready_assets": ready_15m,
+        "15m_unavailable_assets": loaded_15m - ready_15m,
+        "selected_timeframe_counts": timeframe_counts,
+        "15m_rejection_counts": fifteen_rejections,
+        "evaluation_cutoff": cutoff.isoformat(),
+        "effective_feed_id": feed_metadata.get("feed_id"),
+    }
     selected = set(decision["selected_candidate_ids"])
     by_id = {ev["candidate_id"]: ev for ev in candidates}
     for result in decision["results"]:

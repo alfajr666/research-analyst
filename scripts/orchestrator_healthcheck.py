@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 HEALTH = Path(os.environ.get(
     "ORCHESTRATOR_HEALTH_PATH",
     str(ROOT / "data" / "health.json"),
+))
+ANALYST_DB = Path(os.environ.get(
+    "ANALYST_DB_PATH",
+    str(ROOT / "data" / "analyst.sqlite3"),
 ))
 REQUIRED_FIELDS = {"bot", "lastCycleAt", "dataFreshness", "evaluation", "ts"}
 
@@ -68,6 +73,29 @@ def latest_health(path: Path | None = None) -> tuple[float, dict] | None:
     return recorded_at.astimezone(timezone.utc).timestamp(), payload
 
 
+def active_pipeline_recent(path: Path | None = None) -> bool:
+    """Keep a long-running valid cycle from being killed by a stale health file."""
+    path = path or ANALYST_DB
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+        try:
+            row = connection.execute(
+                "SELECT started_at FROM pipeline_runs WHERE status = 'running' "
+                "ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return False
+        started_at = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+        if started_at.tzinfo is None:
+            return False
+        age = time.time() - started_at.astimezone(timezone.utc).timestamp()
+        return 0 <= age <= max_health_age_seconds()
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return False
+
+
 def main() -> int:
     if not process_running():
         return 1
@@ -77,7 +105,7 @@ def main() -> int:
     recorded_at, _ = health
     age = time.time() - recorded_at
     if age < 0 or age > max_health_age_seconds():
-        return 1
+        return 0 if active_pipeline_recent() else 1
     return 0
 
 

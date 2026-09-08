@@ -260,7 +260,10 @@ that later fail. Hard admission checks:
 Structural admission reads completed direct regime-owned `1h`/`4h` bars only for
 assets that emitted candidates. It calculates one reusable Wilder ATR14 context
 per asset, cutoff, and timeframe, selects the newest eligible `4h` zone before
-falling back to `1h`, and evaluates both sides of the trade against that zone:
+falling back to `1h`. In the current managed deployment, the optional v4
+fallback then uses cutoff-bound market-owned `5m` bars resampled in memory to
+`15m` when neither stronger timeframe has an eligible zone. It evaluates both
+sides of the trade against the selected zone:
 
 - Long entry: inside a bullish support zone, or `0.5-3.0 ATR` above its high;
   SL: `0.5-3.0 ATR` below the zone low.
@@ -284,7 +287,11 @@ Opposing candidates are resolved deterministically; an unresolved clash emits
 no intent. Missing or stale data is rejected by admission, not disguised as a
 score.
 
-See `specs/structural-sl-admission-v3.md` for the normative contract.
+See `specs/structural-sl-admission-v3.md` for the normative 4h/1h contract and
+`specs/structural-sl-admission-v4-15m-zones.md` for the optional 15m fallback.
+The current managed deployment has `STRUCTURAL_15M_ZONES_ENABLED=true`; change
+it only through a managed orchestrator restart. It is independent of evaluation
+cadence and LSR's ephemeral 15m FVG setting.
 
 ### Raw Discord Batch Status
 

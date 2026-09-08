@@ -214,6 +214,10 @@ the executor remains strategy-dumb but safety-authoritative.
 - **HTF context:** 1h and 4h are loaded from the regime-owned direct REST cache,
   bounded by the exact evaluation cutoff. They feed plugins as setup context,
   not as standalone eval timeframes.
+- **Admission structure:** candidates use admission-owned 4h then 1h zones. The
+  optional `STRUCTURAL_15M_ZONES_ENABLED` fallback derives 15m zones from
+  cutoff-bound market-owned 5m bars only after 4h/1h selection is unavailable;
+  it never enters strategy snapshots or scoring.
 - Helpers in `strategy_v2_context`:
   - `resample_ohlcv(bars, every)` — derives the auxiliary 15m frame from 5m.
   - `structure_bias_4h(bars_4h)` — `close vs EMA48_4h → long|short|missing`.
@@ -235,7 +239,9 @@ the executor remains strategy-dumb but safety-authoritative.
   emission on their own; they enrich structure bias used by downstream PM context. No
   standalone swing module is required.
 - Zones (and swing levels) are **advisory** (support/neutral/contradict); they
-  never gate emission alone — only contribute to confluence score.
+  never gate strategy emission alone — only contribute to confluence score.
+  The separate admission-owned structural context can hard-gate an execution
+  candidate after plugin evaluation; see the v3/v4 structural admission specs.
 
 ---
 
