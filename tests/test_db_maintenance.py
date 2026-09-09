@@ -99,6 +99,30 @@ def test_analyst_retention_removes_snapshots_but_keeps_active_events(tmp_path, m
         conn.close()
 
 
+def test_analyst_retention_prunes_evaluation_coverage(tmp_path, monkeypatch):
+    db = tmp_path / "analyst.sqlite3"
+    config.init_analyst_db(db)
+    monkeypatch.setattr(config, "ANALYST_COVERAGE_RETENTION_DAYS", 2)
+    now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    old = (now - timedelta(days=3)).isoformat().replace("+00:00", "Z")
+    recent = (now - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    conn = config.get_db_connection(db_path=db)
+    try:
+        conn.executemany(
+            "INSERT INTO raw_signal_evaluation_coverage "
+            "(strategy_id, asset, evaluated_at, emitted_count) VALUES (?, ?, ?, ?)",
+            [("strategy", "OLD", old, 0), ("strategy", "RECENT", recent, 0)],
+        )
+        conn.commit()
+        result = prune_analyst_db(conn, now)
+        assert result["raw_signal_evaluation_coverage"] == 1
+        assert conn.execute(
+            "SELECT asset FROM raw_signal_evaluation_coverage"
+        ).fetchone()[0] == "RECENT"
+    finally:
+        conn.close()
+
+
 def test_online_prune_can_limit_each_table_to_one_batch(tmp_path, monkeypatch):
     db = tmp_path / "analyst.sqlite3"
     config.init_analyst_db(db)

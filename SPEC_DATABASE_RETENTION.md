@@ -32,6 +32,7 @@ Default windows are:
 | Market discovery / watchlist history | 90 / 365 days |
 | Analyst feature snapshots | 2 days |
 | Raw signals and status history | 90 days |
+| Evaluation coverage | 7 days |
 | Candidate ledger | 90 days |
 | Alpha, PM, delivery, and research audit data | 30-365 days by table |
 | Regime scores / gate decisions | 30 / 90 days |

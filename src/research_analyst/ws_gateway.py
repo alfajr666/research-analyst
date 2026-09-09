@@ -735,8 +735,10 @@ def _maybe_prune_market(conn, now: datetime) -> None:
     if not getattr(config, "DB_MAINTENANCE_ENABLED", True):
         return
     current = time.monotonic()
-    interval = max(60, int(getattr(config, "DB_MAINTENANCE_INTERVAL_SECONDS", 21600)))
-    if current - _LAST_MARKET_MAINTENANCE < interval:
+    maintenance_due = current - _LAST_MARKET_MAINTENANCE >= max(
+        60, int(getattr(config, "DB_MAINTENANCE_INTERVAL_SECONDS", 21600))
+    )
+    if not maintenance_due:
         return
     _LAST_MARKET_MAINTENANCE = current
     try:
@@ -763,6 +765,7 @@ async def writer_task(queue: asyncio.Queue, bases: List[str], ws_source: str) ->
                     for _ in batch:
                         queue.task_done()
                     batch.clear()
+                    _maybe_prune_market(conn, datetime.now(timezone.utc))
             except asyncio.TimeoutError:
                 if batch:
                     _executemany_rows(conn, batch)

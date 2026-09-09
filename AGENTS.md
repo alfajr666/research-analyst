@@ -61,8 +61,8 @@ failures are separate from pipeline failures.
 Never point two services at one database and never run duplicate database
 writers. Gateway retention runs on the gateway writer connection. Analyst
 retention runs on the orchestrator connection. Retention must preserve active,
-pending, running, and retryable work. `VACUUM` is separately throttled and must
-not run from a second writer.
+pending, running, and retryable work. Online workers never run `VACUUM`; the
+weekly offline compaction job owns checkpointing and file compaction.
 
 ## Regime Session
 
@@ -118,6 +118,12 @@ candidate-admission validation.
 
 Canonical asset names must remain intact. Native symbols such as `ANKRUSDT` are
 normalized to `ANKR`; bare names such as `MARSCOIN` must not be truncated.
+
+The production sticky watchlist cap is 160 symbols including the four permanent
+assets (`BTC`, `ETH`, `PAXG`, and `QQQ`). Rotation still selects 30 new assets
+per four-hour boundary (15 gainers and 15 losers); the 72-hour sticky TTL lets
+the effective watchlist fill between refreshes. The evaluator and gateway must
+consume the same effective-universe version.
 
 ## Direct HTF Engine
 
@@ -304,6 +310,12 @@ The core managed targets are:
 - `research-analyst-ws`
 - `research-analyst-regime-session`
 - `research-analyst-orchestrator`
+
+Online database retention runs every six hours in bounded batches. Evaluation
+coverage is retained for 7 days. Full compaction runs offline on Sunday at
+04:30 UTC through `scripts/compact_databases.sh`; it stops the managed writers,
+runs `wal_checkpoint(TRUNCATE)`, `VACUUM`, `PRAGMA optimize`, and integrity
+checks, then restarts only services that were active before compaction.
 
 When a code change is explicitly approved for deployment, restart only the
 managed processes that import the changed code, then verify fresh cutoff logs,

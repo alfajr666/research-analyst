@@ -89,8 +89,8 @@ candidate records and canonical strategy IDs are never truncated.
   must not be opened, pruned, or maintained here.
 
 Retention runs on the owning writer connection. It preserves active, pending,
-running, and retryable work. `VACUUM` is throttled and must never run from a
-second writer.
+running, and retryable work. Evaluation coverage is retained for 7 days. `VACUUM`
+runs only through the weekly offline compaction job, never in a live worker.
 
 ## Market Data
 
@@ -106,7 +106,7 @@ that representation before exact bucket matching.
 The performance rotation feed refreshes at four-hour UTC boundaries and normally
 selects 30 rotating assets, 15 gainers and 15 losers, plus permanent `BTC`,
 `ETH`, `PAXG`, and `QQQ`. Those selections are persisted in a sticky watchlist:
-the default individual TTL is 72 hours and the hard effective-universe cap is 80
+the default individual TTL is 72 hours and the hard effective-universe cap is 160
 symbols including permanents. A stale or missing feed does not refresh entries;
 unexpired entries remain usable, while expired entries are removed. If no
 non-permanent entries remain, the effective universe contains permanents only.

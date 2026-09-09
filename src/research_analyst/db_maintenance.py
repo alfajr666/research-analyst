@@ -192,6 +192,7 @@ def prune_analyst_db(
         "pipeline_runs": ("started_at", "ANALYST_PIPELINE_RETENTION_DAYS"),
         "raw_signals": ("created_at", "ANALYST_RAW_SIGNAL_RETENTION_DAYS"),
         "raw_signal_status_history": ("recorded_at", "ANALYST_RAW_SIGNAL_RETENTION_DAYS"),
+        "raw_signal_evaluation_coverage": ("evaluated_at", "ANALYST_COVERAGE_RETENTION_DAYS"),
         "alpha_candidates": ("observed_at", "ANALYST_CANDIDATE_RETENTION_DAYS"),
         "alpha_confidence_observations": ("observed_at", "ANALYST_EVENT_RETENTION_DAYS"),
         "alpha_event_status_history": ("recorded_at", "ANALYST_EVENT_RETENTION_DAYS"),
