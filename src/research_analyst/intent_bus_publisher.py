@@ -25,6 +25,21 @@ from intent_bus import IntentBus, producer_adapters  # noqa: E402
 import config  # noqa: E402
 
 
+def _json_safe_intent(value: Any) -> Any:
+    """Normalize nested timestamps before handing data to the JSON-only bus."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe_intent(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_intent(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_json_safe_intent(item) for item in value)
+    return value
+
+
 def publisher_enabled() -> bool:
     # Spec §14: research-analyst bus publish requires a configured DB path and
     # the bybit target switch. INTENT_DELIVERY_ENABLED is the overall gate
@@ -62,12 +77,13 @@ def publish_research_intent(
     if target == "propr" and not propr_enabled():
         return False, None, None
     try:
+        safe_intent = _json_safe_intent(intent)
         from intent_outbox import validate_intent_handoff
-        admitted, reason = validate_intent_handoff(intent, now=datetime.now(timezone.utc))
+        admitted, reason = validate_intent_handoff(safe_intent, now=datetime.now(timezone.utc))
         if not admitted:
             return False, None, ValueError(reason)
         delivery = producer_adapters.build_research_analyst_delivery(
-            envelope=intent, target=target, source_event_id=intent.get("delivery_id")
+            envelope=safe_intent, target=target, source_event_id=safe_intent.get("delivery_id")
         )
     except Exception as exc:  # noqa: BLE001 - validation failure, do not crash
         return False, None, exc
@@ -76,8 +92,8 @@ def publish_research_intent(
         ok, result, err = producer_adapters.publish_event_safe(
             bus,
             producer="research-analyst",
-            producer_event_id=str(intent.get("delivery_id") or delivery.delivery_id),
-            source=intent,
+            producer_event_id=str(safe_intent.get("delivery_id") or delivery.delivery_id),
+            source=safe_intent,
             schema_version=delivery.payload_schema_version,
             deliveries=[delivery],
             max_retries=max_retries,

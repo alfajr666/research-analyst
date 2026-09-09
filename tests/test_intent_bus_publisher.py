@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from datetime import datetime, timezone
 
 import pytest
 from trade_admission import candidate_admission_fingerprint
@@ -109,6 +110,21 @@ def test_publish_research_intent_writes_row(temp_bus_db):
         assert "order_type" not in d.payload
     finally:
         bus.close()
+
+
+def test_publish_research_intent_serializes_datetime_metadata(temp_bus_db):
+    from intent_bus_publisher import publish_research_intent
+
+    envelope = _schema_v1_envelope()
+    envelope["metadata"]["admission_result"]["selected_zone_created_at"] = datetime(
+        2098, 12, 31, 20, 0, tzinfo=timezone.utc
+    )
+
+    ok, delivery_id, err = publish_research_intent(envelope, target="bybit")
+
+    assert ok is True
+    assert err is None
+    assert delivery_id == "ra:ra-env-1:bybit"
 
 
 def test_publish_disabled_when_flags_off(temp_bus_db, monkeypatch):
