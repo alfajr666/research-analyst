@@ -133,12 +133,11 @@ class StrategyPluginRegistryTests(unittest.TestCase):
     def test_live_compact_seam_admits_once_and_selects_one_intent(self):
         import strategy_plugins
 
-        def event(strategy_id, score):
+        def event(strategy_id):
             return {"strategy_id": strategy_id, "asset": "BTCUSDT", "direction": "long",
                     "observed_at": "2026-08-17T12:15:00+00:00",
                     "valid_until": "2026-08-17T12:20:00+00:00", "entry_price": 100,
-                    "invalidation_price": 95, "targets": [110], "atr14_4h": 10,
-                    "context": {"strategy_score": score}}
+                    "invalidation_price": 95, "targets": [110], "atr14_4h": 10}
 
         ids = ("failed-break-v3", "bb-rsi-meanrev-v1")
         old_registry = strategy_plugins._REGISTRY.copy()
@@ -150,7 +149,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         try:
             strategy_plugins._REGISTRY.update({sid: strategy_plugins.StrategyPlugin(
                 sid, "test", ("bars_5m",), (), lambda _cutoff, _snapshot, sid=sid:
-                    [event(sid, 3 if sid == ids[0] else 1)]) for sid in ids})
+                    [event(sid)]) for sid in ids})
             config.STRATEGY_ENABLED_IDS = ids
             config.STRATEGY_ACTIVE_IDS = ids
             strategy_plugins.build_structural_contexts = lambda _candidates, cutoff, **_kwargs: {
@@ -186,7 +185,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
                 False, snapshot={"eval_interval": "5m", "feature_snapshots": {},
                                 "market_db_path": str(self.db), "now": datetime(2026, 8, 17, 12, 15, tzinfo=timezone.utc)})
             assert len(writes) == 1, result
-            assert writes[0]["strategy_id"] == ids[0]
+            assert writes[0]["strategy_id"] == ids[1]
             assert result[ids[0]]["emitted"] == 1
         finally:
             strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)

@@ -22,6 +22,15 @@ FUNDAMO_STRATEGIES = frozenset((
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
 ))
 COMPACT_STRATEGIES = frozenset(getattr(config, "COMPACT_STRATEGY_IDS", ()))
+SCORE_POLICY_VERSION = "trade-admission-v3"
+SCORE_COMPONENT_KEYS = (
+    ("htf_bias_component", "htf_bias"),
+    ("fvg_component", "fvg"),
+    ("order_block_component", "order_block"),
+    ("alignment_component", "alignment"),
+    ("freshness_component", "freshness"),
+    ("agreement_component", "agreement"),
+)
 
 
 def canonical_asset(value: object) -> str:
@@ -269,19 +278,191 @@ def admit(
             "data_freshness_seconds": freshness, **structural}
 
 
-def score(candidate: dict) -> dict:
-    """Bounded additive score. Missing context remains unavailable, never support."""
-    context = candidate.get("context") or candidate.get("feature_snapshot") or {}
+def _finite_score_value(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _zone_direction(value: object) -> str | None:
+    value = str(value or "").lower()
+    return "long" if value in {"long", "bullish"} else "short" if value in {"short", "bearish"} else None
+
+
+def _zone_distance_atr(zone: dict, entry: float, atr: object) -> float | None:
+    atr_value = _finite_score_value(atr)
+    low = _finite_score_value(zone.get("low"))
+    high = _finite_score_value(zone.get("high"))
+    if atr_value is None or atr_value <= 0 or low is None or high is None or low > high:
+        return None
+    distance = max(0.0, low - entry) if entry < low else max(0.0, entry - high)
+    return distance / atr_value
+
+
+def _context_zone_distances(
+    structural_context: dict | None,
+    *,
+    entry: float,
+    timeframe: str | None = None,
+    zone_type: str | None = None,
+) -> tuple[float | None, float | None]:
+    if not isinstance(structural_context, dict):
+        return None, None
+    atrs = structural_context.get("atr_by_timeframe") or {}
+    distances = {"long": [], "short": []}
+    for zone in structural_context.get("zones") or []:
+        if not isinstance(zone, dict) or (timeframe and str(zone.get("timeframe")) != timeframe):
+            continue
+        if zone_type and str(zone.get("type") or zone.get("kind")) != zone_type:
+            continue
+        if zone.get("state", "active") not in ("active", "partial"):
+            continue
+        direction = _zone_direction(zone.get("direction"))
+        if direction is None:
+            continue
+        distance = _zone_distance_atr(zone, entry, atrs.get(str(zone.get("timeframe"))))
+        if distance is not None:
+            distances[direction].append(distance)
+    return (
+        min(distances["long"]) if distances["long"] else None,
+        min(distances["short"]) if distances["short"] else None,
+    )
+
+
+def _directional_context_component(
+    structural_context: dict | None,
+    *,
+    entry: float,
+    direction: str,
+    timeframe: str | None = None,
+    zone_type: str | None = None,
+) -> float | None:
+    long_distance, short_distance = _context_zone_distances(
+        structural_context, entry=entry, timeframe=timeframe, zone_type=zone_type,
+    )
+    same = long_distance if direction == "long" else short_distance
+    opposite = short_distance if direction == "long" else long_distance
+    if same is None and opposite is None:
+        return None
+    if same is None:
+        return -max(0.0, 5.0 * (1.0 - min(opposite, 3.0) / 3.0))
+    support = max(0.0, 5.0 * (1.0 - min(same, 3.0) / 3.0))
+    return -support if opposite is not None and opposite < same else support
+
+
+def _score_context(candidate: dict, structural_context: dict | None) -> dict:
+    """Calculate independent context evidence; strategy confluence is ignored."""
+    structural_context = structural_context or candidate.get("structural_context")
+    if isinstance(structural_context, dict):
+        # 15m remains an admission-only structural fallback; it is not a
+        # candidate-ranking input even when the feature is enabled.
+        structural_context = dict(structural_context)
+        structural_context["zones"] = [
+            zone for zone in structural_context.get("zones") or []
+            if isinstance(zone, dict) and str(zone.get("timeframe")) in {"4h", "1h"}
+        ]
+    entry = candidate.get("entry_price")
+    direction = str(candidate.get("direction") or "").lower()
+    context: dict[str, object] = {}
+    if _finite_score_value(entry) is not None and direction in {"long", "short"}:
+        entry_value = float(entry)
+        context["htf_bias"] = _directional_context_component(
+            structural_context, entry=entry_value, direction=direction,
+        )
+        context["fvg"] = _directional_context_component(
+            structural_context, entry=entry_value, direction=direction, zone_type="fvg",
+        )
+        context["order_block"] = _directional_context_component(
+            structural_context, entry=entry_value, direction=direction, zone_type="order_block",
+        )
+        votes = []
+        for timeframe, weight in (("4h", 2.0), ("1h", 1.0), ("15m", 0.5)):
+            value = _directional_context_component(
+                structural_context, entry=entry_value, direction=direction, timeframe=timeframe,
+            )
+            if value is not None:
+                votes.append((value / 5.0) * weight)
+        context["alignment"] = max(-5.0, min(5.0, sum(votes))) if votes else None
+        long_distance, short_distance = _context_zone_distances(
+            structural_context, entry=entry_value,
+        )
+        opposite_distance = short_distance if direction == "long" else long_distance
+        context["contradiction_penalty"] = (
+            2.0 if opposite_distance is not None and opposite_distance <= 0.75 else 0.0
+        )
+
+    freshness = _finite_score_value(candidate.get("data_freshness_seconds"))
+    maximum = _finite_score_value(getattr(config, "DATA_FRESHNESS_MAX_SECONDS", 600))
+    if freshness is not None and maximum is not None and maximum > 0 and freshness >= 0:
+        context["freshness"] = max(0.0, min(10.0, (1.0 - freshness / maximum) * 10.0))
+    return context
+
+
+def score(
+    candidate: dict,
+    *,
+    structural_context: dict | None = None,
+    agreement: float | None = None,
+) -> dict:
+    """Return a bounded, explainable score for an already admitted candidate."""
+    context = _score_context(candidate, structural_context)
+    if agreement is None:
+        agreement = _finite_score_value(candidate.get("_score_agreement"))
+    if agreement is not None:
+        context["agreement"] = agreement
     components = {}
-    for name, key in (("strategy_component", "strategy_score"), ("htf_bias_component", "htf_bias"),
-                      ("swing_component", "swings"), ("fvg_component", "fvg"),
-                      ("order_block_component", "order_block"), ("alignment_component", "alignment"),
-                      ("freshness_component", "freshness"), ("agreement_component", "agreement")):
-        value = context.get(key)
-        status = "unavailable" if value is None else ("support" if float(value) > 0 else "contradict" if float(value) < 0 else "neutral")
-        components[name] = {"value": max(-10.0, min(10.0, float(value))) if value is not None else 0.0, "status": status}
-    total = round(sum(item["value"] for item in components.values()), 6)
-    return {"score": total, "components": components, "score_policy_version": "trade-admission-v1"}
+    for name, key in SCORE_COMPONENT_KEYS:
+        raw = _finite_score_value(context.get(key))
+        value = max(-10.0, min(10.0, raw)) if raw is not None else 0.0
+        status = (
+            "unavailable" if raw is None
+            else "support" if value > 0
+            else "contradict" if value < 0
+            else "neutral"
+        )
+        components[name] = {"value": value, "status": status}
+    penalty_raw = _finite_score_value(context.get("contradiction_penalty"))
+    penalty = max(0.0, min(10.0, penalty_raw)) if penalty_raw is not None else 0.0
+    components["contradiction_penalty"] = {
+        "value": penalty,
+        "status": "unavailable" if penalty_raw is None else "contradict" if penalty > 0 else "neutral",
+    }
+    total = round(
+        sum(components[name]["value"] for name, _ in SCORE_COMPONENT_KEYS) - penalty,
+        6,
+    )
+    return {
+        "score": total,
+        "components": components,
+        "score_context": context,
+        "score_status": "scored",
+        "score_policy_version": SCORE_POLICY_VERSION,
+    }
+
+
+def _rank_key(candidate: dict, result: dict) -> tuple:
+    priority = getattr(config, "STRATEGY_PRIORITY", {}) or {}
+    return (
+        -float(result.get("score", 0.0)),
+        int(priority.get(candidate.get("strategy_id"), candidate.get("strategy_priority", 999999))),
+        str(candidate.get("strategy_id", "")),
+    )
+
+
+def preserve_score_result(admission: dict, prior: object) -> dict:
+    """Keep resolver scoring when a later delivery check recomputes admission."""
+    if not isinstance(prior, dict):
+        return admission
+    if prior.get("candidate_fingerprint") != admission.get("candidate_fingerprint"):
+        return admission
+    if prior.get("score_policy_version") != SCORE_POLICY_VERSION:
+        return admission
+    for field in ("score", "components", "score_context", "score_status", "score_policy_version", "score_margin"):
+        if field in prior:
+            admission[field] = prior[field]
+    return admission
 
 
 def resolve(
@@ -334,7 +515,7 @@ def resolve(
             effective_universe=effective_universe,
             effective_universe_version=effective_universe_version,
         )
-        scored = score(candidate) if admission["hard_gate"] == "pass" else {"score_status": "not_evaluated"}
+        scored = {"score_status": "pending"} if admission["hard_gate"] == "pass" else {"score_status": "not_evaluated"}
         result = {
             "candidate_id": candidate.get("candidate_id"),
             "entry_policy_status": policy_status,
@@ -342,16 +523,36 @@ def resolve(
             **admission,
             **scored,
         }
+        result["conflict_group_key"] = (
+            f"{asset}+{candidate.get('cutoff_at') or (candidate.get('feature_snapshot') or {}).get('cutoff') or candidate.get('observed_at') or ''}"
+        )
         results.append(result)
         if admission["hard_gate"] == "pass":
             eligible.append((candidate, result))
+    for candidate, result in eligible:
+        asset = canonical_asset(candidate.get("asset"))
+        direction = str(candidate.get("direction") or "").lower()
+        peers = {
+            canonical_asset(other.get("asset"))
+            for other, other_result in eligible
+            if other is not candidate
+            and canonical_asset(other.get("asset")) == asset
+            and str(other.get("direction") or "").lower() == direction
+            and other.get("strategy_id") != candidate.get("strategy_id")
+        }
+        score_candidate = dict(candidate)
+        score_candidate["structural_context"] = (structural_contexts or {}).get(asset)
+        score_candidate["_score_agreement"] = min(10.0, len(peers) * 2.0)
+        result.update(score(score_candidate))
     selected = []
-    for asset in sorted({c.get("asset") for c, _ in eligible}):
-        groups = {d: [(c, r) for c, r in eligible if c.get("asset") == asset and str(c.get("direction")).lower() == d] for d in ("long", "short")}
-        priority = getattr(config, "STRATEGY_PRIORITY", {}) or {}
-        winners = {d: max(items, key=lambda x: (x[1]["score"], -int(priority.get(x[0].get("strategy_id"), x[0].get("strategy_priority", 999999))), str(x[0].get("strategy_id", "")))) for d, items in groups.items() if items}
+    for asset in sorted({canonical_asset(c.get("asset")) for c, _ in eligible}):
+        groups = {d: [(c, r) for c, r in eligible if canonical_asset(c.get("asset")) == asset and str(c.get("direction")).lower() == d] for d in ("long", "short")}
+        winners = {d: min(items, key=lambda x: _rank_key(*x)) for d, items in groups.items() if items}
         if len(winners) == 2:
-            ordered = sorted(winners.values(), key=lambda x: x[1]["score"], reverse=True)
+            ordered = sorted(winners.values(), key=lambda x: _rank_key(*x))
+            margin = ordered[0][1]["score"] - ordered[1][1]["score"]
+            for _, result in ordered:
+                result["score_margin"] = round(margin, 6)
             if ordered[0][1]["score"] - ordered[1][1]["score"] < float(getattr(config, "CLASH_MIN_SCORE_MARGIN", 2.0)):
                 continue
             selected.append(ordered[0][0].get("candidate_id"))
@@ -368,13 +569,15 @@ def resolve(
             result["status"] = "selected_for_executor"
         else:
             result["status"] = "eligible_suppressed_by_same_direction_rank"
-    for asset in sorted({c.get("asset") for c, r in eligible}):
-        groups = {d: [(c, r) for c, r in eligible if c.get("asset") == asset and str(c.get("direction")).lower() == d] for d in ("long", "short")}
+    for asset in sorted({canonical_asset(c.get("asset")) for c, r in eligible}):
+        groups = {d: [(c, r) for c, r in eligible if canonical_asset(c.get("asset")) == asset and str(c.get("direction")).lower() == d] for d in ("long", "short")}
         if groups["long"] and groups["short"]:
             winners = []
-            priority = getattr(config, "STRATEGY_PRIORITY", {}) or {}
             for direction in ("long", "short"):
-                winners.append(max(groups[direction], key=lambda x: (x[1]["score"], -int(priority.get(x[0].get("strategy_id"), x[0].get("strategy_priority", 999999))), str(x[0].get("strategy_id", ""))))[1])
+                winners.append(min(groups[direction], key=lambda x: _rank_key(*x))[1])
+            margin = abs(winners[0]["score"] - winners[1]["score"])
+            for result in winners:
+                result["score_margin"] = round(margin, 6)
             if abs(winners[0]["score"] - winners[1]["score"]) < float(getattr(config, "CLASH_MIN_SCORE_MARGIN", 2.0)):
                 for result in winners:
                     result["status"] = "advisory_only"

@@ -845,7 +845,14 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                 score_status="pending" if policy_failed or hard_failed else "scored",
                 clash_status="pending" if policy_failed or hard_failed else "conflict" if conflict else "selected" if selected_candidate else "suppressed",
                 executor_intent_status="not_eligible" if policy_failed or hard_failed or selected_candidate else "not_selected",
-                reason="; ".join(result["hard_gate_reasons"]),
+                reason="; ".join(result["hard_gate_reasons"]) or result.get("status"),
+                score=result.get("score"),
+                score_components=result.get("components"),
+                score_policy_version=result.get("score_policy_version"),
+                conflict_group_key=(
+                    f"{canonical_asset(by_id[result['candidate_id']].get('asset'))}+"
+                    f"{by_id[result['candidate_id']].get('cutoff_at') or cutoff.isoformat()}"
+                ),
             )
     for cid in selected:
         event = by_id[cid]

@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-08
+**Last reviewed:** 2026-09-09
 
 This repository is a read-and-decide market research service. It produces
 auditable candidates and validated trade intents. It does not hold exchange
@@ -205,8 +205,9 @@ admission then checks finite prices, freshness, expiry, trade geometry, reward
 to risk, ATR-bounded stop distance, required data, symbol-account policy, and
 structural-stop rules. Before scoring, admission reads completed direct 1h/4h
 bars from regime-owned history only for assets that emitted candidates, builds
-one reusable context per asset/cutoff/timeframe, and selects the newest eligible
-4h zone before falling back to 1h. A long entry may be inside a bullish support
+one reusable context per asset/cutoff/timeframe, and selects the nearest eligible
+4h/1h zone, or a covered 15m zone when enabled. Distances are normalized by the
+selected timeframe's ATR14; timeframe priority is used only for ties. A long entry may be inside a bullish support
 zone or above its high; an outside entry must be 0.5-3.0 ATR above zone high,
 and its SL must be 0.5-3.0 ATR below zone low. Shorts mirror those rules.
 Missing, stale, invalid, opposing, cross-asset, incomplete, or out-of-band
@@ -220,13 +221,20 @@ period, exact cutoff, and source bar IDs for auditability. The global
 `INTENT_MAX_STOP_DISTANCE_PCT` cap is removed; the structural 3.0 ATR maximum
 is the maximum zone-to-entry and zone-to-SL distance policy.
 
+The independent admission scorer ranks only hard-admitted candidates. It uses
+4h/1h HTF bias, FVG and order-block proximity, cross-timeframe alignment, data
+freshness, same-symbol agreement, and contradiction penalties. Strategy-specific
+confluence and swing components are not admission-score inputs. Missing soft
+context remains `unavailable`; it never becomes fabricated support.
+
 Strategy snapshots do not expose HTF zone records. Structural context is
 constructed only after plugin evaluation, for emitted candidates, and is not
 used as a strategy score. Alpha, compatibility, and shared-bus handoffs must
 carry and verify a passing admission proof; direct intent writes without one
 are rejected.
 
-The normative contract is `specs/structural-sl-admission-v3.md`.
+The normative contracts are `specs/structural-sl-admission-v5-nearest-zone.md`
+and `specs/trade-admission-and-clash-resolution.md`.
 
 The analyst publishes only after admission and routing. The shared SQLite bus
 requires an explicit absolute `INTENT_BUS_DB` and target switches:

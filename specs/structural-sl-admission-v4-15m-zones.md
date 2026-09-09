@@ -2,7 +2,8 @@
 
 ## Status
 
-Implemented specification. This document extends
+Superseded by `specs/structural-sl-admission-v5-nearest-zone.md`. This document
+records the former priority-only implementation. It extends
 `specs/structural-sl-admission-v3.md` with an independently toggled 15m zone
 fallback. It does not authorize implementation of the retired historical 15m
 strategy design, and it does not change the existing 4h/1h behavior while the

@@ -162,7 +162,7 @@ def test_uncovered_zone_fails_closed():
     assert "no eligible HTF structural zone" in result["structural_stop_reasons"]
 
 
-def test_zone_selection_prioritizes_4h_then_latest_zone():
+def test_zone_selection_chooses_nearest_zone_across_timeframes():
     zones = [
         {
             "zone_id": "old-4h", "asset": "BTC", "type": "fvg", "timeframe": "4h", "direction": "bullish",
@@ -191,7 +191,7 @@ def test_zone_selection_prioritizes_4h_then_latest_zone():
         zones, asset="BTCUSDT", direction="long", entry=100.0, cutoff=NOW,
     )
 
-    assert selected["zone_id"] == "new-4h"
+    assert selected["zone_id"] == "new-1h"
 
 
 def test_zone_selection_rejects_other_assets():

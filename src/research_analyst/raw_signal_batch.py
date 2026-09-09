@@ -15,6 +15,18 @@ def window_start(value):
     d = _utc(value).replace(second=0, microsecond=0)
     return d.replace(minute=d.minute - d.minute % config.RAW_SIGNAL_DISCORD_BATCH_MINUTES)
 
+
+def _ensure_score_columns(conn):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_signal_status_history)").fetchall()}
+    for column, sql_type in (
+        ("score", "DOUBLE"),
+        ("score_components_json", "TEXT"),
+        ("score_policy_version", "TEXT"),
+        ("conflict_group_key", "TEXT"),
+    ):
+        if column not in columns:
+            conn.execute(f"ALTER TABLE raw_signal_status_history ADD COLUMN {column} {sql_type}")
+
 def capture(event, db_path=None):
     """Best effort only: this function cannot affect alpha or intent delivery."""
     try:
@@ -27,11 +39,14 @@ def capture(event, db_path=None):
         raw_id = hashlib.sha256(material.encode()).hexdigest()
         payload = json.dumps(event, sort_keys=True, separators=(",", ":"), default=str)
         conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH)
+        _ensure_score_columns(conn)
         conn.execute("INSERT OR IGNORE INTO raw_signals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                      (raw_id, event.get("candidate_id", raw_id), event["strategy_id"], event["asset"],
                       event["direction"], observed.isoformat().replace("+00:00", "Z"),
                       str(event.get("valid_until", observed)), payload, datetime.now(timezone.utc).isoformat()))
         conn.execute("""INSERT OR IGNORE INTO raw_signal_status_history
+                      (status_id, raw_signal_id, hard_gate_status, score_status, clash_status,
+                       executor_intent_status, reason, recorded_at)
                       VALUES (?, ?, 'pending', 'pending', 'pending', 'not_eligible', NULL, ?)""",
                      (f"{raw_id}:captured", raw_id, datetime.now(timezone.utc).isoformat()))
         persist_observation(conn, event)
@@ -67,15 +82,29 @@ def record_evaluation_coverage(strategy_id, evaluated_at, evaluated_assets,
                 print(f"raw signal coverage close error: {exc}")
 
 def record_status(raw_signal_id, *, hard_gate_status=None, score_status=None,
-                  clash_status=None, executor_intent_status=None, reason=None, db_path=None):
+                  clash_status=None, executor_intent_status=None, reason=None,
+                  score=None, score_components=None, score_policy_version=None,
+                  conflict_group_key=None, db_path=None):
     """Append a downstream status without rewriting the raw candidate."""
     conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH)
     try:
-        prior = conn.execute("SELECT hard_gate_status,score_status,clash_status,executor_intent_status FROM raw_signal_status_history WHERE raw_signal_id=? ORDER BY recorded_at DESC LIMIT 1", (raw_signal_id,)).fetchone()
-        values = [hard_gate_status, score_status, clash_status, executor_intent_status]
+        _ensure_score_columns(conn)
+        prior = conn.execute("""SELECT hard_gate_status, score_status, clash_status,
+                                      executor_intent_status, score, score_components_json,
+                                      score_policy_version, conflict_group_key
+                               FROM raw_signal_status_history
+                               WHERE raw_signal_id=? ORDER BY recorded_at DESC LIMIT 1""", (raw_signal_id,)).fetchone()
+        values = [hard_gate_status, score_status, clash_status, executor_intent_status,
+                  score, json.dumps(score_components, sort_keys=True) if isinstance(score_components, dict) else score_components,
+                  score_policy_version, conflict_group_key]
         values = [value if value is not None else (prior[i] if prior else None) for i, value in enumerate(values)]
-        conn.execute("INSERT INTO raw_signal_status_history VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                     (f"{raw_signal_id}:{uuid4()}", raw_signal_id, *values, reason, datetime.now(timezone.utc).isoformat()))
+        conn.execute("""INSERT INTO raw_signal_status_history
+                       (status_id, raw_signal_id, hard_gate_status, score_status, clash_status,
+                        executor_intent_status, reason, recorded_at, score,
+                       score_components_json, score_policy_version, conflict_group_key)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (f"{raw_signal_id}:{uuid4()}", raw_signal_id, *values[:4], reason,
+                      datetime.now(timezone.utc).isoformat(), *values[4:]))
         conn.commit()
     finally:
         conn.close()

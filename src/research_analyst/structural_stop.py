@@ -31,8 +31,9 @@ def _finite_positive(value: Any) -> bool:
 STRUCTURAL_ATR_PERIOD = 14
 STRUCTURAL_MIN_ATR_MULTIPLE = 0.5
 STRUCTURAL_MAX_ATR_MULTIPLE = 3.0
-STRUCTURAL_ADMISSION_CONTRACT_VERSION = "structural-sl-admission-v3"
-STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION = "structural-sl-admission-v4-15m"
+STRUCTURAL_ADMISSION_CONTRACT_VERSION = "structural-sl-admission-v5-nearest-zone"
+STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION = "structural-sl-admission-v6-15m-nearest-zone"
+STRUCTURAL_ZONE_SELECTION_POLICY_VERSION = "nearest-directional-zone-v1"
 STRUCTURAL_15M_SOURCE_MODE = "market_5m_resampled"
 STRUCTURAL_15M_SOURCE_EXCHANGE = "bybit"
 STRUCTURAL_15M_RESAMPLING_CONTRACT_VERSION = "execution-5m-to-15m-v1"
@@ -194,8 +195,15 @@ def select_structural_zone(
     direction: str,
     entry: float,
     cutoff: datetime,
+    atr_by_timeframe: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Choose the latest eligible directional zone, with configured priority."""
+    """Choose the nearest eligible directional zone across enabled timeframes.
+
+    Distance is measured to the zone interval, so an entry inside a zone has
+    zero distance. When ATRs are supplied, distances are normalized per
+    timeframe before comparison; callers without ATR context retain raw-price
+    ordering for compatibility with the pure selector tests.
+    """
     wanted = "bullish" if direction == "long" else "bearish" if direction == "short" else None
     asset = _canonical_asset(asset)
     if wanted is None or not _finite_positive(entry):
@@ -204,13 +212,14 @@ def select_structural_zone(
     timeframes = ("4h", "1h")
     if getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False):
         timeframes += ("15m",)
-    for timeframe in timeframes:
-        eligible = []
-        for raw in zones:
+    timeframe_priority = {timeframe: index for index, timeframe in enumerate(timeframes)}
+    eligible = []
+    for raw in zones:
+        for timeframe in timeframes:
             zone = _normalise_zone(raw, asset, timeframe)
             if zone is None:
                 continue
-            if zone.get("timeframe") != timeframe or zone.get("state") not in ("active", "partial"):
+            if zone.get("state") not in ("active", "partial"):
                 continue
             if zone.get("direction") != wanted or zone.get("coverage_status") != "covered":
                 continue
@@ -222,10 +231,29 @@ def select_structural_zone(
                 continue
             if direction == "short" and zone["high"] < entry:
                 continue
-            eligible.append(zone)
-        if eligible:
-            return max(eligible, key=lambda zone: (zone["created_at"], zone["zone_id"]))
-    return None
+            if atr_by_timeframe is not None and not _finite_positive(atr_by_timeframe.get(timeframe)):
+                continue
+            distance = (
+                max(0.0, zone["low"] - entry)
+                if direction == "short"
+                else max(0.0, entry - zone["high"])
+            )
+            atr = atr_by_timeframe.get(timeframe) if atr_by_timeframe is not None else None
+            distance_atr = distance / float(atr) if _finite_positive(atr) else distance
+            eligible.append((distance_atr, timeframe_priority[timeframe], zone))
+            break
+    if not eligible:
+        return None
+    _, _, selected = min(
+        eligible,
+        key=lambda item: (
+            item[0],
+            item[1],
+            -item[2]["created_at"].timestamp(),
+            item[2]["zone_id"],
+        ),
+    )
+    return selected
 
 
 def build_structural_contexts(
@@ -393,6 +421,7 @@ def admit_selected_structural_stop(
         "structural_atr_method": "wilder",
         "structural_atr_source_bar_ids": [],
         "structural_context_cutoff": None,
+        "structural_zone_selection_policy_version": STRUCTURAL_ZONE_SELECTION_POLICY_VERSION,
     }
     if getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False):
         result["structural_admission_contract_version"] = STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION
@@ -434,6 +463,7 @@ def admit_selected_structural_stop(
         direction=direction,
         entry=float(entry),
         cutoff=context_cutoff,
+        atr_by_timeframe=context.get("atr_by_timeframe") or {},
     )
     if zone is None:
         if getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False):

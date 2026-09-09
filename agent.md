@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-08
+**Last reviewed:** 2026-09-09
 
 ## Mission and boundaries
 
@@ -32,15 +32,16 @@ ingestion are not live defaults. Binance is opt-in.
 Market and analyst databases are separate. Use read-only market connections from
 analyst code and never start duplicate writers.
 
-Structural admission currently has the optional 15m fallback enabled in the
-managed orchestrator. The selector precedence is `4h direct > 1h direct > 15m`
-only when no eligible stronger zone exists. The 15m frame is built from
+Structural admission currently has the optional 15m path enabled in the managed
+orchestrator. It selects the nearest eligible directional zone across `4h` and
+`1h`, plus `15m` when enabled. Distance is normalized by the selected timeframe's
+ATR14 and timeframe priority is only a tie-break. The 15m frame is built from
 cutoff-bound, completed market-owned 5m bars in memory; it is not a strategy
 input, regime-session input, or persisted structural-zone row. The proposed
 strategy stop remains authoritative. Disable or enable this behavior only with
 `STRUCTURAL_15M_ZONES_ENABLED` through an `oxmgr` restart; it is independent of
 `EVAL_INTERVALS` and `LSR_V1_USE_15M_EPHEMERAL_FVG`. See
-`specs/structural-sl-admission-v4-15m-zones.md`.
+`specs/structural-sl-admission-v5-nearest-zone.md`.
 
 ## Live strategy set
 
@@ -86,10 +87,11 @@ gate. The strategy engine evaluates on completed 5m cutoffs; direct 1h/4h setup
 frames remain separate regime-owned inputs. Binance OI rotation and executor
 position snapshots remain separate; the latter is a 1m PM handoff contract.
 
-The effective structural admission contract is v4 while 15m fallback is
-enabled. Selected 15m proofs include the market source, 5m-to-15m resampling,
-detector, frame evidence, ATR evidence, and exact cutoff. Final intent
-verification rehydrates the cutoff-bound context before accepting the proof.
+The effective structural admission contract is v6 while 15m is enabled and v5
+otherwise. Selected 15m proofs include the market source, 5m-to-15m resampling,
+detector, frame evidence, ATR evidence, nearest-zone policy, and exact cutoff.
+Final intent verification rehydrates the cutoff-bound context before accepting
+the proof.
 
 Trade intents are published through the shared SQLite intent bus configured by
 the absolute `INTENT_BUS_DB`. The shared bus is the sole intent handoff. Do not
@@ -103,14 +105,16 @@ For each finalized interval cutoff:
 2. Capture every returned candidate in `raw_signals` before admission.
 3. Apply hard SL/TP geometry, finite-price, expiry, RR, stop-distance, identity,
    and strategy-local data checks.
-4. Score eligible candidates using soft HTF bias, swings, FVG, order block,
-   alignment, freshness, evidence, agreement, and contradiction components.
+4. Score eligible candidates using independently calculated 4h/1h HTF bias,
+   FVG and order-block proximity, alignment, freshness, agreement, and
+   contradiction components.
 5. Resolve same-direction ranking and opposite-direction clashes immediately.
 6. Write only selected intents using the per-strategy route; retain all other outcomes.
 
 Defaults are `RR >= 2.0`, stop distance from the greater of `0.1%` and
 configurable `0.25 * ATR14_4h` through `5%`, and clash margin `2.0`.
-Missing soft context is `unavailable`, never automatic rejection. Hard failures
+Missing soft context is `unavailable`, never automatic rejection. Strategy-local
+confluence is not consumed by admission scoring. Hard failures
 and conflicts are advisory-only and must remain auditable.
 
 ## Intent contract

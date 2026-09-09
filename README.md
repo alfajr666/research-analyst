@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-09-08
+**Last reviewed:** 2026-09-09
 
 Research Analyst is a read-and-decide market research service. It consumes
 public market data, evaluates versioned strategy plugins, records auditable
@@ -124,8 +124,8 @@ regime-scope provenance.
 
 Strategies remain source-blind: they do not read watchlist configuration,
 rotation state, regime state, or account policy. In `REGIME_SESSION_MODE=enforce`,
-the router additionally restricts each plugin to its active market family. The
-The account-symbol policy remains a downstream admission gate. The strategy engine
+ the router additionally restricts each plugin to its active market family. The
+ account-symbol policy remains a downstream admission gate. The strategy engine
 uses a 5m-only market-data contract; executor PM snapshots remain 1m and
 Binance OI rotation remains separate. See
 `specs/no-1m-engine-and-strategy-rewrite-v1.md`.
@@ -259,11 +259,11 @@ that later fail. Hard admission checks:
 
 Structural admission reads completed direct regime-owned `1h`/`4h` bars only for
 assets that emitted candidates. It calculates one reusable Wilder ATR14 context
-per asset, cutoff, and timeframe, selects the newest eligible `4h` zone before
-falling back to `1h`. In the current managed deployment, the optional v4
-fallback then uses cutoff-bound market-owned `5m` bars resampled in memory to
-`15m` when neither stronger timeframe has an eligible zone. It evaluates both
-sides of the trade against the selected zone:
+per asset, cutoff, and timeframe, then selects the nearest eligible directional
+zone across `4h` and `1h`. When enabled, cutoff-bound market-owned `5m` bars are
+resampled in memory to `15m` and included in the same nearest-zone comparison.
+Distance is normalized by the selected timeframe's ATR14; timeframe priority is
+only a tie-break. It evaluates both sides of the trade against the selected zone:
 
 - Long entry: inside a bullish support zone, or `0.5-3.0 ATR` above its high;
   SL: `0.5-3.0 ATR` below the zone low.
@@ -282,15 +282,17 @@ only after strategy evaluation for emitted candidates. Alpha, compatibility,
 and shared-bus handoffs require a passing admission proof; direct intent writes
 without that proof are rejected.
 
-Soft context scores rank candidates but cannot rescue a failed hard gate.
-Opposing candidates are resolved deterministically; an unresolved clash emits
-no intent. Missing or stale data is rejected by admission, not disguised as a
-score.
+Independent soft context scores rank candidates but cannot rescue a failed hard
+gate. They use 4h/1h HTF bias, FVG and order-block proximity, cross-timeframe
+alignment, freshness, same-symbol agreement, and contradiction penalties.
+Strategy confluence and swing components are not admission-score inputs.
+Opposing candidates are resolved deterministically; an unresolved clash emits no
+intent. Missing or stale data is rejected by admission, not disguised as a score.
 
-See `specs/structural-sl-admission-v3.md` for the normative 4h/1h contract and
-`specs/structural-sl-admission-v4-15m-zones.md` for the optional 15m fallback.
-The current managed deployment has `STRUCTURAL_15M_ZONES_ENABLED=true`; change
-it only through a managed orchestrator restart. It is independent of evaluation
+See `specs/structural-sl-admission-v5-nearest-zone.md` and
+`specs/trade-admission-and-clash-resolution.md` for the normative contracts.
+The current managed deployment has `STRUCTURAL_15M_ZONES_ENABLED=true`; change it
+only through a managed orchestrator restart. It is independent of evaluation
 cadence and LSR's ephemeral 15m FVG setting.
 
 ### Raw Discord Batch Status

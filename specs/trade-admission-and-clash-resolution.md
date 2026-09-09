@@ -23,7 +23,7 @@ eligible candidates
         |
         v
 context scoring and clash resolution
-  HTF bias / swings / FVG / OB / strategy evidence
+  HTF bias / FVG / OB / alignment / freshness / agreement
         |
         v
 selected intent, advisory conflict, or no intent
@@ -145,7 +145,6 @@ The following are scoring inputs, never unconditional execution gates:
 - FVG proximity and directional support
 - order-block proximity and directional support
 - LTF/HTF alignment
-- strategy-specific evidence quality
 - data freshness
 - same-symbol strategy agreement
 - contradiction penalties
@@ -157,11 +156,9 @@ into fabricated support or contradiction.
 The score is additive and explainable:
 
 ```text
-score = strategy_component
-      + htf_bias_component
-      + swing_component
-      + fvg_component
-      + order_block_component
+  score = htf_bias_component
+       + fvg_component
+       + order_block_component
       + alignment_component
       + freshness_component
       + agreement_component
@@ -251,7 +248,7 @@ Tests must prove:
 1. Invalid long and short geometry cannot create executor intents.
 2. RR below the configured minimum cannot create executor intents.
 3. HTF bias disagreement does not reject an otherwise admitted candidate.
-4. Missing swings, FVG, or order blocks do not reject an otherwise admitted
+4. Missing FVG or order blocks do not reject an otherwise admitted
    candidate.
 5. Same-direction candidates select the highest score deterministically.
 6. Opposite-direction candidates require the configured score margin.

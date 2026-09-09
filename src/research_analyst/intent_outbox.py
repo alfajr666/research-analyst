@@ -29,6 +29,7 @@ from structural_stop import (
     STRUCTURAL_15M_SOURCE_EXCHANGE,
     STRUCTURAL_15M_SOURCE_MODE,
     STRUCTURAL_ZONE_DETECTOR_VERSION,
+    STRUCTURAL_ZONE_SELECTION_POLICY_VERSION,
     _normalise_closed_bar_timestamp,
 )
 
@@ -254,6 +255,7 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         "structural_admission_contract_version", "entry_zone_location",
         "selected_zone_state", "selected_zone_created_at", "selected_zone_confirmed_at",
         "selected_zone_coverage_status", "selected_zone_source_evidence_ids",
+        "structural_zone_selection_policy_version",
         "selected_zone_low", "selected_zone_high", "selected_zone_boundary",
         "structural_atr", "structural_atr_period", "structural_atr_method",
         "structural_atr_source_bar_ids", "entry_zone_buffer", "entry_zone_buffer_atr",
@@ -283,6 +285,7 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         or proof.get("entry_zone_location") not in ("inside", "above", "below")
         or proof.get("structural_atr_method") != "wilder"
         or proof.get("structural_atr_period") != 14
+        or proof.get("structural_zone_selection_policy_version") != STRUCTURAL_ZONE_SELECTION_POLICY_VERSION
         or not isinstance(proof.get("structural_atr_source_bar_ids"), list)
         or not proof["structural_atr_source_bar_ids"]
         or proof.get("selected_zone_kind") not in ("fvg", "order_block")

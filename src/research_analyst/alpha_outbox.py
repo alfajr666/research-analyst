@@ -55,7 +55,7 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     """
     # Capture before any purity/admission gate; failures are deliberately isolated.
     from raw_signal_batch import capture
-    from trade_admission import admit
+    from trade_admission import admit, preserve_score_result
     from raw_signal_batch import record_status
     raw_id = capture(event)
     admission_event = dict(event)
@@ -91,6 +91,7 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         admission_event,
         structural_context=admission_event.get("structural_context"),
     )
+    admission = preserve_score_result(admission, event.get("_admission_result"))
     complete_candidate = _is_complete_candidate(event)
     if raw_id and complete_candidate:
         record_status(raw_id, hard_gate_status=admission["hard_gate"],

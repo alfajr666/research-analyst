@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import config
-from trade_admission import admit, candidate_admission_fingerprint
+from trade_admission import admit, candidate_admission_fingerprint, resolve, score
 
 
 def _candidate(stop, atr=10):
@@ -144,3 +144,53 @@ def test_stop_too_far_from_htf_zone_is_rejected_before_scoring(monkeypatch):
     assert result["results"][0]["structural_stop_gate"] == "fail"
     assert "structural stop buffer is above maximum ATR multiple" in result["results"][0]["hard_gate_reasons"][-1]
     assert result["results"][0]["score_status"] == "not_evaluated"
+
+
+def test_score_is_independent_of_strategy_confluence():
+    event = _candidate(95.0, atr=10)
+    event["data_freshness_seconds"] = 1.0
+    event["_confluence_score"] = 1.0
+
+    scored = score(event, structural_context=event["structural_context"], agreement=0.0)
+
+    assert scored["score_status"] == "scored"
+    assert "strategy_component" not in scored["components"]
+    assert "swing_component" not in scored["components"]
+    assert scored["components"]["htf_bias_component"]["status"] == "support"
+    assert scored["components"]["freshness_component"]["status"] == "support"
+
+
+def test_same_direction_clash_uses_independent_score():
+    first = _candidate(95.0)
+    first.update({"candidate_id": "first", "strategy_id": "first-strategy", "data_freshness_seconds": 1.0})
+    second = _candidate(95.0)
+    second.update({"candidate_id": "second", "strategy_id": "second-strategy", "data_freshness_seconds": 500.0})
+
+    result = resolve([first, second], now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    assert result["selected_candidate_ids"] == ["first"]
+    assert result["results"][0]["score_status"] == "scored"
+    assert result["results"][1]["status"] == "eligible_suppressed_by_same_direction_rank"
+
+
+def test_opposite_direction_clash_requires_score_margin():
+    long_event = _candidate(95.0)
+    long_event.update({"candidate_id": "long", "strategy_id": "long-strategy", "data_freshness_seconds": 1.0})
+    short_event = _candidate(106.0)
+    short_event.update({
+        "candidate_id": "short", "strategy_id": "short-strategy", "direction": "short",
+        "targets": [80.0], "data_freshness_seconds": 1.0,
+        "structural_context": {
+            **short_event["structural_context"],
+            "zones": [{
+                **short_event["structural_context"]["zones"][0],
+                "direction": "bearish", "low": 103.0, "high": 104.0,
+            }],
+        },
+    })
+
+    result = resolve([long_event, short_event], now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    assert result["selected_candidate_ids"] == []
+    assert all(item["status"] == "eligible_suppressed_by_opposite_direction_clash"
+               for item in result["results"])

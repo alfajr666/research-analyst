@@ -43,16 +43,16 @@ def _context(zones, atr_4h=2.0, atr_1h=1.0):
     }
 
 
-def test_four_hour_zone_has_priority_over_newer_one_hour_zone():
+def test_nearest_zone_wins_over_timeframe_priority():
     selected = select_structural_zone(
         [
-            _zone("old-4h", "4h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc)),
-            _zone("new-1h", "1h", datetime(2026, 9, 4, 12, tzinfo=timezone.utc)),
+            _zone("old-4h", "4h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc), low=94.0, high=95.0),
+            _zone("new-1h", "1h", datetime(2026, 9, 4, 12, tzinfo=timezone.utc), low=98.0, high=99.0),
         ],
         asset="BTC", direction="long", entry=100.0, cutoff=NOW,
     )
 
-    assert selected["zone_id"] == "old-4h"
+    assert selected["zone_id"] == "new-1h"
 
 
 def test_most_recent_eligible_zone_wins_within_timeframe():
@@ -149,7 +149,7 @@ def test_15m_zones_are_not_selected_when_disabled(monkeypatch):
     assert selected is None
 
 
-def test_15m_zones_are_a_fallback_after_1h(monkeypatch):
+def test_15m_zone_can_win_when_nearest(monkeypatch):
     monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", True)
     selected = select_structural_zone(
         [
@@ -160,6 +160,20 @@ def test_15m_zones_are_a_fallback_after_1h(monkeypatch):
     )
 
     assert selected["zone_id"] == "one-hour"
+
+
+def test_nearest_zone_uses_atr_normalized_distance(monkeypatch):
+    monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", True)
+    selected = select_structural_zone(
+        [
+            _zone("four-hour", "4h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc), low=100.0, high=101.0),
+            _zone("fifteen-minute", "15m", datetime(2026, 9, 4, 12, tzinfo=timezone.utc), low=98.0, high=99.0),
+        ],
+        asset="BTC", direction="long", entry=104.0, cutoff=NOW,
+        atr_by_timeframe={"4h": 10.0, "1h": 1.0, "15m": 2.0},
+    )
+
+    assert selected["zone_id"] == "four-hour"
 
 
 def test_15m_structural_admission_records_v4_source_provenance(monkeypatch):
@@ -174,12 +188,12 @@ def test_15m_structural_admission_records_v4_source_provenance(monkeypatch):
     result = admit_selected_structural_stop(_candidate(98.0), context)
 
     assert result["structural_stop_gate"] == "pass"
-    assert result["structural_admission_contract_version"] == "structural-sl-admission-v4-15m"
+    assert result["structural_admission_contract_version"] == "structural-sl-admission-v6-15m-nearest-zone"
     assert result["selected_zone_timeframe"] == "15m"
     assert result["structural_source_mode"] == "market_5m_resampled"
 
 
-def test_stronger_zone_failure_does_not_fall_back_to_15m(monkeypatch):
+def test_nearest_zone_failure_does_not_fall_back_to_another_zone(monkeypatch):
     monkeypatch.setattr(config, "STRUCTURAL_15M_ZONES_ENABLED", True)
     context = _context([
         _zone("4h-zone", "4h", datetime(2026, 9, 4, 8, tzinfo=timezone.utc)),

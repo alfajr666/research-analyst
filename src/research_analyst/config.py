@@ -631,9 +631,22 @@ def init_analyst_db(db_path: str | Path | None = None):
             asset TEXT NOT NULL, direction TEXT NOT NULL, observed_at TEXT NOT NULL,
             valid_until TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL)""")
         conn.execute("""CREATE TABLE IF NOT EXISTS raw_signal_status_history (
-            status_id TEXT PRIMARY KEY, raw_signal_id TEXT NOT NULL, hard_gate_status TEXT,
-            score_status TEXT, clash_status TEXT, executor_intent_status TEXT, reason TEXT,
-            recorded_at TEXT NOT NULL)""")
+             status_id TEXT PRIMARY KEY, raw_signal_id TEXT NOT NULL, hard_gate_status TEXT,
+             score_status TEXT, clash_status TEXT, executor_intent_status TEXT, reason TEXT,
+             recorded_at TEXT NOT NULL, score DOUBLE, score_components_json TEXT,
+             score_policy_version TEXT, conflict_group_key TEXT)""")
+        scoring_migration = "2026-09-09-admission-score-audit"
+        if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (scoring_migration,)).fetchone() is None:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_signal_status_history)").fetchall()}
+            for column, sql_type in (
+                ("score", "DOUBLE"),
+                ("score_components_json", "TEXT"),
+                ("score_policy_version", "TEXT"),
+                ("conflict_group_key", "TEXT"),
+            ):
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE raw_signal_status_history ADD COLUMN {column} {sql_type}")
+            conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (scoring_migration,))
         conn.execute("""CREATE TABLE IF NOT EXISTS raw_signal_evaluation_coverage (
             strategy_id TEXT NOT NULL, asset TEXT NOT NULL, evaluated_at TEXT NOT NULL,
             emitted_count INTEGER NOT NULL DEFAULT 0,
