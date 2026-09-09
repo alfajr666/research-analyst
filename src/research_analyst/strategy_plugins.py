@@ -193,8 +193,8 @@ def _load_builtin_plugins():
             True,
         ),
         "dual-zone-follower-v3": (
-            "5m", "1h",
-            ("5m", {"ema": {
+            "5m", "15m", "1h",
+            ("15m", {"ema": {
                 f"ema_{config.DUAL_ZONE_V3_EXIT_EMA_LENGTH}": config.DUAL_ZONE_V3_EXIT_EMA_LENGTH,
                 f"ema_{config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH}": config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH,
                 f"ema_{config.DUAL_ZONE_V3_TREND_EMA_LENGTH}": config.DUAL_ZONE_V3_TREND_EMA_LENGTH,
@@ -202,8 +202,8 @@ def _load_builtin_plugins():
             False,
         ),
         "dual-zone-short-follower-v3": (
-            "5m", "1h",
-            ("5m", {"ema": {
+            "5m", "15m", "1h",
+            ("15m", {"ema": {
                 f"ema_{config.DUAL_ZONE_V3_EXIT_EMA_LENGTH}": config.DUAL_ZONE_V3_EXIT_EMA_LENGTH,
                 f"ema_{config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH}": config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH,
                 f"ema_{config.DUAL_ZONE_V3_TREND_EMA_LENGTH}": config.DUAL_ZONE_V3_TREND_EMA_LENGTH,

@@ -9,7 +9,6 @@ import config
 from strategy_features import build_feature_frame, cached_feature_frame
 from strategy_v2_context import (
     cutoff_from_id,
-    ema_last,
     evaluation_symbols,
     has_active_event,
     load_bars_for_interval,
@@ -32,8 +31,9 @@ def _positive(value: object) -> float | None:
 
 
 def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime | None,
-                    direction: str = "long", features=None) -> dict | None:
-    """Build one candidate from a completed 5m frame and cached EMA features."""
+                    direction: str = "long", ema_bars=None, features=None,
+                    ema_features=None) -> dict | None:
+    """Build one 5m candidate from separately sourced 15m EMA features."""
     if direction not in {"long", "short"}:
         return None
     required = max(
@@ -41,35 +41,41 @@ def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime | None,
         config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH,
         config.DUAL_ZONE_V3_TREND_EMA_LENGTH,
     )
-    if bars.is_empty() or bars.height < required:
+    if (
+        bars.is_empty()
+        or ema_bars is None
+        or ema_bars.is_empty()
+        or ema_bars.height < required
+    ):
         return None
 
-    feature_frame = features if features is not None else bars
-    if feature_frame.is_empty():
+    execution_features = features if features is not None else bars
+    if execution_features.is_empty():
         return None
-    row = feature_frame.row(-1, named=True)
+    row = execution_features.row(-1, named=True)
     close = _positive(row.get("close"))
     if close is None:
         return None
-    if features is None:
-        closes = [float(value) for value in bars["close"].to_list()]
-        ema_values = [
-            ema_last(closes, length)
-            for length in (
-                config.DUAL_ZONE_V3_EXIT_EMA_LENGTH,
-                config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH,
-                config.DUAL_ZONE_V3_TREND_EMA_LENGTH,
-            )
-        ]
-    else:
-        ema_values = [
-            row.get(f"ema_{length}")
-            for length in (
-                config.DUAL_ZONE_V3_EXIT_EMA_LENGTH,
-                config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH,
-                config.DUAL_ZONE_V3_TREND_EMA_LENGTH,
-            )
-        ]
+    if ema_features is None:
+        ema_features = build_feature_frame(
+            ema_bars,
+            ema={
+                f"ema_{config.DUAL_ZONE_V3_EXIT_EMA_LENGTH}": config.DUAL_ZONE_V3_EXIT_EMA_LENGTH,
+                f"ema_{config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH}": config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH,
+                f"ema_{config.DUAL_ZONE_V3_TREND_EMA_LENGTH}": config.DUAL_ZONE_V3_TREND_EMA_LENGTH,
+            },
+        )
+    if ema_features.is_empty():
+        return None
+    ema_row = ema_features.row(-1, named=True)
+    ema_values = [
+        ema_row.get(f"ema_{length}")
+        for length in (
+            config.DUAL_ZONE_V3_EXIT_EMA_LENGTH,
+            config.DUAL_ZONE_V3_ANCHOR_EMA_LENGTH,
+            config.DUAL_ZONE_V3_TREND_EMA_LENGTH,
+        )
+    ]
     e7, e26, e99 = (_positive(value) for value in ema_values)
     if None in (e7, e26, e99):
         return None
@@ -131,9 +137,10 @@ def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime | None,
         "feature_snapshot": {
             "source_symbol": symbol,
             "execution_timeframe": "5m",
-            "ema7": e7,
-            "ema26": e26,
-            "ema99": e99,
+            "ema_timeframe": config.DUAL_ZONE_V3_EMA_TIMEFRAME,
+            "ema7_15m": e7,
+            "ema26_15m": e26,
+            "ema99_15m": e99,
             "channel": zone,
             "entry_distance_pct": entry_distance_pct,
             "cutoff": cutoff.isoformat() if cutoff else None,
@@ -155,13 +162,16 @@ def _run(cutoff_id: str, snapshot: dict, direction: str) -> list[dict]:
         }
         for symbol, asset in evaluation_symbols(conn, cutoff, snapshot):
             bars = load_bars_for_interval(conn, symbol, "5m", cutoff)
-            features = cached_feature_frame(
+            ema_bars = load_bars_for_interval(
+                conn, symbol, config.DUAL_ZONE_V3_EMA_TIMEFRAME, cutoff
+            )
+            ema_features = cached_feature_frame(
                 snapshot,
-                f"dual-zone-v3-5m:{asset}:{cutoff.isoformat()}",
-                bars,
+                f"dual-zone-v3-{config.DUAL_ZONE_V3_EMA_TIMEFRAME}:{asset}:{cutoff.isoformat()}",
+                ema_bars,
                 lambda frame: build_feature_frame(frame, **feature_spec),
                 asset=asset,
-                interval="5m",
+                interval=config.DUAL_ZONE_V3_EMA_TIMEFRAME,
                 cutoff=cutoff,
                 feature_spec=feature_spec,
             )
@@ -191,7 +201,8 @@ def _run(cutoff_id: str, snapshot: dict, direction: str) -> list[dict]:
                     symbol=symbol,
                     cutoff=cutoff,
                     direction=direction,
-                    features=features,
+                    ema_bars=ema_bars,
+                    ema_features=ema_features,
                 )
                 if direction_ok else None
             )
