@@ -238,9 +238,12 @@ Production indicators use the tested in-house EMA, RSI, ATR, ADX, StochRSI, and
 Bollinger implementations. Replacing one with a TA library requires numerical
 parity tests and an explicit strategy-version change.
 
-Dual-zone v3 uses completed 5m execution bars and direct regime-owned 1h ADX/DI
-history. Its candidates enter the normal structural admission and shared SQLite
-intent-bus pipeline; the retired v2 IDs are historical metadata only. See
+Dual-zone v3 uses completed `5m` execution bars, completed cutoff-bounded `15m`
+EMA7/EMA26/EMA99 inputs, and direct regime-owned `1h` ADX/DI history. Its
+execution cadence remains `5m`; the 15m frame changes only the EMA inputs and
+does not change candidate expiry or execution timing. Candidates enter the
+normal structural admission and shared SQLite intent-bus pipeline; the retired
+v2 IDs are historical metadata only. See
 `specs/strategy-dual-zone-follower-v3.md`.
 
 ## Evaluation And Admission
@@ -348,6 +351,16 @@ The alpha outbox stores admitted targets in the top-level `targets` field.
 Publisher compatibility handling can reconstruct that field from
 `_admission_result.selected_take_profit` for legacy events; events without a
 recoverable target remain invalid and are not delivered.
+
+The intent-bus publisher converts nested Python `datetime` values to UTC
+ISO-8601 strings before handing an envelope to the JSON-only shared bus. This
+keeps admission proofs and source metadata serializable without changing the
+trade intent contract.
+
+The active publisher scans only JSON files directly under `data/alpha_outbox/`.
+Files under `data/alpha_outbox/quarantine/` are unused archival artifacts and
+may be deleted only after verifying that every file is expired and belongs to a
+retired strategy or invalid legacy schema. Preserve active top-level events.
 
 ## Position Management
 

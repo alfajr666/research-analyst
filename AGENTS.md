@@ -183,6 +183,13 @@ Production strategies use the repository's tested in-house EMA, RSI, ATR, ADX,
 StochRSI, and Bollinger implementations. A TA library cannot replace them
 without numerical parity tests and an explicit strategy-version change.
 
+Dual-Zone v3 evaluates on completed `5m` bars but computes EMA7, EMA26, and
+EMA99 from the separate cutoff-bounded completed `15m` frame. The 5m frame
+provides execution close, timestamp, entry, and five-minute validity; the 15m
+frame provides EMA trend, channel, stop-anchor, and target-anchor values. Its
+ADX/DI filter remains on the direct regime-owned `1h` frame. Do not collapse
+these inputs into one timeframe or change the 5m execution cadence.
+
 ## Discord Signal Batch Table
 
 Raw-signal batch messages use a fixed-width table with explicit `asset name` and
@@ -250,6 +257,16 @@ Alpha outbox events persist the admitted target in the top-level `targets`
 field. The publisher can recover that field for legacy events when
 `_admission_result.selected_take_profit` is present; events without a
 recoverable target remain invalid and are not delivered.
+
+The shared intent bus accepts JSON values only. The analyst bus publisher
+normalizes nested `datetime` values to UTC ISO-8601 strings before validation,
+delivery construction, and source persistence. Do not pass raw database or
+Python datetime objects across that boundary.
+
+`data/alpha_outbox/quarantine/` is not consumed by the active publisher. Clear
+it only after auditing that every file is expired and belongs to a retired
+strategy or invalid legacy schema. Preserve active top-level outbox events;
+never clear the whole `data/alpha_outbox/` directory.
 
 ## Position Management
 
