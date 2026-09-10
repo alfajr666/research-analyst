@@ -410,6 +410,24 @@ job. It does not touch the Binance OI database or executor databases.
 
 ## Setup And Verification
 
+The root `cli.py` provides the local, JSON-only operator interface described in
+`specs/LOCAL_CLI_SPEC.md`. It is enabled by default; set
+`RESEARCH_ANALYST_LOCAL_CLI_ENABLED=false` to refuse all CLI commands. The CLI
+uses read-only database connections for observations and only calls `oxmgr` for
+the four allowlisted service targets.
+Service stop/restart operations require the boolean `--confirm` acknowledgement.
+This flag is an operator-intent check, not an authentication token; the CLI does
+not place orders or report execution state.
+
+Examples:
+
+```bash
+./cli.py status
+./cli.py research candidates --asset BTC --limit 20 --pretty
+./cli.py bus deliveries --limit 20
+./cli.py service logs research-analyst-ws --lines 40
+```
+
 ```bash
 cp .env.example .env
 python3 -m venv venv

@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-09
+**Last reviewed:** 2026-09-10
 
 This repository is a read-and-decide market research service. It produces
 auditable candidates and validated trade intents. It does not hold exchange
@@ -332,3 +332,21 @@ python3 -m compileall -q src tests
 ```
 
 Do not commit `.env`, API keys, webhooks, databases, or executor credentials.
+
+## Local Agent CLI
+
+The root `./cli.py` is the repository-local, JSON-only inspection interface;
+its locked contract is `specs/LOCAL_CLI_SPEC.md`. It reads Research Analyst
+databases and health artifacts read-only and never becomes an executor,
+portfolio manager, or second worker.
+
+- The CLI is enabled by default. Set `RESEARCH_ANALYST_LOCAL_CLI_ENABLED=false`
+  to refuse every command.
+- Use `./cli.py status`, `./cli.py health`, `./cli.py research ...`, and
+  `./cli.py bus ...` for bounded machine-readable inspection.
+- Service control is restricted to the allowlisted Research Analyst oxmgr
+  targets; it never starts a daemon with a direct Python command.
+- Research reports and delivery state must not be described as fills, open
+  positions, or execution confirmation.
+- `--pretty` changes indentation only. Timestamps are UTC `Z` values and
+  sensitive values are redacted.
