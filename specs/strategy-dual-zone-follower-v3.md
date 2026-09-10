@@ -36,7 +36,7 @@ under new IDs; the retired v2 IDs remain historical metadata only.
 - Long regime: the 5m close is above the 15m EMA26 and EMA99, with EMA26 above
   EMA99. Short uses the mirrored ordering.
 - Zone A is a pullback within `1.0%` of 15m EMA26. Zone B is a pullback within
-  `1.5%` of 15m EMA99.
+  `0.25%` of 15m EMA99.
 - ADX14 must be at least `22`; DI direction must agree with the candidate.
 - Zone A uses a `3.0%` target from 15m EMA7 and a `1.0%` stop buffer from its
   15m EMA26 anchor. Zone B uses a `5.0%` target from 15m EMA7 and a `1.0%`

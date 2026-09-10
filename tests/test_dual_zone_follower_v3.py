@@ -43,8 +43,8 @@ class DualZoneFollowerV3Tests(unittest.TestCase):
 
     def test_long_and_short_candidates_have_mirrored_current_contract(self):
         cutoff = datetime(2026, 8, 1, 18, 15, tzinfo=timezone.utc)
-        long_bars = _bars([100.0 + index * 0.04 for index in range(220)])
-        short_bars = _bars([100.0 - index * 0.04 for index in range(220)])
+        long_bars = _bars([100.0 + index * 0.004 for index in range(220)])
+        short_bars = _bars([100.0 - index * 0.004 for index in range(220)])
 
         long_event = dual_zone_follower_v3.evaluate_symbol(
             long_bars, asset="BTC", symbol="BTCUSDT", cutoff=cutoff, direction="long",
@@ -59,8 +59,8 @@ class DualZoneFollowerV3Tests(unittest.TestCase):
         self.assertEqual(short_event["strategy_id"], "dual-zone-short-follower-v3")
         self.assertEqual(long_event["plugin_version"], "v3")
         self.assertEqual(short_event["plugin_version"], "v3")
-        self.assertEqual(long_event["phase"], "channel_a")
-        self.assertEqual(short_event["phase"], "channel_a")
+        self.assertEqual(long_event["phase"], "channel_b")
+        self.assertEqual(short_event["phase"], "channel_b")
         self.assertLess(long_event["invalidation_price"], long_event["entry_price"])
         self.assertLess(long_event["entry_price"], long_event["targets"][0])
         self.assertLess(short_event["targets"][0], short_event["entry_price"])
@@ -71,12 +71,12 @@ class DualZoneFollowerV3Tests(unittest.TestCase):
 
     def test_ema_values_come_from_15m_features_not_execution_close(self):
         cutoff = datetime(2026, 8, 1, 18, 15, tzinfo=timezone.utc)
-        execution_bars = _bars([100.0] * 219 + [110.0])
+        execution_bars = _bars([100.0] * 219 + [100.1])
         ema_bars = _bars([100.0] * 220)
         ema_features = ema_bars.with_columns([
-            pl.Series("ema_7", [109.0] * 220),
-            pl.Series("ema_26", [109.5] * 220),
-            pl.Series("ema_99", [100.0] * 220),
+            pl.Series("ema_7", [100.1] * 220),
+            pl.Series("ema_26", [100.0] * 220),
+            pl.Series("ema_99", [99.9] * 220),
         ])
 
         event = dual_zone_follower_v3.evaluate_symbol(
@@ -90,12 +90,13 @@ class DualZoneFollowerV3Tests(unittest.TestCase):
         )
 
         self.assertIsNotNone(event)
-        self.assertEqual(event["entry_price"], 110.0)
-        self.assertEqual(event["feature_snapshot"]["ema26_15m"], 109.5)
+        self.assertEqual(event["entry_price"], 100.1)
+        self.assertEqual(event["feature_snapshot"]["ema26_15m"], 100.0)
+        self.assertEqual(event["phase"], "channel_b")
 
     def test_run_plugin_requests_direct_adx_frame_at_exact_cutoff(self):
         cutoff = datetime(2026, 8, 1, 18, 15, tzinfo=timezone.utc)
-        bars = _bars([100.0 + index * 0.04 for index in range(220)])
+        bars = _bars([100.0 + index * 0.004 for index in range(220)])
         with tempfile.TemporaryDirectory() as directory:
             market_db = Path(directory) / "market.sqlite3"
             config.init_market_db(market_db)
