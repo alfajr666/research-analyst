@@ -32,10 +32,13 @@ def capture(event, db_path=None):
     try:
         event = event if "entry_policy" in event else annotate_candidate(event)
         observed = _utc(event["observed_at"])
-        material = "|".join(str(event.get(k, "")) for k in (
+        parts = [str(event.get(k, "")) for k in (
             "strategy_id", "plugin_version", "asset", "direction", "observed_at",
             "input_snapshot_id",
-        ))
+        )]
+        if event.get("_execution_account"):
+            parts.append(str(event["_execution_account"]))
+        material = "|".join(parts)
         raw_id = hashlib.sha256(material.encode()).hexdigest()
         payload = json.dumps(event, sort_keys=True, separators=(",", ":"), default=str)
         conn = config.get_db_connection(db_path=db_path or config.ANALYST_DB_PATH)

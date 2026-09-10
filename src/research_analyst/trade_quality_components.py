@@ -111,7 +111,7 @@ def identity_validity(context: ScoreContext) -> ComponentObservation:
     valid_until = _utc(candidate.get("valid_until"))
     valid = bool(identity and direction in {"long", "short"} and observed and valid_until and valid_until > observed)
     return _observation(
-        "identity_validity", "floor", 1.0 if valid else 0.0,
+        "identity_validity", "quality", 1.0 if valid else 0.0,
         "support" if valid else "invalid",
         "candidate identity and temporal fields are valid" if valid else "candidate identity or temporal fields are invalid",
         raw_inputs={"candidate_id": identity, "direction": direction},
@@ -126,7 +126,7 @@ def price_geometry(context: ScoreContext) -> ComponentObservation:
         or (direction == "short" and target < entry < stop)
     )
     return _observation(
-        "price_geometry", "floor", 1.0 if valid else 0.0,
+        "price_geometry", "quality", 1.0 if valid else 0.0,
         "support" if valid else "invalid",
         "directional price geometry is valid" if valid else "directional price geometry is invalid",
         raw_inputs={"entry": entry, "stop": stop, "target": target, "direction": direction},
@@ -136,14 +136,15 @@ def price_geometry(context: ScoreContext) -> ComponentObservation:
 def reward_risk(context: ScoreContext) -> ComponentObservation:
     entry, stop, target = _entry_stop_target(context.candidate)
     if not all(_positive(value) for value in (entry, stop, target)):
-        return _observation("reward_risk", "floor", 0.0, "invalid", "RR inputs are invalid")
+        return _observation("reward_risk", "quality", 0.0, "invalid", "RR inputs are invalid")
     risk = abs(float(entry) - float(stop))
     reward = abs(float(target) - float(entry))
     rr = reward / risk if risk else 0.0
     minimum = float(getattr(config, "INTENT_MIN_RR", 2.0))
+    value = max(0.0, min(1.0, rr / minimum)) if minimum > 0 else 0.0
     valid = rr >= minimum
     return _observation(
-        "reward_risk", "floor", 1.0 if valid else 0.0,
+        "reward_risk", "quality", value,
         "support" if valid else "invalid",
         f"reward/risk {rr:.4f} meets minimum {minimum:.4f}" if valid else f"reward/risk {rr:.4f} is below minimum {minimum:.4f}",
         raw_inputs={"rr": rr, "minimum_rr": minimum},
@@ -153,16 +154,18 @@ def reward_risk(context: ScoreContext) -> ComponentObservation:
 def stop_distance(context: ScoreContext) -> ComponentObservation:
     entry, stop, _ = _entry_stop_target(context.candidate)
     if not (_positive(entry) and _positive(stop)):
-        return _observation("stop_distance", "floor", 0.0, "invalid", "stop distance inputs are invalid")
+        return _observation("stop_distance", "quality", 0.0, "invalid", "stop distance inputs are invalid")
     structural = context.structural_context or {}
     atr = ((structural.get("atr_by_timeframe") or {}).get("4h") if isinstance(structural, Mapping) else None)
     atr = atr if _positive(atr) else context.candidate.get("atr14_4h")
     distance = abs(float(entry) - float(stop)) / float(entry)
     floor_pct = float(getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", 0.001))
     atr_floor = float(atr) / float(entry) * float(getattr(config, "INTENT_MIN_STOP_ATR_MULTIPLIER", 0.25)) if _positive(atr) else None
-    valid = atr_floor is not None and distance >= max(floor_pct, atr_floor)
+    minimum_distance = max(floor_pct, atr_floor or 0.0)
+    value = max(0.0, min(1.0, distance / minimum_distance)) if minimum_distance > 0 else 0.0
+    valid = atr_floor is not None and distance >= minimum_distance
     return _observation(
-        "stop_distance", "floor", 1.0 if valid else 0.0,
+        "stop_distance", "quality", value,
         "support" if valid else "invalid",
         "stop distance meets configured floors" if valid else "stop distance or 4h ATR is invalid",
         raw_inputs={"distance_pct": distance, "atr14_4h": atr, "minimum_pct": floor_pct, "atr_floor_pct": atr_floor},
@@ -174,7 +177,7 @@ def freshness_readiness(context: ScoreContext) -> ComponentObservation:
     maximum = float(getattr(config, "DATA_FRESHNESS_MAX_SECONDS", 600))
     valid = _finite(freshness) and 0 <= float(freshness) <= maximum
     return _observation(
-        "freshness_readiness", "floor", 1.0 if valid else 0.0,
+        "freshness_readiness", "diagnostic", 1.0 if valid else 0.0,
         "support" if valid else "invalid",
         "market data freshness is within the execution limit" if valid else "market data is stale or unavailable",
         raw_inputs={"freshness_seconds": freshness, "maximum_seconds": maximum},
@@ -193,7 +196,7 @@ def symbol_account_policy(context: ScoreContext) -> ComponentObservation:
     )
     valid = policy.get("symbol_account_gate") == "pass"
     return _observation(
-        "symbol_account_policy", "floor", 1.0 if valid else 0.0,
+        "symbol_account_policy", "quality", 1.0 if valid else 0.0,
         "support" if valid else "invalid",
         "symbol-account policy passes" if valid else str(policy.get("rejection_reason") or "symbol-account policy failed"),
         raw_inputs=policy,
@@ -209,7 +212,7 @@ def structural_stop(context: ScoreContext) -> ComponentObservation:
     )
     valid = result.get("structural_stop_gate") == "pass"
     return _observation(
-        "structural_stop", "floor", 1.0 if valid else 0.0,
+        "structural_stop", "quality", 1.0 if valid else 0.0,
         "support" if valid else "invalid",
         "structural stop context passes" if valid else "; ".join(result.get("structural_stop_reasons", [])),
         raw_inputs={"structural_stop_gate": result.get("structural_stop_gate")},

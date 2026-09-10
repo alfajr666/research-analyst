@@ -101,25 +101,10 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     )
     complete_candidate = _is_complete_candidate(event)
     if raw_id and complete_candidate:
-        record_status(raw_id, hard_gate_status=admission["hard_gate"],
+        record_status(raw_id, hard_gate_status=admission.get("hard_gate", "not_applicable"),
                        score_status=admission.get("score_status"), clash_status="pending",
-                      executor_intent_status="not_eligible" if admission["hard_gate"] != "pass" else None,
-                      reason="; ".join(admission["hard_gate_reasons"]))
-    if admission.get("symbol_account_gate") == "fail":
-        if raw_id:
-            record_status(
-                raw_id,
-                hard_gate_status="fail",
-                score_status=admission.get("score_status"),
-                clash_status="pending",
-                executor_intent_status="not_eligible",
-                reason=(
-                    f"{admission.get('rejection_reason')}; canonical_asset={admission.get('canonical_asset')}; "
-                    f"resolved_account={admission.get('resolved_account')}; policy_version={admission.get('policy_version')}"
-                ),
-            )
-        print(f"write_event blocked by symbol-account policy: {admission.get('rejection_reason')}")
-        return False, outbox_dir / "blocked.json"
+                       executor_intent_status="not_eligible" if admission.get("score_decision") != "eligible" else None,
+                       reason="; ".join(admission.get("score_reasons", [])))
     sid = event.get("strategy_id", "")
     dp = event.get("data_purity", "pure_ca")
     MIXED = getattr(config, "MIXED_STRATEGY_IDS", set())
@@ -132,7 +117,7 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         # still "write" metadata? no: refuse
         return False, outbox_dir / "blocked.json"
     if complete_candidate and admission.get("score_decision") != "eligible":
-        print(f"write_event blocked by trade quality: {admission.get('hard_gate_reasons') or admission.get('status')}")
+        print(f"write_event blocked by trade quality: {admission.get('score_reasons') or admission.get('status')}")
         return False, outbox_dir / "blocked.json"
     if sid not in (MIXED | PRICE) and not is_pure:
         # unknown -> fail closed
@@ -210,13 +195,15 @@ def _maybe_deliver_intent(
     try:
         from intent_outbox import build_executor_intent, validate_geometry
         if admission is None:
+            admission = payload.get("_score_result") or payload.get("_admission_result")
+        if admission is None:
             from trade_admission import admit
             admission = admit(
                 payload,
                 structural_context=payload.get("structural_context"),
             )
         if admission.get("score_decision") != "eligible":
-            print(f"intent skipped (trade quality): {admission.get('hard_gate_reasons') or admission.get('status')}")
+            print(f"intent skipped (trade quality): {admission.get('score_reasons') or admission.get('status')}")
             return "rejected"
         intent = build_executor_intent(payload, admission=admission)
         ok, reason = validate_geometry(intent)

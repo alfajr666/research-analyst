@@ -9,6 +9,7 @@ from intent_outbox import (
     verify_intent_admission,
 )
 from trade_admission import admit
+from trade_quality import score_candidate
 
 
 def _alpha_event(**over):
@@ -93,6 +94,17 @@ class IntentBuildTests(unittest.TestCase):
         finally:
             config.INTENT_ROUTING = {}
 
+    def test_compact_fundamo_leg_uses_admission_route(self):
+        event = _alpha_event(
+            strategy_id="bb-rsi-meanrev-v1",
+            asset="SOL",
+        )
+        intent = build_executor_intent(
+            event,
+            admission={"resolved_account": "fundamo"},
+        )
+        self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "fundamo"))
+
     def test_new_portfolio_strategies_route_to_the_agreed_accounts(self):
         for strategy in ("ema9-adx-stochrsi-state-v1",):
             intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="fundamo")
@@ -142,19 +154,17 @@ class IntentGeometryTests(unittest.TestCase):
         ok, _ = validate_geometry(build_executor_intent(_alpha_event(targets=[])))
         self.assertTrue(ok)
 
-    def test_rejects_below_minimum_rr(self):
+    def test_accepts_below_minimum_rr_when_directional_geometry_is_valid(self):
         ok, reason = validate_geometry(
             build_executor_intent(_alpha_event(targets=[105]))
         )
-        self.assertFalse(ok)
-        self.assertIn("reward/risk", reason)
+        self.assertTrue(ok, reason)
 
-    def test_rejects_too_tight_stop(self):
+    def test_accepts_tight_stop_when_directional_geometry_is_valid(self):
         ok, reason = validate_geometry(
             build_executor_intent(_alpha_event(invalidation_price=99.95))
         )
-        self.assertFalse(ok)
-        self.assertIn("stop distance", reason)
+        self.assertTrue(ok, reason)
 
     def test_market_entry_skips_relative_geometry(self):
         ok, reason = validate_geometry(
@@ -212,6 +222,41 @@ def test_15m_proof_is_accepted_only_while_the_feature_is_enabled(monkeypatch):
     ok, reason = verify_intent_admission(intent)
     assert not ok
     assert "15m structural admission is disabled" in reason
+
+
+def test_score_eligible_schema_v2_handoff_does_not_require_structural_admission():
+    event = _alpha_event(
+        candidate_id="score-only-candidate",
+        valid_until="2099-01-01T00:05:00Z",
+        data_freshness_seconds=1.0,
+    )
+    admission = score_candidate(event, regime_mode="off")
+    assert admission["hard_gate"] == "not_applicable"
+    assert admission["score_decision"] == "eligible"
+
+    intent = build_executor_intent(event, admission=admission)
+    ok, reason = verify_intent_admission(intent)
+    assert ok, reason
+
+
+def test_score_eligible_compact_fundamo_handoff_preserves_account_fingerprint():
+    event = _alpha_event(
+        strategy_id="bb-rsi-meanrev-v1",
+        asset="SOL",
+        candidate_id="compact-fundamo-candidate",
+        valid_until="2099-01-01T00:05:00Z",
+        data_freshness_seconds=1.0,
+        effective_universe_assets=["SOL"],
+        effective_universe_version="feed-1",
+        _execution_account="fundamo",
+    )
+    admission = score_candidate(event, regime_mode="off")
+    assert admission["score_decision"] == "eligible"
+    assert admission["resolved_account"] == "fundamo"
+
+    intent = build_executor_intent(event, admission=admission)
+    ok, reason = verify_intent_admission(intent)
+    assert ok, reason
 
 
 if __name__ == "__main__":

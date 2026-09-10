@@ -108,6 +108,16 @@ def normalize_event(event: dict) -> dict:
     admission = event.get("_admission_result") or {}
     target = event.get("take_profit", admission.get("selected_take_profit"))
     if target is None:
+        from trade_admission import derive_2r_target
+        entry = event.get("entry_price")
+        if entry is None:
+            entry = (event.get("entry_condition") or {}).get("price")
+        target = derive_2r_target(
+            event.get("direction"),
+            entry,
+            event.get("invalidation_price", event.get("stop_loss")),
+        )
+    if target is None:
         return event
     normalized = dict(event)
     normalized["targets"] = [target]

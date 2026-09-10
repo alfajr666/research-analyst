@@ -34,7 +34,30 @@ def test_candidate_account_cannot_override_compact_route():
     assert result["symbol_account_gate"] == "fail"
     assert result["canonical_asset"] == "SOL"
     assert result["resolved_account"] == "hyro"
-    assert result["policy_version"] == "symbol-account-policy-v2"
+    assert result["policy_version"] == "symbol-account-policy-v3"
+
+
+def test_compact_strategy_can_use_fundamo_for_effective_watchlist_assets():
+    candidate = _candidate("bb-rsi-meanrev-v1", "SOLUSDT")
+    candidate["_execution_account"] = "fundamo"
+    result = admit_symbol_account(
+        candidate,
+        effective_universe=["BTC", "SOL"],
+        effective_universe_version="universe-test",
+    )
+    assert result["symbol_account_gate"] == "pass"
+    assert result["resolved_account"] == "fundamo"
+
+
+def test_compact_strategy_keeps_hyro_permanent_asset_route():
+    candidate = _candidate("bb-rsi-meanrev-v1", "BTCUSDT")
+    candidate["_execution_account"] = "hyro"
+    result = admit_symbol_account(
+        candidate,
+        effective_universe=["BTC", "SOL"],
+    )
+    assert result["symbol_account_gate"] == "pass"
+    assert result["resolved_account"] == "hyro"
 
 
 def test_compact_btc_and_fundamo_watchlist_symbol_passes():

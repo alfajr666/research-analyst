@@ -159,6 +159,16 @@ class SignalPublisherTests(unittest.TestCase):
         self.assertEqual(result, {"persisted": 1, "sent": 1, "failed": 0, "invalid": 0})
         self.assertEqual(self.rows("SELECT targets FROM alpha_candidates"), [("[151.0]",)])
 
+    def test_derives_missing_legacy_target_before_delivery(self):
+        payload = event(self.current_time - timedelta(minutes=15), self.current_time + timedelta(hours=1))
+        payload.pop("targets")
+        self.write(payload)
+
+        result = self.publisher(FakeTransport()).run_once()
+
+        self.assertEqual(result, {"persisted": 1, "sent": 1, "failed": 0, "invalid": 0})
+        self.assertEqual(self.rows("SELECT targets FROM alpha_candidates"), [("[150.2]",)])
+
     def test_expired_event_is_persisted_but_not_sent(self):
         payload = event(self.current_time - timedelta(hours=2), self.current_time - timedelta(minutes=1))
         self.write(payload)

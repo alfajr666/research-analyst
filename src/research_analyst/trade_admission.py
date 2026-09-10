@@ -12,7 +12,7 @@ from structural_stop import _normalise_closed_bar_timestamp, admit_selected_stru
 from entry_policy import evaluate_entry_policy
 
 
-POLICY_VERSION = "symbol-account-policy-v2"
+POLICY_VERSION = "symbol-account-policy-v3"
 COMPACT_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 FUNDAMO_STRATEGIES = frozenset((
     "dual-zone-follower-v3", "dual-zone-short-follower-v3",
@@ -56,6 +56,28 @@ def resolved_account(strategy_id: object) -> str:
     return str(route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro"))
 
 
+def execution_accounts(
+    candidate: dict,
+    effective_universe: Iterable[object] | None = None,
+) -> tuple[str, ...]:
+    """Return the policy-owned accounts eligible for a candidate.
+
+    Compact strategies retain their Hyro permanent-asset route and additionally
+    fan out to Fundamo for every asset in the effective watchlist.
+    """
+    strategy_id = str(candidate.get("strategy_id") or "")
+    asset = canonical_asset(candidate.get("asset"))
+    if strategy_id not in COMPACT_STRATEGIES:
+        return (resolved_account(strategy_id),)
+    policy_assets = set(_policy_assets(candidate, effective_universe))
+    accounts: list[str] = []
+    if asset in COMPACT_ASSETS:
+        accounts.append("hyro")
+    if asset in policy_assets:
+        accounts.append("fundamo")
+    return tuple(accounts)
+
+
 def _policy_assets(candidate: dict, effective_universe: Iterable[object] | None) -> list[str]:
     if effective_universe is None:
         effective_universe = candidate.get("effective_universe_assets")
@@ -75,17 +97,23 @@ def admit_symbol_account(
     *,
     effective_universe: Iterable[object] | None = None,
     effective_universe_version: object | None = None,
+    account_id: str | None = None,
 ) -> dict:
     """Apply the cutoff-bound symbol/account safety boundary before scoring."""
     strategy_id = str(candidate.get("strategy_id") or "")
     asset = canonical_asset(candidate.get("asset"))
-    account = resolved_account(strategy_id)
+    account = str(account_id or candidate.get("_execution_account") or resolved_account(strategy_id))
     policy_assets = _policy_assets(candidate, effective_universe)
     proof = candidate.get("_admission_result")
     proof_version = proof.get("effective_universe_version") if isinstance(proof, dict) else None
     rejection_reason = None
-    if strategy_id in COMPACT_STRATEGIES and (account != "hyro" or asset not in COMPACT_ASSETS):
-        rejection_reason = f"compact Hyro policy permits only {', '.join(sorted(COMPACT_ASSETS))}"
+    if strategy_id in COMPACT_STRATEGIES:
+        if account == "hyro" and asset not in COMPACT_ASSETS:
+            rejection_reason = f"compact Hyro policy permits only {', '.join(sorted(COMPACT_ASSETS))}"
+        elif account == "fundamo" and (not policy_assets or asset not in set(policy_assets)):
+            rejection_reason = "asset is not in the effective watchlist universe"
+        elif account not in {"hyro", "fundamo"}:
+            rejection_reason = "compact strategy account is not permitted"
     elif account == "hyro" and asset not in COMPACT_ASSETS:
         rejection_reason = f"Hyro policy permits only {', '.join(sorted(COMPACT_ASSETS))}"
     elif account == "fundamo":
@@ -166,6 +194,7 @@ def candidate_admission_fingerprint(candidate: dict) -> str:
     material = {
         "candidate_id": str(candidate.get("candidate_id") or candidate.get("dedupe_key") or ""),
         "strategy_id": str(candidate.get("strategy_id") or ""),
+        "execution_account": str(candidate.get("_execution_account") or ""),
         "asset": canonical_asset(candidate.get("asset")),
         "direction": str(candidate.get("direction") or "").upper(),
         "entry_price": entry,
@@ -197,12 +226,18 @@ def admit(
     structural_context: dict | None = None,
     effective_universe: Iterable[object] | None = None,
     effective_universe_version: object | None = None,
+    account_id: str | None = None,
 ) -> dict:
     """Return an auditable hard-gate result, including structural admission."""
+    fingerprint_candidate = candidate
+    if account_id is not None and str(candidate.get("strategy_id") or "") in COMPACT_STRATEGIES:
+        fingerprint_candidate = dict(candidate)
+        fingerprint_candidate["_execution_account"] = account_id
     symbol_policy = admit_symbol_account(
         candidate,
         effective_universe=effective_universe,
         effective_universe_version=effective_universe_version,
+        account_id=account_id,
     )
     reasons = []
     if symbol_policy["symbol_account_gate"] != "pass":
@@ -269,8 +304,8 @@ def admit(
         reasons.extend(f"structural stop: {reason}" for reason in structural["structural_stop_reasons"])
     atr_pct = float(atr14_4h) / entry if _number(atr14_4h) and _number(entry) and entry > 0 else None
     return {"hard_gate": "pass" if not reasons else "fail", "hard_gate_reasons": reasons,
-            "candidate_id": identity,
-            "candidate_fingerprint": candidate_admission_fingerprint(candidate),
+             "candidate_id": identity,
+             "candidate_fingerprint": candidate_admission_fingerprint(fingerprint_candidate),
             **symbol_policy,
             "rr": rr, "stop_distance_pct": distance, "selected_take_profit": target,
             "atr14_4h": atr14_4h, "stop_atr_multiple": distance / atr_pct if distance is not None and atr_pct else None,
@@ -524,19 +559,22 @@ def resolve(
             **scored,
         }
         result["conflict_group_key"] = (
-            f"{asset}+{candidate.get('cutoff_at') or (candidate.get('feature_snapshot') or {}).get('cutoff') or candidate.get('observed_at') or ''}"
+            f"{asset}+{symbol_policy['resolved_account']}+"
+            f"{candidate.get('cutoff_at') or (candidate.get('feature_snapshot') or {}).get('cutoff') or candidate.get('observed_at') or ''}"
         )
         results.append(result)
         if admission["hard_gate"] == "pass":
             eligible.append((candidate, result))
     for candidate, result in eligible:
         asset = canonical_asset(candidate.get("asset"))
+        account = result.get("resolved_account")
         direction = str(candidate.get("direction") or "").lower()
         peers = {
             canonical_asset(other.get("asset"))
             for other, other_result in eligible
             if other is not candidate
             and canonical_asset(other.get("asset")) == asset
+            and other_result.get("resolved_account") == account
             and str(other.get("direction") or "").lower() == direction
             and other.get("strategy_id") != candidate.get("strategy_id")
         }
@@ -545,8 +583,19 @@ def resolve(
         score_candidate["_score_agreement"] = min(10.0, len(peers) * 2.0)
         result.update(score(score_candidate))
     selected = []
-    for asset in sorted({canonical_asset(c.get("asset")) for c, _ in eligible}):
-        groups = {d: [(c, r) for c, r in eligible if canonical_asset(c.get("asset")) == asset and str(c.get("direction")).lower() == d] for d in ("long", "short")}
+    for asset, account in sorted({
+        (canonical_asset(c.get("asset")), r.get("resolved_account"))
+        for c, r in eligible
+    }):
+        groups = {
+            d: [
+                (c, r) for c, r in eligible
+                if canonical_asset(c.get("asset")) == asset
+                and r.get("resolved_account") == account
+                and str(c.get("direction")).lower() == d
+            ]
+            for d in ("long", "short")
+        }
         winners = {d: min(items, key=lambda x: _rank_key(*x)) for d, items in groups.items() if items}
         if len(winners) == 2:
             ordered = sorted(winners.values(), key=lambda x: _rank_key(*x))
@@ -569,8 +618,19 @@ def resolve(
             result["status"] = "selected_for_executor"
         else:
             result["status"] = "eligible_suppressed_by_same_direction_rank"
-    for asset in sorted({canonical_asset(c.get("asset")) for c, r in eligible}):
-        groups = {d: [(c, r) for c, r in eligible if canonical_asset(c.get("asset")) == asset and str(c.get("direction")).lower() == d] for d in ("long", "short")}
+    for asset, account in sorted({
+        (canonical_asset(c.get("asset")), r.get("resolved_account"))
+        for c, r in eligible
+    }):
+        groups = {
+            d: [
+                (c, r) for c, r in eligible
+                if canonical_asset(c.get("asset")) == asset
+                and r.get("resolved_account") == account
+                and str(c.get("direction")).lower() == d
+            ]
+            for d in ("long", "short")
+        }
         if groups["long"] and groups["short"]:
             winners = []
             for direction in ("long", "short"):

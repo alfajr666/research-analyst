@@ -864,8 +864,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     for result in decision["results"]:
         raw_id = raw_ids.get(result["candidate_id"])
         if raw_id:
-            policy_failed = result.get("symbol_account_gate") == "fail"
-            hard_failed = result.get("hard_gate") != "pass"
+            score_rejected = result.get("score_decision") != "eligible"
             selected_candidate = result["candidate_id"] in selected
             conflict = result.get("status") in {
                 "eligible_suppressed_by_opposite_direction_clash", "advisory_only",
@@ -873,10 +872,10 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
             record_status(
                 raw_id,
                 hard_gate_status=result["hard_gate"],
-                score_status="pending" if policy_failed or hard_failed else "scored",
-                clash_status="pending" if policy_failed or hard_failed else "conflict" if conflict else "selected" if selected_candidate else "suppressed",
-                executor_intent_status="not_eligible" if policy_failed or hard_failed or selected_candidate else "not_selected",
-                reason="; ".join(result["hard_gate_reasons"]) or result.get("status"),
+                score_status=result.get("score_status", "scored"),
+                clash_status="pending" if score_rejected else "conflict" if conflict else "selected" if selected_candidate else "suppressed",
+                executor_intent_status="not_eligible" if score_rejected else "written" if selected_candidate else "not_selected",
+                reason="; ".join(result.get("score_reasons", [])) or result.get("status"),
                 score=result.get("score"),
                 score_components=result.get("components"),
                 score_policy_version=result.get("score_policy_version"),

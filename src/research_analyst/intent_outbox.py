@@ -10,8 +10,8 @@ Geometry rules mirrored from the contract:
   LONG  -> stop_loss < entry_price < take_profit
   SHORT -> take_profit < entry_price < stop_loss
 
-Entry admission requires the configured minimum reward/risk and stop distance.
-The emitted TradeIntent deliberately contains no order-type instruction.
+Trade-quality scoring is the candidate-selection gate. The emitted TradeIntent
+still carries only the minimum directional envelope required by the executor.
 """
 
 from __future__ import annotations
@@ -212,6 +212,35 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
             return False, "trade-quality score is not eligible"
         if not score_proof.get("score_policy_version") or not score_proof.get("score_profile_version"):
             return False, "trade-quality provenance is incomplete"
+        metadata = intent.get("metadata") or {}
+        candidate_id = metadata.get("candidate_id")
+        if not candidate_id or proof.get("candidate_id") != candidate_id:
+            return False, "score proof candidate identity is inconsistent"
+        candidate = {
+            "candidate_id": candidate_id,
+            "strategy_id": metadata.get("strategy_id"),
+            "asset": intent.get("asset"),
+            "direction": intent.get("direction"),
+            "entry_price": intent.get("entry_price"),
+            "invalidation_price": intent.get("stop_loss"),
+            "take_profit": intent.get("take_profit"),
+            "observed_at": intent.get("observed_at"),
+            "valid_until": intent.get("entry_valid_until"),
+        }
+        if (
+            metadata.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ())
+            and proof.get("resolved_account")
+        ):
+            candidate["_execution_account"] = proof["resolved_account"]
+        if proof.get("candidate_fingerprint") != candidate_admission_fingerprint(candidate):
+            return False, "score proof candidate fingerprint is inconsistent"
+        resolved = proof.get("resolved_account")
+        if resolved and intent.get("account_id") != resolved:
+            return False, "intent routing is inconsistent with score proof"
+        freshness = proof.get("data_freshness_seconds")
+        if not isinstance(freshness, (int, float)) or not math.isfinite(freshness) or freshness < 0:
+            return False, "score proof freshness is invalid"
+        return True, ""
     if proof.get("hard_gate") != "pass":
         return False, "admission hard gate did not pass"
     if proof.get("structural_stop_gate") != "pass":
@@ -235,10 +264,9 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         "effective_universe_version": proof.get("effective_universe_version"),
     }
     if (
-        intent.get("schema_version") == 2
-        or proof.get("score_policy_version")
-        or metadata.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ())
-    ) and proof.get("resolved_account"):
+        metadata.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ())
+        and proof.get("resolved_account")
+    ):
         candidate["_execution_account"] = proof.get("resolved_account")
     if proof.get("candidate_fingerprint") != candidate_admission_fingerprint(candidate):
         return False, "admission proof candidate fingerprint is inconsistent"
@@ -507,12 +535,4 @@ def validate_geometry(intent: dict) -> tuple[bool, str]:
         return False, "SHORT requires take_profit < entry_price < stop_loss"
     risk = abs(ep - sl)
     reward = abs(tp - ep)
-    rr = reward / risk if risk else 0.0
-    min_rr = float(getattr(config, "INTENT_MIN_RR", 2.0))
-    if rr < min_rr:
-        return False, f"reward/risk {rr:.2f} below minimum {min_rr:.2f}"
-    stop_pct = risk / ep
-    min_stop = float(getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", 0.001))
-    if stop_pct < min_stop:
-        return False, f"stop distance {stop_pct:.4%} below minimum {min_stop:.4%}"
     return True, ""

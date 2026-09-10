@@ -65,7 +65,7 @@ def test_score_contains_independent_rvol_and_funding_evidence():
         regime_mode="off",
     )
 
-    assert result["score_policy_version"] == "trade-quality-v1"
+    assert result["score_policy_version"] == "trade-quality-v2"
     assert result["score_decision"] == "eligible"
     assert 0.0 <= result["quality_score"] <= 1.0
     assert result["components"]["rvol"]["raw_inputs"]["rvol"] == 2.5
@@ -73,14 +73,26 @@ def test_score_contains_independent_rvol_and_funding_evidence():
     assert result["selected_zone_id"] == "zone-1"
 
 
-def test_invalid_reward_risk_is_a_floor_failure_not_a_low_quality_score():
+def test_invalid_reward_risk_remains_diagnostic_only():
     candidate = _candidate()
     candidate["targets"] = [101.0]
     result = score_candidate(candidate, structural_context=_structure(), regime_mode="off")
 
-    assert result["quality_score"] == 0.0
-    assert result["score_decision"] == "rejected"
+    assert result["quality_score"] > 0.30
+    assert result["score_decision"] == "eligible"
     assert result["components"]["reward_risk"]["status"] == "invalid"
+    assert result["hard_gate"] == "not_applicable"
+
+
+def test_legacy_admission_components_contribute_to_the_score():
+    valid = score_candidate(_candidate(), structural_context=_structure(), regime_mode="off")
+    weak = _candidate()
+    weak["targets"] = [101.0]
+    weak_result = score_candidate(weak, structural_context=_structure(), regime_mode="off")
+
+    assert weak_result["quality_score"] < valid["quality_score"]
+    assert weak_result["components"]["reward_risk"]["role"] == "quality"
+    assert weak_result["components"]["structural_stop"]["role"] == "quality"
 
 
 def test_profile_blending_is_normalized_and_intensity_bounded():

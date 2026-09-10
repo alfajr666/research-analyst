@@ -76,7 +76,7 @@ def score_candidate(
         observations.append({
             "component_id": "regime_readiness",
             "component_version": "regime_readiness-v1",
-            "role": "floor",
+            "role": "diagnostic",
             "value": 0.0,
             "status": "invalid",
             "raw_inputs": {"mode": mode},
@@ -84,32 +84,35 @@ def score_candidate(
             "reason": readiness["reason"],
             "missing_policy": "invalid",
         })
-    floor_failures = [
+    validation_failures = [
         item for item in observations
-        if item.get("role") == "floor" and item.get("status") != "support"
+        if item.get("role") == "diagnostic" and item.get("status") not in {"support", "unavailable"}
     ]
     family_weight = _family_weight(regime_decision, family, mode)
     profile_name, regime_weights = effective_profile_weights(family, family_weight)
     baseline_weights = profile_weights("neutral")
-    baseline_score = 0.0 if floor_failures else _aggregate(observations, baseline_weights)
-    regime_score = 0.0 if floor_failures else _aggregate(observations, regime_weights)
+    baseline_score = _aggregate(observations, baseline_weights)
+    regime_score = _aggregate(observations, regime_weights)
     operational_score = baseline_score if mode in {"off", "shadow"} else regime_score
     threshold = float(getattr(config, "TRADE_QUALITY_MIN_SCORE", 0.30))
-    selected = not floor_failures and operational_score >= threshold
-    status = "selected_for_scoring" if selected else "score_floor_failed" if floor_failures else "score_below_threshold"
-    reasons = [str(item.get("reason")) for item in floor_failures if item.get("reason")]
+    selected = readiness is None and operational_score >= threshold
+    status = "selected_for_scoring" if selected else "score_below_threshold"
+    reasons = [str(item.get("reason")) for item in validation_failures if item.get("reason")]
+    if readiness is not None:
+        reasons.append(readiness["reason"])
     result = {
         "quality_score": operational_score,
         "score": operational_score,
         "baseline_score": baseline_score,
         "regime_weighted_score": regime_score,
         "score_threshold": threshold,
-        "score_status": "scored" if not floor_failures else "floor_failed",
+        "score_status": "scored",
         "score_decision": "eligible" if selected else "rejected",
         "status": status,
-        "hard_gate": "pass" if not floor_failures else "fail",
-        "hard_gate_reasons": reasons,
-        "score_reasons": reasons,
+        "hard_gate": "not_applicable",
+        "hard_gate_reasons": [],
+        "validation_reasons": reasons,
+        "score_reasons": [] if selected else reasons or ["quality score is below threshold"],
         "components": {item["component_id"]: item for item in observations},
         "score_components": {item["component_id"]: item for item in observations},
         "score_policy_version": QUALITY_SCORE_POLICY_VERSION,

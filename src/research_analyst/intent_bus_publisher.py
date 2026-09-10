@@ -1,9 +1,9 @@
 """Research Analyst -> Shared SQLite Intent Bus publisher (spec 3.2, 7).
 
-Wires the existing schema-v1 Bybit envelope (built by intent_outbox) into the
-shared bus. Routing defaults stay authoritative in intent_outbox: bybit/hyro,
-compact strategies forced to bybit/hyro, sizing executor-owned, order_type
-absent. This module is a thin transport - it contains no venue or sizing logic.
+Wires the score-aware schema-v2 Bybit envelope (built by intent_outbox) into the
+shared bus. Routing defaults stay authoritative in intent_outbox: compact account
+fan-out, sizing executor-owned, and order_type absent. This module is a thin
+transport - it contains no venue or sizing logic.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def publish_research_intent(
     target: str = "bybit",
     max_retries: int = 3,
 ) -> tuple[bool, Optional[str], Optional[Exception]]:
-    """Publish an already-built schema-v1 envelope to the shared bus.
+    """Publish an already-built score-aware envelope to the shared bus.
 
     Returns (ok, delivery_id, error). Never raises into the callers (spec 7:
     a publish failure is retryable and must not crash the pipeline).

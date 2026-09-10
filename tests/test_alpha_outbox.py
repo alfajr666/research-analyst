@@ -51,6 +51,13 @@ def _complete_event_without_targets():
 
 
 class AlphaOutboxTests(unittest.TestCase):
+    def test_account_fanout_legs_have_distinct_dedupe_keys(self):
+        compact = _event()
+        compact["strategy_id"] = "bb-rsi-meanrev-v1"
+        hyro = {**compact, "_execution_account": "hyro"}
+        fundamo = {**compact, "_execution_account": "fundamo"}
+        self.assertNotEqual(dedupe_key(hyro), dedupe_key(fundamo))
+
     def test_write_is_atomic_append_and_deduplicated(self):
         with tempfile.TemporaryDirectory() as directory:
             outbox = Path(directory)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from datetime import datetime, timedelta, timezone
 
 import config
@@ -20,6 +21,8 @@ from strategies.v2.adx import dmi_adx_last
 LONG_STRATEGY_ID = "dual-zone-follower-v3"
 SHORT_STRATEGY_ID = "dual-zone-short-follower-v3"
 PLUGIN_VERSION = "v3"
+ENABLE_CHANNEL_A = os.getenv("DUAL_ZONE_V3_ENABLE_A", "false").lower() == "true"
+ENABLE_CHANNEL_B = os.getenv("DUAL_ZONE_V3_ENABLE_B", "true").lower() == "true"
 
 
 def _positive(value: object) -> float | None:
@@ -90,12 +93,18 @@ def evaluate_symbol(bars, *, asset: str, symbol: str, cutoff: datetime | None,
 
     distance_to_anchor = abs(close - e26) / e26 * 100.0
     distance_to_trend = abs(close - e99) / e99 * 100.0
-    if distance_to_anchor <= config.DUAL_ZONE_V3_A_ENTRY_DISTANCE_PCT:
+    if (
+        ENABLE_CHANNEL_A
+        and distance_to_anchor <= config.DUAL_ZONE_V3_A_ENTRY_DISTANCE_PCT
+    ):
         zone = "A"
         anchor = e26
         target_pct = config.DUAL_ZONE_V3_A_TARGET_DISTANCE_PCT
         entry_distance_pct = distance_to_anchor
-    elif distance_to_trend <= config.DUAL_ZONE_V3_B_ENTRY_DISTANCE_PCT:
+    elif (
+        ENABLE_CHANNEL_B
+        and distance_to_trend <= config.DUAL_ZONE_V3_B_ENTRY_DISTANCE_PCT
+    ):
         zone = "B"
         anchor = e99
         target_pct = config.DUAL_ZONE_V3_B_TARGET_DISTANCE_PCT

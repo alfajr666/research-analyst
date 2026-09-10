@@ -130,7 +130,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
 
         assert "zones" not in snapshot
 
-    def test_live_compact_seam_admits_once_and_selects_one_intent(self):
+    def test_live_compact_seam_fanouts_permitted_accounts(self):
         import strategy_plugins
 
         def event(strategy_id):
@@ -184,8 +184,9 @@ class StrategyPluginRegistryTests(unittest.TestCase):
                 self.db, "cut", datetime(2026, 8, 17, 12, 15, tzinfo=timezone.utc),
                 False, snapshot={"eval_interval": "5m", "feature_snapshots": {},
                                 "market_db_path": str(self.db), "now": datetime(2026, 8, 17, 12, 15, tzinfo=timezone.utc)})
-            assert len(writes) == 1, result
-            assert writes[0]["strategy_id"] == ids[1]
+            assert len(writes) == 2, result
+            assert {event["strategy_id"] for event in writes} == {ids[1]}
+            assert {event["_execution_account"] for event in writes} == {"hyro", "fundamo"}
             assert result[ids[0]]["emitted"] == 1
         finally:
             strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)
