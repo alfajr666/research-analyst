@@ -168,10 +168,10 @@ The production allowlist currently contains 12 plugins:
 
 | Strategy | Cadence | Family | Route |
 | --- | --- | --- | --- |
-| `failed-break-v3` | 5m | reversal | Bybit Hyro |
-| `bb-rsi-meanrev-v1` | 5m | mean_reversion | Bybit Hyro |
-| `williams-fractal-scalp-v1` | 5m | trend | Bybit Hyro |
-| `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit Hyro |
+| `failed-break-v3` | 5m | reversal | Bybit Hyro + Fundamo |
+| `bb-rsi-meanrev-v1` | 5m | mean_reversion | Bybit Hyro + Fundamo |
+| `williams-fractal-scalp-v1` | 5m | trend | Bybit Hyro + Fundamo |
+| `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit Hyro + Fundamo |
 | `dual-zone-follower-v3` | 5m | trend | Bybit Fundamo |
 | `dual-zone-short-follower-v3` | 5m | trend | Bybit Fundamo |
 | `ema99-retest-adx-v1` | 5m | trend | downstream router |
@@ -181,7 +181,8 @@ The production allowlist currently contains 12 plugins:
 | `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Bybit Fundamo |
 | `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Bybit Fundamo |
 
-Compact Hyro strategies are policy-limited to `BTC`, `ETH`, `PAXG`, and `QQQ`.
+Compact strategies retain their Hyro route for `BTC`, `ETH`, `PAXG`, and `QQQ`,
+and additionally fan out to Fundamo for assets in the effective universe.
 The downstream router currently maps the EMA99 delivery to `bybit/fundamo`.
 Propr fan-out is independent and enabled only by its shared-bus switch.
 

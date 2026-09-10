@@ -10,8 +10,9 @@ and repair requirements are defined by
 
 Fundamo-routed strategy families evaluate the cutoff-bound effective watchlist
 plus permanent assets and route their executor intents exclusively to the Fundamo
-Bybit profile. Compact strategies are a separate Hyro-only portfolio and are
-never delivered to Fundamo. Evaluation scope is governed by
+Bybit profile. Compact strategies retain their Hyro permanent-asset route and
+additionally fan out to the Fundamo profile for every effective-universe asset.
+Evaluation scope is governed by
 `specs/strategy-symbol-performance-rotation-v1.md`.
 
 The former dual-zone strategy family is retired. Its IDs must not remain enabled,

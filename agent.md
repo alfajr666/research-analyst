@@ -68,9 +68,9 @@ universe is the unexpired watchlist plus BTC, ETH, PAXG, and QQQUSDT (canonical
 asset `QQQ`). The default watchlist TTL is 72 hours and the hard effective
 universe cap is 80 symbols, including permanents. A stale or missing feed may
 continue unexpired entries without refreshing them; expired entries are removed
-and the universe fails closed to permanents. Compact Hyro strategies are limited
-to the four permanent assets; Fundamo strategies may use every effective-universe
-asset. Fresh OPEN executor-position assets may extend gateway market-data
+and the universe fails closed to permanents. Compact strategies retain their Hyro
+permanent-asset route and additionally fan out to Fundamo for every
+effective-universe asset. Fresh OPEN executor-position assets may extend gateway market-data
 subscriptions for lifecycle context, but never extend the evaluator universe.
 Registration is controlled by
 `STRATEGY_ENABLED_IDS`; activation is also constrained by
@@ -244,7 +244,7 @@ Shared-bus deliveries are idempotent by `delivery_id`. PM decision files include
 `NEAR_TP`, and `decision_scope=NEAR_TP` for `NEAR_TP`. The analyst never emits
 `quantity`, `risk_amount`, leverage, or `order_type`; the executor owns those.
 
-Compact strategies are forced to Bybit `hyro` and may trade only the four
-permanent assets. They are never delivered to Fundamo, and candidate metadata or
-caller arguments cannot override that route. Strategies without an explicit
-route use the global default account.
+Compact strategies retain their Bybit `hyro` route for the four permanent assets
+and additionally fan out to Bybit `fundamo` for every effective-universe asset.
+Candidate metadata or caller arguments cannot override either route. Strategies
+without an explicit route use the global default account.

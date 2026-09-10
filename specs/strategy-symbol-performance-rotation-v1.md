@@ -79,15 +79,20 @@ strategy applicable to the cutoff. No strategy may contain an asset allowlist or
 decide whether to evaluate a symbol from account or rotation policy.
 
 All active strategies receive the same effective universe. Admission then applies
-the account policy: compact strategies are hard-routed to Hyro and restricted to
-permanent assets, while Fundamo strategies are hard-routed to Fundamo and may use
-the effective universe. Candidate account metadata cannot override these routes.
+the account policy: compact strategies retain their Hyro route for permanent
+assets and additionally fan out to Fundamo for assets in the effective universe,
+while Fundamo strategies are hard-routed to Fundamo. Candidate account metadata
+cannot override these routes.
 
 ```text
-failed-break-v3                                  -> hyro    -> BTC, ETH, PAXG, QQQUSDT
-bb-rsi-meanrev-v1                               -> hyro    -> BTC, ETH, PAXG, QQQUSDT
-williams-fractal-scalp-v1                       -> hyro    -> BTC, ETH, PAXG, QQQUSDT
-ema9-adx-stochrsi-state-v1                      -> hyro    -> BTC, ETH, PAXG, QQQUSDT
+failed-break-v3                                  -> hyro    -> permanent assets
+failed-break-v3                                  -> fundamo -> effective watchlist universe
+bb-rsi-meanrev-v1                               -> hyro    -> permanent assets
+bb-rsi-meanrev-v1                               -> fundamo -> effective watchlist universe
+williams-fractal-scalp-v1                       -> hyro    -> permanent assets
+williams-fractal-scalp-v1                       -> fundamo -> effective watchlist universe
+ema9-adx-stochrsi-state-v1                      -> hyro    -> permanent assets
+ema9-adx-stochrsi-state-v1                      -> fundamo -> effective watchlist universe
 dual-zone-follower-v3                           -> fundamo -> effective watchlist universe
 dual-zone-short-follower-v3                     -> fundamo -> effective watchlist universe
 ema99-retest-adx-v1                             -> fundamo -> effective watchlist universe
@@ -322,7 +327,8 @@ fixed symbol-count approximation when the feed contains another number.
 
 - A probe strategy receives every symbol in the subscription universe.
 - No strategy imports or calls rotation policy.
-- Compact Hyro symbols pass only for BTC, ETH, PAXG, and QQQUSDT.
+- Compact candidates pass for Hyro only on BTC, ETH, PAXG, and QQQUSDT, and pass
+  for Fundamo when the asset is in the effective watchlist universe.
 - Fundamo symbols pass for effective-watchlist assets.
 - Rejections are recorded before scoring and intent publication.
 

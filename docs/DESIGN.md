@@ -142,7 +142,7 @@ Mapping (internal α-event → executor intent):
 | `delivery_id` | `alpha_id` (stable; executor journal dedupes) |
 | `source` | `INTENT_SOURCE` (default `research-analyst`) |
 | `exchange_id` | `INTENT_EXCHANGE_ID` (default `bybit`) |
-| `account_id` | Per-strategy route; compact strategies are forced to `hyro`, Fundamo strategies are hard-routed to `fundamo`, otherwise `INTENT_ACCOUNT_ID` (default `hyro`) |
+| `account_id` | Policy-owned route; compact strategies fan out to `hyro` for permanent assets and `fundamo` for effective-universe assets, while Fundamo strategies are hard-routed to `fundamo`; otherwise `INTENT_ACCOUNT_ID` (default `hyro`) |
 | `asset` | `asset` |
 | `symbol` | `to_ccxt_perp_symbol(asset)` → `BTC/USDT:USDT` |
 | `direction` | `direction` upper (`long/bullish`→`LONG`, `short/bearish`→`SHORT`) |
@@ -184,11 +184,11 @@ the executor remains strategy-dumb but safety-authoritative.
 - **Effective universe.** `ws_gateway` consumes the rotation feed's unexpired
   sticky watchlist plus `BTC`, `ETH`, `PAXG`, and `QQQUSDT`. Invalid or expired
   feeds fail closed to those permanent symbols.
-- **Account policy.** Compact strategies are forced to Hyro and admit only the
-  four permanent assets; they are never delivered to Fundamo. Fundamo strategies
-  admit every asset in the cutoff-bound effective universe. Candidate metadata and
-  caller arguments cannot override either route. This policy is checked during
-  admission, not in strategy plugins.
+- **Account policy.** Compact strategies retain their Hyro route for the four
+  permanent assets and additionally fan out to Fundamo for every asset in the
+  cutoff-bound effective universe. Fundamo strategies admit every asset in that
+  universe. Candidate metadata and caller arguments cannot override either route.
+  This policy is checked during admission, not in strategy plugins.
 - **Capacity.** The default 80-symbol effective-universe cap produces at most
   160 5m/markPrice streams (see `specs/ws-ingestion.md`).
 
@@ -251,9 +251,9 @@ the executor remains strategy-dumb but safety-authoritative.
   = `{id, version, required_datasets, optional_datasets, run}`.
 - **Enable/disable:** `config.STRATEGY_ENABLED_IDS` (allowlist), plus
   `STRATEGY_ACTIVE_IDS` and `plugin_states`. Active plugins form the live admission
-  set; compact Hyro strategies retain their four permanent-asset restriction while
-  Fundamo strategies evaluate the effective watchlist universe. Other registered
-  plugins remain available for research.
+  set; compact strategies retain their Hyro permanent-asset route and fan out to
+  Fundamo for the effective watchlist universe. Other registered plugins remain
+  available for research.
 - **Active/inactive [TARGET nuance]:** currently "enabled" = participates in the
   cutoff. Add a **runtime `active` flag** (per-plugin, toggleable without restart)
   distinct from the compiled `enabled` allowlist, so a strategy can be
