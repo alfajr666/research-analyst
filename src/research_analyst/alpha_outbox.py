@@ -20,11 +20,14 @@ def dedupe_key(event: dict) -> str:
     observed_at = event["observed_at"]
     if hasattr(observed_at, "isoformat"):
         observed_at = observed_at.isoformat()
-    material = "|".join((
+    parts = [
         str(event["strategy_id"]), str(event.get("plugin_version", "")),
         str(event["asset"]), str(event["direction"]), str(observed_at),
         str(event.get("input_snapshot_id", event.get("cutoff_id", ""))),
-    ))
+    ]
+    if event.get("_execution_account"):
+        parts.append(str(event["_execution_account"]))
+    material = "|".join(parts)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -55,11 +58,11 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     """
     # Capture before any purity/admission gate; failures are deliberately isolated.
     from raw_signal_batch import capture
-    from trade_admission import admit, preserve_score_result
+    from trade_quality import score_candidate
     from raw_signal_batch import record_status
     raw_id = capture(event)
     admission_event = dict(event)
-    admission_event.setdefault("candidate_id", event.get("alpha_id") or event.get("dedupe_key"))
+    admission_event.setdefault("candidate_id", event.get("candidate_id") or dedupe_key(event))
     if not admission_event.get("valid_until") and event.get("observed_at"):
         from datetime import datetime, timedelta, timezone
         observed = event["observed_at"]
@@ -87,15 +90,19 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         if target is not None:
             admission_event["take_profit"] = target
             admission_event["targets"] = [target]
-    admission = admit(
+    admission = score_candidate(
         admission_event,
         structural_context=admission_event.get("structural_context"),
+        market_bars=admission_event.get("_market_bars"),
+        regime_decision=admission_event.get("_regime_decision"),
+        regime_mode=admission_event.get("_regime_mode") or (
+            "off" if not (event.get("_score_result") or event.get("_admission_result")) else None
+        ),
     )
-    admission = preserve_score_result(admission, event.get("_admission_result"))
     complete_candidate = _is_complete_candidate(event)
     if raw_id and complete_candidate:
         record_status(raw_id, hard_gate_status=admission["hard_gate"],
-                      score_status="pending", clash_status="pending",
+                       score_status=admission.get("score_status"), clash_status="pending",
                       executor_intent_status="not_eligible" if admission["hard_gate"] != "pass" else None,
                       reason="; ".join(admission["hard_gate_reasons"]))
     if admission.get("symbol_account_gate") == "fail":
@@ -103,7 +110,7 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
             record_status(
                 raw_id,
                 hard_gate_status="fail",
-                score_status="pending",
+                score_status=admission.get("score_status"),
                 clash_status="pending",
                 executor_intent_status="not_eligible",
                 reason=(
@@ -124,8 +131,8 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         print(f"write_event blocked: mixed {sid} on non-pure {dp}")
         # still "write" metadata? no: refuse
         return False, outbox_dir / "blocked.json"
-    if complete_candidate and admission["hard_gate"] != "pass":
-        print(f"write_event blocked by hard admission: {admission['hard_gate_reasons']}")
+    if complete_candidate and admission.get("score_decision") != "eligible":
+        print(f"write_event blocked by trade quality: {admission.get('hard_gate_reasons') or admission.get('status')}")
         return False, outbox_dir / "blocked.json"
     if sid not in (MIXED | PRICE) and not is_pure:
         # unknown -> fail closed
@@ -141,6 +148,9 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     if not payload.get("valid_until") and admission_event.get("valid_until"):
         payload["valid_until"] = admission_event["valid_until"]
     payload["_admission_result"] = admission
+    payload["_score_result"] = admission
+    payload["schema_version"] = 2
+    payload["quality_score"] = admission.get("quality_score")
     payload["alpha_id"] = str(uuid5(NAMESPACE_URL, key))
     payload["dedupe_key"] = key
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str) + "\n"
@@ -205,8 +215,8 @@ def _maybe_deliver_intent(
                 payload,
                 structural_context=payload.get("structural_context"),
             )
-        if admission.get("hard_gate") != "pass":
-            print(f"intent skipped (admission): {admission.get('hard_gate_reasons')}")
+        if admission.get("score_decision") != "eligible":
+            print(f"intent skipped (trade quality): {admission.get('hard_gate_reasons') or admission.get('status')}")
             return "rejected"
         intent = build_executor_intent(payload, admission=admission)
         ok, reason = validate_geometry(intent)

@@ -16,7 +16,8 @@ import config
 from alpha_outbox import write_event, dedupe_key
 from raw_signal_batch import capture, record_evaluation_coverage, record_status
 from entry_policy import annotate_candidate
-from trade_admission import canonical_asset, resolve
+from trade_admission import canonical_asset, execution_accounts
+from trade_quality import resolve
 from structural_stop import (
     STRUCTURAL_15M_ADMISSION_CONTRACT_VERSION,
     STRUCTURAL_ADMISSION_CONTRACT_VERSION,
@@ -654,7 +655,11 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         feed_metadata = dict(supplied_universe.get("metadata") or {})
     else:
         attempted_symbols, feed_metadata = subscription_assets(cutoff)
-    regime_scope = snapshot.get("regime_scope") or {}
+    regime_scope = snapshot.get("regime_scope")
+    if not isinstance(regime_scope, dict):
+        # Direct plugin callers without an orchestrator scope are isolated
+        # research runs, not an enforce-mode production evaluation.
+        regime_scope = {"mode": "off"}
     snapshot["attempted_symbols"] = len(attempted_symbols)
     snapshot["subscription_feed_id"] = feed_metadata.get("feed_id")
     snapshot["effective_universe_version"] = feed_metadata.get(
@@ -772,8 +777,19 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                     )
                 ev["data_freshness_seconds"] = freshness_cache[asset]
                 if p.id in ADMISSION_STRATEGY_IDS:
-                    candidates.append(ev)
-                    raw_ids[ev.get("candidate_id")] = capture(ev)
+                    target_accounts = execution_accounts(ev, attempted_symbols)
+                    if p.id in getattr(config, "COMPACT_STRATEGY_IDS", ()):
+                        for account in target_accounts:
+                            account_event = dict(ev)
+                            account_event["_execution_account"] = account
+                            account_event["candidate_id"] = (
+                                f"{ev.get('candidate_id')}|account:{account}"
+                            )
+                            candidates.append(account_event)
+                            raw_ids[account_event.get("candidate_id")] = capture(account_event)
+                    else:
+                        candidates.append(ev)
+                        raw_ids[ev.get("candidate_id")] = capture(ev)
                     canonical = canonical_asset(asset)
                     emitted_counts[canonical] = emitted_counts.get(canonical, 0) + 1
             if p.id in ADMISSION_STRATEGY_IDS:
@@ -789,9 +805,24 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         regime_db_path=config.REGIME_DB_PATH,
         market_db_path=snapshot.get("market_db_path") or market_db_path or config.MARKET_DB_PATH,
     )
+    market_bars_by_asset = {}
+    market_lookback_days = max(
+        2,
+        int(getattr(config, "TRADE_QUALITY_RVOL_LOOKBACK_BARS", 96) / 288) + 2,
+        int(getattr(config, "TRADE_QUALITY_FUNDING_LOOKBACK_BARS", 288) / 288) + 2,
+    )
+    for asset in {canonical_asset(candidate.get("asset")) for candidate in candidates}:
+        try:
+            market_bars_by_asset[asset] = load_bars_for_interval(
+                None, asset, "5m", cutoff, lookback_days=market_lookback_days,
+            )
+        except Exception as exc:
+            print(f"trade-quality market context unavailable for {asset}: {exc}")
     decision = resolve(
         candidates,
         structural_contexts=structural_contexts,
+        market_bars_by_asset=market_bars_by_asset,
+        regime_scope=regime_scope,
         now=now,
         effective_universe=attempted_symbols,
         effective_universe_version=feed_metadata.get("effective_universe_version"),
@@ -858,6 +889,10 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         event = by_id[cid]
         admission_result = next(r for r in decision["results"] if r["candidate_id"] == cid)
         event["_admission_result"] = admission_result
+        event["_score_result"] = admission_result
+        event["_regime_mode"] = regime_scope.get("mode", "off")
+        asset_key = canonical_asset(event.get("asset"))
+        event["_regime_decision"] = (regime_scope.get("decisions") or {}).get(asset_key)
         event["structural_context"] = structural_contexts.get(canonical_asset(event.get("asset")))
         context = event["structural_context"] or {}
         selected_zone = next(

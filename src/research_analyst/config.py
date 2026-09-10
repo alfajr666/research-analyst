@@ -394,7 +394,7 @@ ANALYST_METRICS_RETENTION_DAYS = int(os.getenv("ANALYST_METRICS_RETENTION_DAYS",
 ANALYST_RESEARCH_RETENTION_DAYS = int(os.getenv("ANALYST_RESEARCH_RETENTION_DAYS", "30"))
 
 # Trade-intent delivery (see bybit-executor/AGENTS.md "Trade Intent Contract",
-# schema_version 1). The internal alpha event is the advisory record (Discord);
+# schema_version 2 for score-aware intents). The internal alpha event is the advisory record (Discord);
 # this envelope is published to the shared SQLite bus for executor handoff.
 # Deliberately OFF by default (INTENT_DELIVERY_ENABLED).
 BYBIT_EXECUTOR_DIR = os.getenv("BYBIT_EXECUTOR_DIR", "")
@@ -410,6 +410,22 @@ INTENT_MIN_STOP_ATR_MULTIPLIER = float(os.getenv("INTENT_MIN_STOP_ATR_MULTIPLIER
 DATA_FRESHNESS_MAX_SECONDS = float(os.getenv("DATA_FRESHNESS_MAX_SECONDS", "600"))
 CLASH_MIN_SCORE_MARGIN = float(os.getenv("CLASH_MIN_SCORE_MARGIN", "2.0"))
 STRATEGY_PRIORITY = {}
+# Unified trade-quality scoring. Scores are normalized to [0, 1]; executors
+# remain responsible for applying the score to their configured risk profile.
+TRADE_QUALITY_MIN_SCORE = float(os.getenv("TRADE_QUALITY_MIN_SCORE", "0.30"))
+TRADE_QUALITY_CLASH_MIN_MARGIN = float(os.getenv("TRADE_QUALITY_CLASH_MIN_MARGIN", "0.10"))
+TRADE_QUALITY_RVOL_LOOKBACK_BARS = int(os.getenv("TRADE_QUALITY_RVOL_LOOKBACK_BARS", "96"))
+TRADE_QUALITY_RVOL_MIN_BARS = int(os.getenv("TRADE_QUALITY_RVOL_MIN_BARS", "32"))
+TRADE_QUALITY_FUNDING_LOOKBACK_BARS = int(os.getenv("TRADE_QUALITY_FUNDING_LOOKBACK_BARS", "288"))
+TRADE_QUALITY_FUNDING_MIN_BARS = int(os.getenv("TRADE_QUALITY_FUNDING_MIN_BARS", "32"))
+if not 0 <= TRADE_QUALITY_MIN_SCORE <= 1:
+    raise ValueError("TRADE_QUALITY_MIN_SCORE must be in [0, 1]")
+if not 0 <= TRADE_QUALITY_CLASH_MIN_MARGIN <= 1:
+    raise ValueError("TRADE_QUALITY_CLASH_MIN_MARGIN must be in [0, 1]")
+if TRADE_QUALITY_RVOL_LOOKBACK_BARS < TRADE_QUALITY_RVOL_MIN_BARS:
+    raise ValueError("TRADE_QUALITY_RVOL_LOOKBACK_BARS must cover its minimum history")
+if TRADE_QUALITY_FUNDING_LOOKBACK_BARS < TRADE_QUALITY_FUNDING_MIN_BARS:
+    raise ValueError("TRADE_QUALITY_FUNDING_LOOKBACK_BARS must cover its minimum history")
 # Structural admission is mandatory for every candidate; it has no runtime bypass.
 STRUCTURAL_STOP_ADMISSION_ENABLED = True
 STRUCTURAL_STOP_MIN_ATR_MULTIPLE = float(os.getenv("STRUCTURAL_STOP_MIN_ATR_MULTIPLE", "0.5"))

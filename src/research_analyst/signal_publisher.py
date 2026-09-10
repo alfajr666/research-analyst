@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -47,8 +48,12 @@ def validate_event(event: dict) -> None:
     missing = REQUIRED_FIELDS - event.keys()
     if missing:
         raise ValueError(f"missing fields: {', '.join(sorted(missing))}")
-    if event["schema_version"] != 1:
+    if event["schema_version"] not in {1, 2}:
         raise ValueError("unsupported schema_version")
+    if event["schema_version"] == 2:
+        quality_score = event.get("quality_score")
+        if not isinstance(quality_score, (int, float)) or not 0 <= quality_score <= 1:
+            raise ValueError("quality_score must be between 0 and 1")
     if event["direction"] not in {"long", "short"}:
         raise ValueError("direction must be long or short")
     if event.get("status", "active") not in {"active", "expired", "invalidated"}:
@@ -76,16 +81,23 @@ def validate_event(event: dict) -> None:
     )
     if not complete_candidate:
         raise ValueError("candidate admission fields are incomplete")
-    from trade_admission import admit, preserve_score_result
-    from structural_stop import _normalise_closed_bar_timestamp
-    admission = admit(
-        event,
-        now=_normalise_closed_bar_timestamp(event["observed_at"]),
-        structural_context=event.get("structural_context"),
-    )
-    admission = preserve_score_result(admission, event.get("_admission_result"))
-    if admission["hard_gate"] != "pass":
-        raise ValueError("admission failed: " + "; ".join(admission["hard_gate_reasons"]))
+    if event["schema_version"] == 2 or event.get("_score_result"):
+        admission = event.get("_score_result") or event.get("_admission_result") or {}
+        if not math.isclose(float(event.get("quality_score", -1)), float(admission.get("quality_score", -2)), rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError("quality_score does not match score proof")
+        if admission.get("score_decision") != "eligible":
+            raise ValueError("trade quality rejected: " + "; ".join(admission.get("hard_gate_reasons", [])))
+    else:
+        from trade_admission import admit, preserve_score_result
+        from structural_stop import _normalise_closed_bar_timestamp
+        admission = admit(
+            event,
+            now=_normalise_closed_bar_timestamp(event["observed_at"]),
+            structural_context=event.get("structural_context"),
+        )
+        admission = preserve_score_result(admission, event.get("_admission_result"))
+        if admission["hard_gate"] != "pass":
+            raise ValueError("admission failed: " + "; ".join(admission["hard_gate_reasons"]))
     event["_admission_result"] = admission
 
 

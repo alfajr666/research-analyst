@@ -1,4 +1,4 @@
-"""Build and deliver bybit-executor TradeIntent envelopes (schema_version 1).
+"""Build and deliver bybit-executor TradeIntent envelopes (schema_version 2).
 
 The internal alpha event (alpha_outbox) is the advisory record consumed by
 Discord/signal_publisher. This module converts that event into the envelope the
@@ -92,20 +92,25 @@ def _norm_direction(d: str) -> str:
 def build_executor_intent(event: dict, *, source=None, exchange_id=None,
                           account_id=None, take_profit_mode=None,
                           validity_minutes=None, admission=None) -> dict:
-    """Convert an internal alpha event into a bybit-executor TradeIntent envelope.
+    """Convert an internal alpha event into a score-aware executor envelope.
 
     Precedence for routing fields: explicit argument > per-strategy INTENT_ROUTING
-    entry > global INTENT_* default. Compact strategies are subsequently forced to
-    the deployment profile (bybit/hyro).
+    entry > global INTENT_* default. Compact strategy account fan-out is authorized
+    by the admission proof and remains constrained to bybit.
     """
     route = (getattr(config, "INTENT_ROUTING", {}) or {}).get(event.get("strategy_id"), {}) or {}
     source = source or route.get("source") or getattr(config, "INTENT_SOURCE", "research-analyst")
     exchange_id = exchange_id or route.get("exchange_id") or getattr(config, "INTENT_EXCHANGE_ID", "bybit")
     account_id = account_id or route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro")
     # Compact strategies and the Fundamo portfolio must never be diverted by
-    # stale routing config or caller-supplied overrides.
+    # stale routing config or caller-supplied overrides. The admission proof may
+    # select the Fundamo leg of a compact strategy's account fan-out.
     if event.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ()) or event.get("strategy_id") in FUNDAMO_STRATEGY_IDS:
-        exchange_id, account_id = "bybit", resolved_account(event.get("strategy_id"))
+        exchange_id = "bybit"
+        account_id = (
+            admission.get("resolved_account")
+            if isinstance(admission, dict) else None
+        ) or resolved_account(event.get("strategy_id"))
     take_profit_mode = take_profit_mode or route.get("take_profit_mode") or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
     validity_minutes = (
         validity_minutes if validity_minutes is not None
@@ -142,7 +147,8 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
         if take_profit is not None:
             target_source = "producer_derived_2r"
 
-    admission = admission or event.get("_admission_result")
+    admission = admission or event.get("_score_result") or event.get("_admission_result")
+    quality_score = admission.get("quality_score") if isinstance(admission, dict) else None
     # Sizing is executor-owned: the analyst never dictates quantity/risk_amount.
     # Pass through any non-sizing metadata the strategy attached; the executor
     # sizes from its account profile when no quantity/risk_amount is present.
@@ -159,6 +165,8 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
         meta.setdefault("target_source", target_source)
     if admission is not None:
         meta["admission_result"] = admission
+    if isinstance(quality_score, (int, float)):
+        meta["score_result"] = admission
 
     delivery_id = (
         event.get("alpha_id") or event.get("dedupe_key")
@@ -166,7 +174,7 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
     )
 
     return {
-        "schema_version": 1,
+        "schema_version": 2 if isinstance(quality_score, (int, float)) else 1,
         "delivery_id": delivery_id,
         "source": source,
         "exchange_id": exchange_id,
@@ -183,6 +191,7 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
         "observed_at": observed_at,
         "entry_valid_until": entry_valid_until,
         "metadata": meta,
+        **({"quality_score": float(quality_score)} if isinstance(quality_score, (int, float)) else {}),
     }
 
 
@@ -191,6 +200,18 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
     proof = admission or (intent.get("metadata") or {}).get("admission_result")
     if not isinstance(proof, dict):
         return False, "admission proof is missing"
+    if intent.get("schema_version") == 2:
+        score_proof = (intent.get("metadata") or {}).get("score_result") or proof
+        score = intent.get("quality_score")
+        threshold = float(getattr(config, "TRADE_QUALITY_MIN_SCORE", 0.30))
+        if not isinstance(score, (int, float)) or not math.isfinite(score) or not 0 <= score <= 1:
+            return False, "quality_score is invalid"
+        if not math.isclose(float(score), float(score_proof.get("quality_score", -1)), rel_tol=1e-9, abs_tol=1e-9):
+            return False, "quality_score proof is inconsistent"
+        if score < threshold or score_proof.get("score_decision") != "eligible":
+            return False, "trade-quality score is not eligible"
+        if not score_proof.get("score_policy_version") or not score_proof.get("score_profile_version"):
+            return False, "trade-quality provenance is incomplete"
     if proof.get("hard_gate") != "pass":
         return False, "admission hard gate did not pass"
     if proof.get("structural_stop_gate") != "pass":
@@ -213,6 +234,12 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         "effective_universe_assets": proof.get("effective_universe_assets"),
         "effective_universe_version": proof.get("effective_universe_version"),
     }
+    if (
+        intent.get("schema_version") == 2
+        or proof.get("score_policy_version")
+        or metadata.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ())
+    ) and proof.get("resolved_account"):
+        candidate["_execution_account"] = proof.get("resolved_account")
     if proof.get("candidate_fingerprint") != candidate_admission_fingerprint(candidate):
         return False, "admission proof candidate fingerprint is inconsistent"
     context = metadata.get("structural_context")
@@ -247,6 +274,7 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         structural_context=admission_context,
         effective_universe=proof.get("effective_universe_assets"),
         effective_universe_version=proof.get("effective_universe_version"),
+        account_id=proof.get("resolved_account"),
     )
     if recomputed.get("hard_gate") != "pass":
         return False, "admission structural context no longer passes"
@@ -419,7 +447,11 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
             return False, "admission proof zone timestamps are invalid"
     strategy_id = metadata.get("strategy_id")
     symbol_policy = admit_symbol_account(
-        {"strategy_id": strategy_id, "asset": intent.get("asset")},
+        {
+            "strategy_id": strategy_id,
+            "asset": intent.get("asset"),
+            "_execution_account": proof.get("resolved_account"),
+        },
         effective_universe=proof.get("effective_universe_assets"),
         effective_universe_version=proof.get("effective_universe_version"),
     )

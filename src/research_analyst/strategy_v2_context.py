@@ -733,6 +733,10 @@ def _rows_to_frame(rows: List[Dict[str, Any]]) -> pl.DataFrame:
             "volume": [r["volume"] for r in rows],
             "open_interest": [r["open_interest"] for r in rows],
             "funding_rate": [r["funding_rate"] for r in rows],
+            "funding_rate_available": [
+                r.get("funding_rate_available", r.get("funding_rate") is not None)
+                for r in rows
+            ],
             "source": [r["source"] for r in rows],
         }
     if "source_provenance" in rows[0]:
