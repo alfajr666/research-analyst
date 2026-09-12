@@ -285,14 +285,15 @@ authoritative for venue state, protection, hard exits, and execution.
 ## Operations
 
 Production services are managed by `oxmgr`. Do not start gateway, orchestrator,
-regime worker, or rotation worker processes manually. The standalone PM is
-managed from its own repository.
+strategy runner, regime worker, or rotation worker processes manually. The
+standalone PM is managed from its own repository.
 
 ```bash
 oxmgr list
 oxmgr logs research-analyst-ws --lines 40
 oxmgr logs research-analyst-symbol-rotation --lines 40
 oxmgr logs research-analyst-regime-session --lines 40
+oxmgr logs research-analyst-strategy-runner --lines 40
 oxmgr logs research-analyst-orchestrator --lines 40
 ```
 
@@ -310,6 +311,7 @@ The core managed targets are:
 - `research-analyst-symbol-rotation`
 - `research-analyst-ws`
 - `research-analyst-regime-session`
+- `research-analyst-strategy-runner`
 - `research-analyst-orchestrator`
 
 Online database retention runs every six hours in bounded batches. Evaluation

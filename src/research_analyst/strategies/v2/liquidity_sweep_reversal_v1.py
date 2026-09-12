@@ -13,7 +13,6 @@ from typing import Any
 import polars as pl
 
 import config
-from alpha_outbox import write_event
 from confluence_scoring import clamp01, confidence_from_confluence, proximity_score, weighted_confluence
 from liquidity_sweep import (
     advance_sweep_state,
@@ -508,13 +507,9 @@ def run_plugin(cutoff_id: str, snapshot: dict) -> list[dict]:
         eval_interval = snapshot.get("eval_interval", "15m")
         cutoff = completed_cycle_for(now, eval_interval) if now else completed_cycle_for(None, eval_interval)
         events = evaluate(conn, cutoff, snapshot=snapshot, eval_interval=eval_interval)
-        written = []
         for ev in events:
             ev["input_snapshot_id"] = cutoff_id
             ev["plugin_version"] = PLUGIN_VERSION
-            created, _ = write_event(ev)
-            if created:
-                written.append(ev)
-        return written
+        return events
     finally:
         conn.close()

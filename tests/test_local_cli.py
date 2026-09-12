@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import cli
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -82,6 +84,71 @@ def test_health_reports_degraded_for_stale_artifacts(monkeypatch, tmp_path):
     assert code == 0
     assert envelope["data"]["status"] == "degraded"
     assert envelope["provenance"]["fresh"] is False
+
+
+def test_status_includes_strategy_runner_health_and_normalizes_manager_time(monkeypatch):
+    observed = cli.timestamp(cli.utc_now())
+    manager_time = cli.utc_now().timestamp()
+    manager_observed = cli._manager_timestamp(manager_time)
+    services = [
+        {
+            "name": name,
+            "status": "running",
+            "desired_state": "running",
+            "health_status": "healthy",
+            "pid": 123,
+            "restart_count": 0,
+            "last_health_check": manager_time,
+            "last_started_at": manager_time,
+        }
+        for name in cli.SERVICE_NAMES
+    ]
+    monkeypatch.setattr(cli, "_run_oxmgr_list", lambda: services)
+    monkeypatch.setattr(cli, "_read_feed", lambda: ({"status": "ready"}, observed))
+    monkeypatch.setattr(cli, "_regime_log_latest", lambda path: ({"cutoff_at": observed}, observed))
+    monkeypatch.setattr(
+        cli,
+        "_health_file",
+        lambda path: ({"status": "healthy", "lastCycleAt": observed, "dataFreshness": {}, "evaluation": {}}, observed),
+    )
+
+    data, _, warnings = cli.command_status(None)
+
+    runner = next(item for item in data if item["name"] == "research-analyst-strategy-runner")
+    assert runner["health_file"] == {"status": "healthy", "observed_at": manager_observed}
+    assert runner["process_manager"]["last_started_at"] == manager_observed
+    assert warnings == []
+
+
+def test_health_includes_strategy_runner_health(monkeypatch):
+    observed = cli.timestamp(cli.utc_now())
+    manager_time = cli.utc_now().timestamp()
+    manager_observed = cli._manager_timestamp(manager_time)
+    runner = {
+        "name": "research-analyst-strategy-runner",
+        "status": "running",
+        "desired_state": "running",
+        "health_status": "healthy",
+        "last_health_check": manager_time,
+    }
+    orchestrator = {"lastCycleAt": observed, "dataFreshness": {}, "evaluation": {}}
+    websocket = {"status": "healthy", "ts": observed}
+    monkeypatch.setattr(cli, "_run_oxmgr_list", lambda: [runner])
+    monkeypatch.setattr(
+        cli,
+        "_health_file",
+        lambda path: (orchestrator, observed) if path.name == "health.json" else (websocket, observed),
+    )
+
+    data, _, warnings = cli.command_health(None)
+
+    assert data["status"] == "healthy"
+    assert data["health_artifacts"]["orchestrator"]["status"] == "healthy"
+    assert data["health_artifacts"]["strategy_runner"] == {
+        "status": "healthy",
+        "observed_at": manager_observed,
+    }
+    assert warnings == []
 
 
 def test_bus_inspection_redacts_payload_without_writing(monkeypatch, tmp_path):

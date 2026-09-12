@@ -117,6 +117,13 @@ EVALUATION_RECOVERY_SCAN_SECONDS = int(os.getenv("EVALUATION_RECOVERY_SCAN_SECON
 EVALUATION_LEASE_SECONDS = int(os.getenv("EVALUATION_LEASE_SECONDS", "600"))
 EVALUATION_MAX_RETRIES = int(os.getenv("EVALUATION_MAX_RETRIES", "5"))
 EXECUTION_BACKFILL_HOURS = int(os.getenv("EXECUTION_BACKFILL_HOURS", "24"))
+STRATEGY_RUNNER_ENABLED = os.getenv("STRATEGY_RUNNER_ENABLED", "false").lower() in (
+    "1", "true", "yes", "on"
+)
+STRATEGY_RUNNER_SOCKET = os.getenv(
+    "STRATEGY_RUNNER_SOCKET", str(DEFAULT_DB_DIR / "strategy-runner.sock")
+)
+STRATEGY_RUNNER_TIMEOUT_SECONDS = float(os.getenv("STRATEGY_RUNNER_TIMEOUT_SECONDS", "120"))
 
 # Tables are deliberately classified here, at the schema boundary.  Startup
 # must never repair a database by creating tables owned by the other service.

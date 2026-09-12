@@ -26,6 +26,7 @@ SERVICE_NAMES = (
     "research-analyst-symbol-rotation",
     "research-analyst-ws",
     "research-analyst-regime-session",
+    "research-analyst-strategy-runner",
     "research-analyst-orchestrator",
 )
 SECRET_KEYS = {
@@ -100,7 +101,9 @@ def timestamp(value: Any) -> str | None:
 def _manager_timestamp(value: Any) -> str | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
-            return timestamp(datetime.fromtimestamp(value / 1000, timezone.utc))
+            # oxmgr emits Unix seconds; accept milliseconds for older records.
+            seconds = value / 1000 if abs(value) >= 100_000_000_000 else value
+            return timestamp(datetime.fromtimestamp(seconds, timezone.utc))
         except (OverflowError, OSError, ValueError):
             return None
     return timestamp(value)
@@ -328,6 +331,9 @@ def command_status(args: argparse.Namespace) -> tuple[Any, dict[str, Any], list[
         elif name == "research-analyst-symbol-rotation":
             feed, observed = _read_feed()
             health_status = feed.get("status", "unknown") if feed else "unknown"
+        elif name == "research-analyst-strategy-runner":
+            observed = _manager_timestamp(manager.get("last_health_check"))
+            health_status = manager.get("health_status", "unknown")
         else:
             cycle, observed = _regime_log_latest(_path("REGIME_SESSION_LOG", "/home/ubuntu/.local/share/oxmgr/logs/research-analyst-regime-session.out.log"))
             health_status = "fresh" if cycle else "unknown"
@@ -339,6 +345,9 @@ def command_status(args: argparse.Namespace) -> tuple[Any, dict[str, Any], list[
                 and health_status in {"ready", "degraded"}
         if name in health_paths:
             service_fresh = service_fresh and health_status not in {"stale", "unknown", None}
+        if name == "research-analyst-strategy-runner":
+            service_fresh = service_fresh and manager.get("status") == "running" \
+                and health_status in {"healthy", "ready"}
         if not manager:
             warnings.append(f"process-manager record unavailable for {name}")
             service_fresh = False
@@ -396,6 +405,30 @@ def command_health(args: argparse.Namespace) -> tuple[Any, dict[str, Any], list[
         )
     warnings: list[str] = []
     fresh = True
+    orchestrator_status = orchestrator.get("status") or (
+        "healthy" if _fresh(orch_observed, _freshness_limit()) else "unknown"
+    )
+    try:
+        managers = {item.get("name"): item for item in _run_oxmgr_list()}
+    except CliError as error:
+        managers = {}
+        warnings.append(str(error))
+    runner = managers.get("research-analyst-strategy-runner", {})
+    runner_status = runner.get("health_status", "unknown")
+    runner_observed = _manager_timestamp(runner.get("last_health_check"))
+    runner_ready = (
+        runner.get("status") == "running"
+        and runner_status in {"healthy", "ready"}
+        and _fresh(runner_observed, _strategy_runner_stale_seconds())
+    )
+    if not runner_ready:
+        fresh = False
+        if not runner:
+            warnings.append("process-manager record unavailable for research-analyst-strategy-runner")
+        elif runner_status not in {"healthy", "ready"}:
+            warnings.append(f"strategy runner status is {runner_status}")
+        else:
+            warnings.append("strategy runner health observation is stale or invalid")
     for label, value, age in (("orchestrator", orch_observed, _freshness_limit()), ("ws", ws_observed, _ws_stale_seconds())):
         if not _fresh(value, age):
             fresh = False
@@ -423,11 +456,12 @@ def command_health(args: argparse.Namespace) -> tuple[Any, dict[str, Any], list[
         "publisher_state": evaluation.get("publisher_state", evaluation.get("publisher")) if isinstance(evaluation, dict) else None,
         "worker_anomalies": anomalies,
         "health_artifacts": {
-            "orchestrator": {"status": orchestrator.get("status", "unknown"), "observed_at": orch_observed},
+            "orchestrator": {"status": orchestrator_status, "observed_at": orch_observed},
             "ws": {"status": ws.get("status", "unknown"), "observed_at": ws_observed},
+            "strategy_runner": {"status": runner_status, "observed_at": runner_observed},
         },
     }
-    observed = max((item for item in (orch_observed, ws_observed) if item), default=None)
+    observed = max((item for item in (orch_observed, ws_observed, runner_observed) if item), default=None)
     return data, _source(health_path, observed, fresh), warnings
 
 
@@ -436,6 +470,13 @@ def _ws_stale_seconds() -> float:
         return max(0.0, float(_env("WS_STALE_SECONDS", "180")))
     except ValueError:
         return 180.0
+
+
+def _strategy_runner_stale_seconds() -> float:
+    try:
+        return max(0.0, float(_env("STRATEGY_RUNNER_STALE_SECONDS", "120")))
+    except ValueError:
+        return 120.0
 
 
 def _latest_status(connection: sqlite3.Connection, raw_signal_id: str) -> dict[str, Any]:

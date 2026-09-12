@@ -79,17 +79,20 @@ The inventory contains:
 - `research-analyst-symbol-rotation`
 - `research-analyst-ws`
 - `research-analyst-regime-session`
+- `research-analyst-strategy-runner`
 - `research-analyst-orchestrator`
 
 Each service includes process-manager status, health-file status where one
-exists, last observed cycle, and a normalized stale reason. `status` does not
-start or restart anything.
+exists, last observed cycle, and a normalized stale reason. The strategy
+runner has no health file; its health status and observation timestamp come
+from the oxmgr health probe record. `status` does not start or restart anything.
 
 ### 4.2 `health`
 
 Reads the orchestrator health artifact and `ws_health.json` without modifying
-them. It returns data freshness, cutoff progress, regime readiness, pipeline
-counts, publisher state, and worker anomalies. The command must distinguish:
+them, and reads the strategy-runner health state from oxmgr. It returns data
+freshness, cutoff progress, regime readiness, pipeline counts, publisher state,
+worker anomalies, and strategy-runner health. The command must distinguish:
 
 ```text
 healthy      fresh health and no blocking anomaly
@@ -147,7 +150,7 @@ are redacted and bounded.
 
 ### 4.10 `service start|stop|restart|logs <name>`
 
-Controls only the four registered Research Analyst oxmgr targets. `stop` and
+Controls only the five registered Research Analyst oxmgr targets. `stop` and
 `restart` require `--confirm` because they interrupt data collection. The CLI
 must call `oxmgr`, not spawn worker Python modules directly.
 

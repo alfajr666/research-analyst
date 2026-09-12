@@ -25,10 +25,24 @@ crash_restart_limit = 3
 stop_timeout_secs = 30
 
 [[apps]]
+name = "research-analyst-strategy-runner"
+command = "/home/ubuntu/research-analyst/venv/bin/python src/research_analyst/strategy_runner.py"
+cwd = "/home/ubuntu/research-analyst"
+env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", STRATEGY_RUNNER_ENABLED = "true" }
+restart_policy = "always"
+max_restarts = 20
+crash_restart_limit = 3
+stop_timeout_secs = 10
+health_cmd = "/home/ubuntu/research-analyst/venv/bin/python /home/ubuntu/research-analyst/scripts/strategy_runner_healthcheck.py"
+health_interval_secs = 30
+health_timeout_secs = 5
+health_max_failures = 3
+
+[[apps]]
 name = "research-analyst-orchestrator"
 command = "/home/ubuntu/research-analyst/venv/bin/python src/research_analyst/orchestrator.py"
 cwd = "/home/ubuntu/research-analyst"
-env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1" }
+env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", STRATEGY_RUNNER_ENABLED = "true" }
 restart_policy = "always"
 max_restarts = 20
 crash_restart_limit = 3

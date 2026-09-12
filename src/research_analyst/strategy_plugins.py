@@ -604,7 +604,10 @@ def _build_snapshot(db_path: str | Path, cutoff_id: str, now: datetime | None,
 
 def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime | None,
                              require_finalized: bool, snapshot: dict | None = None,
-                             market_db_path: str | Path | None = None) -> Dict[str, object]:
+                             market_db_path: str | Path | None = None,
+                             *, strategy_only: bool = False,
+                             strategy_result: dict | None = None,
+                             plugins_override: list[StrategyPlugin] | None = None) -> Dict[str, object]:
     """Run active plugins against one finalized cutoff. Failures isolated."""
     try:
         cutoff = _cutoff_from_id(cutoff_id, now)
@@ -620,14 +623,15 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
             ):
                 return _run_plugins_for_cutoff(
                     db_path, cutoff_id, now, require_finalized, snapshot=snapshot,
-                    market_db_path=market_db_path,
+                    market_db_path=market_db_path, strategy_only=strategy_only,
+                    strategy_result=strategy_result, plugins_override=plugins_override,
                 )
     results: Dict[str, object] = {}
     conn = config.get_db_connection(read_only=True, db_path=db_path)
     try:
         if require_finalized:
             _ensure_cutoff_finalized(conn, cutoff_id)
-        plugins = load_active_plugins(conn)
+        plugins = plugins_override if plugins_override is not None else load_active_plugins(conn)
     finally:
         conn.close()
 
@@ -638,6 +642,8 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
             return _run_plugins_for_cutoff(
                 db_path, cutoff_id, now, require_finalized,
                 snapshot=snapshot, market_db_path=market_db_path,
+                strategy_only=strategy_only, strategy_result=strategy_result,
+                plugins_override=plugins_override,
             )
     eval_interval = snapshot.get("eval_interval", "15m")
     cutoff = _cutoff_from_id(cutoff_id, now)
@@ -673,6 +679,35 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     freshness_cache: dict[str, float | None] = {}
     candidates: list[dict] = []
     raw_ids: dict[str, str | None] = {}
+    if strategy_result is not None:
+        results.update({
+            key: value for key, value in strategy_result.items()
+            if key != "_candidates"
+        })
+        candidates = list(strategy_result.get("_candidates") or [])
+        # Strategy-stage results are transported across a process boundary.
+        # Persistence remains owned by this downstream process.
+        for candidate in candidates:
+            raw_ids[candidate.get("candidate_id")] = capture(candidate)
+        for strategy_id, scope in results.get("_strategy_scopes", {}).items():
+            if strategy_id not in ADMISSION_STRATEGY_IDS:
+                continue
+            strategy_result_item = results.get(strategy_id) or {}
+            if "emitted" not in strategy_result_item:
+                continue
+            events = strategy_result_item.get("events") or []
+            emitted_counts: dict[str, int] = {}
+            for event in events:
+                asset = canonical_asset(event.get("asset"))
+                emitted_counts[asset] = emitted_counts.get(asset, 0) + 1
+            record_evaluation_coverage(
+                strategy_id,
+                cutoff,
+                scope.get("allowed_assets", []),
+                emitted_counts,
+                db_path=db_path,
+            )
+        plugins = []
 
     for p in plugins:
         try:
@@ -725,6 +760,10 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                 results[p.id] = {"skipped": f"missing required datasets: {','.join(missing)}"}
                 continue
             plugin_snapshot = dict(snapshot)
+            # Strategy code may derive its local cutoff from ``now``. Keep that
+            # value bound to the requested completed cutoff, never wall time.
+            plugin_snapshot["now"] = cutoff
+            plugin_snapshot["evaluation_cutoff"] = cutoff
             plugin_snapshot["attempted_symbols"] = len(plugin_symbols)
             plugin_snapshot["strategy_scope"] = strategy_scope
             plugin_snapshot["subscription_symbols"] = list(zip(
@@ -786,19 +825,26 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                                 f"{ev.get('candidate_id')}|account:{account}"
                             )
                             candidates.append(account_event)
-                            raw_ids[account_event.get("candidate_id")] = capture(account_event)
+                            if not strategy_only:
+                                raw_ids[account_event.get("candidate_id")] = capture(account_event)
                     else:
                         candidates.append(ev)
-                        raw_ids[ev.get("candidate_id")] = capture(ev)
+                        if not strategy_only:
+                            raw_ids[ev.get("candidate_id")] = capture(ev)
                     canonical = canonical_asset(asset)
                     emitted_counts[canonical] = emitted_counts.get(canonical, 0) + 1
             if p.id in ADMISSION_STRATEGY_IDS:
-                record_evaluation_coverage(
-                    p.id, cutoff, plugin_symbols, emitted_counts, db_path=db_path,
-                )
+                if not strategy_only:
+                    record_evaluation_coverage(
+                        p.id, cutoff, plugin_symbols, emitted_counts, db_path=db_path,
+                    )
             results[p.id] = {"emitted": len(events), "events": events}
         except Exception as exc:
             results[p.id] = {"failed": str(exc)[:200]}
+    if strategy_only:
+        results["_candidates"] = candidates
+        results["_computation_stats"] = shared_computation_stats()
+        return results
     structural_contexts = build_structural_contexts(
         candidates,
         cutoff,
@@ -906,6 +952,49 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     return results
 
 
+def evaluate_strategy_plugins(
+    db_path: str | Path,
+    cutoff_id: str,
+    now: datetime | None = None,
+    require_finalized: bool = True,
+    snapshot: dict | None = None,
+    market_db_path: str | Path | None = None,
+    plugins: list[StrategyPlugin] | None = None,
+) -> Dict[str, object]:
+    """Evaluate plugins only; persistence and admission stay downstream."""
+    return _run_plugins_for_cutoff(
+        db_path,
+        cutoff_id,
+        now,
+        require_finalized,
+        snapshot=snapshot,
+        market_db_path=market_db_path,
+        strategy_only=True,
+        plugins_override=plugins,
+    )
+
+
+def process_strategy_result(
+    db_path: str | Path,
+    cutoff_id: str,
+    strategy_result: dict,
+    now: datetime | None = None,
+    require_finalized: bool = True,
+    snapshot: dict | None = None,
+    market_db_path: str | Path | None = None,
+) -> Dict[str, object]:
+    """Run the existing scorer/admission/publisher path for runner output."""
+    return _run_plugins_for_cutoff(
+        db_path,
+        cutoff_id,
+        now,
+        require_finalized,
+        snapshot=snapshot,
+        market_db_path=market_db_path,
+        strategy_result=strategy_result,
+    )
+
+
 def invoke_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime | None = None, require_finalized: bool = True) -> Dict[str, object]:
     """Legacy single-cutoff entry point (15m). Kept for tests/orchestrator."""
     return _run_plugins_for_cutoff(db_path, cutoff_id, now, require_finalized, market_db_path=config.MARKET_DB_PATH)
@@ -956,5 +1045,36 @@ def invoke_plugins_for_intervals(db_path: str | Path, now: datetime | None = Non
             snapshot["effective_universe"] = interval_universe
         if regime_scope is not None:
             snapshot["regime_scope"] = regime_scope
-        out[iv] = _run_plugins_for_cutoff(db_path, cutoff_id, now, require_finalized, snapshot=snapshot, market_db_path=market_db_path)
+        if getattr(config, "STRATEGY_RUNNER_ENABLED", False):
+            from strategy_runner import make_request, request_strategy_evaluation
+            request = make_request(
+                cutoff_id,
+                cutoff,
+                iv,
+                snapshot.get("effective_universe") or {},
+                snapshot.get("regime_scope") or {"mode": "off"},
+                db_path=db_path,
+                market_db_path=market_db_path,
+                now=now,
+                feature_snapshots=snapshot.get("feature_snapshots", {}),
+            )
+            strategy_result = request_strategy_evaluation(request)
+            out[iv] = process_strategy_result(
+                db_path,
+                cutoff_id,
+                strategy_result,
+                now=now,
+                require_finalized=require_finalized,
+                snapshot=snapshot,
+                market_db_path=market_db_path,
+            )
+        else:
+            out[iv] = _run_plugins_for_cutoff(
+                db_path,
+                cutoff_id,
+                now,
+                require_finalized,
+                snapshot=snapshot,
+                market_db_path=market_db_path,
+            )
     return out

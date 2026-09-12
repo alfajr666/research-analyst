@@ -31,10 +31,11 @@ completed trigger
   -> orchestrator
        exact preceding 5m regime scope
        full-universe feature materialization
-       strategy plugins
+       -> strategy-runner
+            strategy plugins
+            candidate results
        raw_signals
-       admission-owned HTF zone context and per-symbol ATR
-       hard admission
+       scorer/admission
        deterministic clash resolution
        alpha ledger + publisher
        -> shared SQLite intent bus
@@ -56,11 +57,12 @@ turn a successful evaluation into a failed market pipeline.
 | `research-analyst-symbol-rotation` | Bybit ticker ranking and feed publication | `data/symbol_rotation_feed.json` |
 | `research-analyst-ws` | Public bars, backfill, resampling, triggers | `data/market.sqlite3` |
 | `research-analyst-regime-session` | Per-asset score and gate observations | `data/regime.sqlite3` |
-| `research-analyst-orchestrator` | Features, strategies, admission, publishing | `data/analyst.sqlite3` |
+| `research-analyst-strategy-runner` | Read-only strategy plugin evaluation | none |
+| `research-analyst-orchestrator` | Cutoffs, candidate persistence, scorer/admission, publishing | `data/analyst.sqlite3` |
 
 All production services are managed by `oxmgr`. Never start a second gateway,
-regime worker, or orchestrator manually. Position management is owned by the
-separate `standalone-llm-pm` service.
+regime worker, strategy runner, or orchestrator manually. Position management is
+owned by the separate `standalone-llm-pm` service.
 
 ## Discord Signal Batch Format
 
@@ -375,6 +377,7 @@ oxmgr list
 oxmgr logs research-analyst-symbol-rotation --lines 40
 oxmgr logs research-analyst-ws --lines 40
 oxmgr logs research-analyst-regime-session --lines 40
+oxmgr logs research-analyst-strategy-runner --lines 40
 oxmgr logs research-analyst-orchestrator --lines 40
 ```
 
@@ -390,6 +393,11 @@ the app's `command` field.
 `scripts/symbol_rotation_healthcheck.py`, which verifies the worker process and
 that the performance feed is currently `ready` or `fallback`. Its tracked
 definition is also in `ops/oxfile.toml`.
+
+`research-analyst-strategy-runner` is health-checked by
+`scripts/strategy_runner_healthcheck.py`, which verifies the runner socket
+responds with a ready status. Its tracked definition is also in
+`ops/oxfile.toml`.
 
 For a deployment of explicitly approved code, restart only services importing
 the changed modules. Verify fresh cutoff logs, restart counts, market freshness,

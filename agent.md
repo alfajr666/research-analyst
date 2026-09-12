@@ -11,8 +11,10 @@ service has no exchange credentials and never sizes or places orders.
 ## Ownership
 
 - `ws_gateway` is the sole writer of `market.sqlite3/source_observations`.
-- The orchestrator owns `analyst.sqlite3`, cutoffs, features, strategy state,
-  raw signals, alpha, and delivery records.
+- The orchestrator owns `analyst.sqlite3`, cutoffs, candidate persistence,
+  scorer/admission, raw signals, alpha, and delivery records.
+- The managed strategy runner evaluates plugins read-only and owns no database
+  or delivery files.
 - `bybit-executor` owns credentials, sizing, leverage, venue checks, orders,
   fills, lifecycle, protective SL, and fixed TP.
 - `standalone-llm-pm` owns position-management advice; this repository does not
@@ -79,13 +81,16 @@ implicitly live execution strategies. The dual-zone v3 plugins use completed 5m
 execution bars and direct regime-owned 1h ADX/DI data; see
 `specs/strategy-dual-zone-follower-v3.md`.
 
-The evaluator always materializes features for the cutoff-bound effective
-universe, then builds one immutable scope per plugin. Regime enforcement may
-restrict a scope by family, but strategies do not inspect rotation, watchlist,
-regime, or account policy. Account-symbol admission remains a downstream hard
-gate. The strategy engine evaluates on completed 5m cutoffs; direct 1h/4h setup
-frames remain separate regime-owned inputs. Binance OI rotation and executor
-position snapshots remain separate; the latter is a 1m PM handoff contract.
+The orchestrator materializes features for the cutoff-bound effective universe,
+then sends one immutable cutoff request to the managed strategy runner. The
+runner builds one shared computation context across the active plugins and
+returns candidate records; it performs no persistence, scorer/admission, or
+delivery. Regime enforcement may restrict a scope by family, but strategies do
+not inspect rotation, watchlist, regime, or account policy. Account-symbol
+admission remains a downstream hard gate. The strategy engine evaluates on
+completed 5m cutoffs; direct 1h/4h setup frames remain separate regime-owned
+inputs. Binance OI rotation and executor position snapshots remain separate;
+the latter is a 1m PM handoff contract.
 
 The effective structural admission contract is v6 while 15m is enabled and v5
 otherwise. Selected 15m proofs include the market source, 5m-to-15m resampling,
