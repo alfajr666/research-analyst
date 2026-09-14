@@ -43,8 +43,10 @@ def _features(bars, fast, slow, *, rsi=50.0, atr=1.5):
 class Ema99RetestTests(unittest.TestCase):
     def test_single_bidirectional_plugin_is_registered_and_live_active(self):
         self.assertEqual(_REGISTRY[STRATEGY_ID].cadence, "5m")
-        self.assertIn(STRATEGY_ID, config.STRATEGY_ENABLED_IDS)
-        self.assertIn(STRATEGY_ID, config.STRATEGY_ACTIVE_IDS)
+        # Default allowlist is now the vectorbt ports; this strategy remains a
+        # registered opt-in enableable via STRATEGY_ENABLED_IDS.
+        self.assertIn(STRATEGY_ID, config.LEGACY_PRODUCTION_STRATEGY_IDS)
+        self.assertIn(STRATEGY_ID, config.FUNDAMO_STRATEGY_IDS)
 
     def test_registry_declares_current_engine_contract(self):
         plugin = _REGISTRY[STRATEGY_ID]

@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-09
+**Last reviewed:** 2026-09-14
 
 ## Mission and boundaries
 
@@ -47,6 +47,29 @@ strategy stop remains authoritative. Disable or enable this behavior only with
 
 ## Live strategy set
 
+The default production allowlist is the 7 vectorbt engine-handoff ports
+(`specs/strategy-vectorbt-ports-v1.md`). Each port is self-contained and uses
+only the repository's native indicator engines (EMA, RSI, StochRSI, ATR, ADX,
+Bollinger from `polars_indicators`, `strategy_v2_context`, and
+`strategy_features`) plus strategy-private math where no native kernel exists:
+
+| ID | Cadence | Family | Route |
+| --- | --- | --- | --- |
+| `bb-tp-race-locked-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
+| `bb-squeeze-trend-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+| `kama-trend-following-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+| `macd-ema-v1` | 5m cutoff, 1h frame | trend | Bybit Fundamo |
+| `mr-vwap-locked-v1` | 5m cutoff, 15m frame | mean reversion | Bybit Fundamo |
+| `trend-pullback-vwap-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
+| `trend-wall-v5` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+
+Ported plugins evaluate on completed 5m cutoffs and derive their 15m/30m/1h
+signal frames causally from completed bars. `bb-tp-race-locked-v1` cannot run
+an intrabar TP race in a completed-bar analyst, so it emits the full
+arming/TP3/break-even contract as `metadata.bracket_spec` for the executor.
+The legacy production set below remains registered but is disabled by default;
+set `STRATEGY_ENABLED_IDS` explicitly to re-enable it:
+
 | ID | Cadence | Family | Route |
 | --- | --- | --- | --- |
 | `failed-break-v3` | 5m | reversal | Bybit Hyro |
@@ -75,7 +98,8 @@ permanent-asset route and additionally fan out to Fundamo for every
 effective-universe asset. Fresh OPEN executor-position assets may extend gateway market-data
 subscriptions for lifecycle context, but never extend the evaluator universe.
 Registration is controlled by
-`STRATEGY_ENABLED_IDS`; activation is also constrained by
+`STRATEGY_ENABLED_IDS` (default: the 7 ports; legacy production set opt-in);
+activation is also constrained by
 `STRATEGY_ACTIVE_IDS` and `plugin_states`. Registered strategy plugins are not
 implicitly live execution strategies. The dual-zone v3 plugins use completed 5m
 execution bars and direct regime-owned 1h ADX/DI data; see

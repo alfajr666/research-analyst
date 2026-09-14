@@ -68,7 +68,9 @@ class Ema7CrossHammerTests(unittest.TestCase):
 
     def test_registered_at_five_minute_cadence_and_enabled(self):
         self.assertEqual(_REGISTRY[STRATEGY_ID].cadence, "5m")
-        self.assertIn(STRATEGY_ID, config.STRATEGY_ENABLED_IDS)
+        # Default allowlist is now the vectorbt ports; this strategy remains a
+        # registered opt-in enableable via STRATEGY_ENABLED_IDS.
+        self.assertIn(STRATEGY_ID, config.LEGACY_PRODUCTION_STRATEGY_IDS)
 
     def test_long_cross_uses_prior_hammer_and_current_atr_stop(self):
         cutoff = datetime(2026, 8, 1, tzinfo=timezone.utc)

@@ -164,7 +164,22 @@ bar IDs/versions, availability, source mode, and readiness.
 
 ## Live Strategy Set
 
-The production allowlist currently contains 12 plugins:
+The default production allowlist currently contains the 7 vectorbt
+engine-handoff ports (`specs/strategy-vectorbt-ports-v1.md`; source authority
+in the engine-handoff documents of the source repository):
+
+| Strategy | Cadence | Family | Route |
+| --- | --- | --- | --- |
+| `bb-tp-race-locked-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
+| `bb-squeeze-trend-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+| `kama-trend-following-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+| `macd-ema-v1` | 5m cutoff, 1h frame | trend | Bybit Fundamo |
+| `mr-vwap-locked-v1` | 5m cutoff, 15m frame | mean_reversion | Bybit Fundamo |
+| `trend-pullback-vwap-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
+| `trend-wall-v5` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+
+The legacy 12-plugin production set remains registered and is disabled by
+default; enable it explicitly through `STRATEGY_ENABLED_IDS`:
 
 | Strategy | Cadence | Family | Route |
 | --- | --- | --- | --- |
@@ -180,6 +195,11 @@ The production allowlist currently contains 12 plugins:
 | `mtf-exhaustion-reversal-v1` | 5m | reversal | Bybit Fundamo |
 | `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Bybit Fundamo |
 | `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Bybit Fundamo |
+
+The retired research plugins (`accumulation-base-v2`, `impulse-ignition-v2`,
+`continuation-breakout-v2`, `rsi-reclaim-v1`, `liquidity-sweep-reversal-v1`,
+`ema9-continuation-stochrsi-v1`, `ema-stack-15m-adx-stochrsi-5m-v1`,
+`trend-wall-v1`) remain registered for replay and research use only.
 
 Compact strategies retain their Hyro route for `BTC`, `ETH`, `PAXG`, and `QQQ`,
 and additionally fan out to Fundamo for assets in the effective universe.

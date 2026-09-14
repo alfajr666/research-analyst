@@ -77,8 +77,9 @@ class Ema99RetestE2ETests(unittest.TestCase):
 
     def test_one_registry_entry_is_enabled_and_active(self):
         self.assertIn(STRATEGY_ID, _REGISTRY)
-        self.assertIn(STRATEGY_ID, config.STRATEGY_ENABLED_IDS)
-        self.assertIn(STRATEGY_ID, config.STRATEGY_ACTIVE_IDS)
+        # Default allowlist is now the vectorbt ports; this strategy is a
+        # registered opt-in (enable via STRATEGY_ENABLED_IDS).
+        self.assertIn(STRATEGY_ID, config.KNOWN_LEGACY_SET if hasattr(config, "KNOWN_LEGACY_SET") else config.LEGACY_PRODUCTION_STRATEGY_IDS)
 
 
 if __name__ == "__main__":

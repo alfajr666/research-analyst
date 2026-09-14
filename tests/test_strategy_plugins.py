@@ -21,6 +21,8 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         config.init_analyst_db(self.db)
 
     def test_portfolio_swap_retires_three_and_enables_three(self):
+        # The default production set is now the vectorbt engine-handoff ports;
+        # the legacy swap set is registered but disabled by default.
         retired = {
             "ema9-continuation-stochrsi-v1",
             "trend-wall-v1",
@@ -32,7 +34,9 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
         }
         self.assertTrue(retired.isdisjoint(config.STRATEGY_ENABLED_IDS))
-        self.assertTrue(enabled.issubset(config.STRATEGY_ENABLED_IDS))
+        self.assertTrue(enabled <= config.LEGACY_PRODUCTION_STRATEGY_IDS)
+        self.assertTrue(enabled.isdisjoint(config.STRATEGY_ENABLED_IDS))
+        self.assertTrue(config.PORTED_STRATEGY_IDS == set(config.STRATEGY_ENABLED_IDS))
         self.assertIn("ema9-adx-stochrsi-state-v1", config.COMPACT_STRATEGY_IDS)
         self.assertTrue(
             enabled - {"ema9-adx-stochrsi-state-v1"} <= config.FUNDAMO_STRATEGY_IDS

@@ -84,7 +84,10 @@ class Ema9AdxStochRsiStateE2ETests(unittest.TestCase):
 
     def test_registered_and_enabled_after_portfolio_swap(self):
         self.assertIn(STRATEGY_ID, _REGISTRY)
-        self.assertIn(STRATEGY_ID, config.STRATEGY_ENABLED_IDS)
+        # Default allowlist is now the vectorbt ports; this strategy remains a
+        # registered opt-in (compact route) enableable via STRATEGY_ENABLED_IDS.
+        self.assertIn(STRATEGY_ID, config.LEGACY_PRODUCTION_STRATEGY_IDS)
+        self.assertIn(STRATEGY_ID, config.COMPACT_STRATEGY_IDS)
         self.assertEqual(_REGISTRY[STRATEGY_ID].cadence, "5m")
 
 

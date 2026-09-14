@@ -179,6 +179,22 @@ if SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT > SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS
 WS_BYBIT_ENABLED = os.getenv("WS_BYBIT_ENABLED", "true").lower() == "true"
 WS_BINANCE_ENABLED = os.getenv("WS_BINANCE_ENABLED", "false").lower() == "true"
 COMPACT_STRATEGY_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
+# vectorbt engine-handoff ports: registry metadata (compact routing, defaults
+# for ADMISSION_STRATEGY_IDS in strategy_plugins).
+PORTED_STRATEGY_IDS = frozenset((
+    "bb-tp-race-locked-v1", "bb-squeeze-trend-v1", "kama-trend-following-v1",
+    "macd-ema-v1", "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5",
+))
+PORTED_FUNDAMO_STRATEGY_IDS = PORTED_STRATEGY_IDS
+LEGACY_PRODUCTION_STRATEGY_IDS = frozenset((
+    "failed-break-v3", "bb-rsi-meanrev-v1", "williams-fractal-scalp-v1",
+    "ema9-continuation-stochrsi-v1", "dual-zone-follower-v3",
+    "dual-zone-short-follower-v3", "ema99-retest-adx-v1",
+    "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
+    "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
+    "ema9-adx-stochrsi-state-v1", "ema99-double-touch-stochrsi-state-v1",
+    "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
+))
 COMPACT_STRATEGY_IDS = frozenset((
     "failed-break-v3", "bb-rsi-meanrev-v1",
     "williams-fractal-scalp-v1", "ema9-continuation-stochrsi-v1",
@@ -189,7 +205,7 @@ FUNDAMO_STRATEGY_IDS = frozenset((
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
-))
+)) | PORTED_FUNDAMO_STRATEGY_IDS
 DUAL_ZONE_V3_EXIT_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_EXIT_EMA_LENGTH", "7"))
 DUAL_ZONE_V3_ANCHOR_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_ANCHOR_EMA_LENGTH", "26"))
 DUAL_ZONE_V3_TREND_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_TREND_EMA_LENGTH", "99"))
@@ -310,6 +326,91 @@ TREND_WALL_ADX_MIN = float(os.getenv("TREND_WALL_ADX_MIN", "20.0"))
 TREND_WALL_WALL_PROXIMITY = float(os.getenv("TREND_WALL_WALL_PROXIMITY", "0.01"))
 TREND_WALL_ATR_LENGTH = int(os.getenv("TREND_WALL_ATR_LENGTH", "16"))
 TREND_WALL_ATR_STOP_MULTIPLIER = float(os.getenv("TREND_WALL_ATR_STOP_MULTIPLIER", "2.0"))
+
+# ---------------------------------------------------------------------------
+# vectorbt engine-handoff ports (bb_locked_v1 + watchlist/rejected families).
+# Source authority: repo-final/vectorbt/strategies/*, scripts/backtest_vwap_rsi_prototype.py,
+# scripts/trend_pullback_v1.py. Parameters are frozen at the backtested defaults
+# and remain env-overridable per repository convention. Execution/sizing never
+# leaves the analyst: sizing (1% risk, KAMA x3) stays engine/executor-side.
+BB_TP_RACE_STRATEGY_ID = "bb-tp-race-locked-v1"
+BB_TP_RACE_BB_PERIOD = int(os.getenv("BB_TP_RACE_BB_PERIOD", "20"))
+BB_TP_RACE_BB_STD = float(os.getenv("BB_TP_RACE_BB_STD", "2.0"))
+BB_TP_RACE_RSI_PERIOD = int(os.getenv("BB_TP_RACE_RSI_PERIOD", "14"))
+BB_TP_RACE_STOCH_PERIOD = int(os.getenv("BB_TP_RACE_STOCH_PERIOD", "14"))
+BB_TP_RACE_K_PERIOD = int(os.getenv("BB_TP_RACE_K_PERIOD", "3"))
+BB_TP_RACE_D_PERIOD = int(os.getenv("BB_TP_RACE_D_PERIOD", "3"))
+BB_TP_RACE_ATR_STOP_PERIOD = int(os.getenv("BB_TP_RACE_ATR_STOP_PERIOD", "16"))
+BB_TP_RACE_ATR_REFERENCE_PERIOD = int(os.getenv("BB_TP_RACE_ATR_REFERENCE_PERIOD", "48"))
+BB_TP_RACE_EMA_PERIOD = int(os.getenv("BB_TP_RACE_EMA_PERIOD", "7"))
+BB_TP_RACE_TREND_EMA_PERIOD = int(os.getenv("BB_TP_RACE_TREND_EMA_PERIOD", "200"))
+BB_TP_RACE_NEAR_BAND_ATR = float(os.getenv("BB_TP_RACE_NEAR_BAND_ATR", "0.50"))
+BB_TP_RACE_MAX_BAND_OVERSHOOT_ATR = float(os.getenv("BB_TP_RACE_MAX_BAND_OVERSHOOT_ATR", "0.25"))
+BB_TP_RACE_STOCH_EXTREME = float(os.getenv("BB_TP_RACE_STOCH_EXTREME", "0.20"))
+BB_TP_RACE_STOP_ATR_MULT = float(os.getenv("BB_TP_RACE_STOP_ATR_MULT", "2.0"))
+BB_TP_RACE_TP1_ATR48 = float(os.getenv("BB_TP_RACE_TP1_ATR48", "4.0"))
+BB_TP_RACE_TP2_ATR48 = float(os.getenv("BB_TP_RACE_TP2_ATR48", "2.0"))
+BB_TP_RACE_TP3_EMA_ATR_MULT = float(os.getenv("BB_TP_RACE_TP3_EMA_ATR_MULT", "0.5"))
+BB_TP_RACE_BEP_ARM_ATR16 = float(os.getenv("BB_TP_RACE_BEP_ARM_ATR16", "1.0"))
+BB_TP_RACE_ENTRY_VALIDITY_MINUTES = int(os.getenv("BB_TP_RACE_ENTRY_VALIDITY_MINUTES", "15"))
+BB_TP_RACE_TREND_EMA_MIN_BARS = int(os.getenv("BB_TP_RACE_TREND_EMA_MIN_BARS", "200"))
+BB_SQUEEZE_TREND_STRATEGY_ID = "bb-squeeze-trend-v1"
+BB_SQUEEZE_BB_PERIOD = int(os.getenv("BB_SQUEEZE_BB_PERIOD", "29"))
+BB_SQUEEZE_BB_DEV = float(os.getenv("BB_SQUEEZE_BB_DEV", "1.82"))
+BB_SQUEEZE_KC_MULT = float(os.getenv("BB_SQUEEZE_KC_MULT", "1.56"))
+BB_SQUEEZE_SLOPE_PERIOD = int(os.getenv("BB_SQUEEZE_SLOPE_PERIOD", "11"))
+BB_SQUEEZE_ADX_THRESHOLD = float(os.getenv("BB_SQUEEZE_ADX_THRESHOLD", "19.11"))
+BB_SQUEEZE_MIN_SQUEEZE_BARS = int(os.getenv("BB_SQUEEZE_MIN_SQUEEZE_BARS", "4"))
+BB_SQUEEZE_ATR_STOP_MULT = float(os.getenv("BB_SQUEEZE_ATR_STOP_MULT", "1.74"))
+BB_SQUEEZE_ATR_TRAIL_MULT = float(os.getenv("BB_SQUEEZE_ATR_TRAIL_MULT", "3.71"))
+BB_SQUEEZE_ENTRY_VALIDITY_MINUTES = int(os.getenv("BB_SQUEEZE_ENTRY_VALIDITY_MINUTES", "30"))
+KAMA_TREND_STRATEGY_ID = "kama-trend-following-v1"
+KAMA_TREND_KAMA_PERIOD = int(os.getenv("KAMA_TREND_KAMA_PERIOD", "14"))
+KAMA_TREND_KAMA_FAST_LENGTH = int(os.getenv("KAMA_TREND_KAMA_FAST_LENGTH", "2"))
+KAMA_TREND_KAMA_SLOW_LENGTH = int(os.getenv("KAMA_TREND_KAMA_SLOW_LENGTH", "30"))
+KAMA_TREND_ATR_PERIOD = int(os.getenv("KAMA_TREND_ATR_PERIOD", "14"))
+KAMA_TREND_ADX_PERIOD = int(os.getenv("KAMA_TREND_ADX_PERIOD", "14"))
+KAMA_TREND_ADX_THRESHOLD = float(os.getenv("KAMA_TREND_ADX_THRESHOLD", "50.0"))
+KAMA_TREND_CHOP_PERIOD = int(os.getenv("KAMA_TREND_CHOP_PERIOD", "14"))
+KAMA_TREND_CHOP_THRESHOLD = float(os.getenv("KAMA_TREND_CHOP_THRESHOLD", "50.0"))
+KAMA_TREND_BB_WIDTH_PERIOD = int(os.getenv("KAMA_TREND_BB_WIDTH_PERIOD", "20"))
+KAMA_TREND_BB_WIDTH_MULT = float(os.getenv("KAMA_TREND_BB_WIDTH_MULT", "2.0"))
+KAMA_TREND_BB_WIDTH_THRESHOLD_PCT = float(os.getenv("KAMA_TREND_BB_WIDTH_THRESHOLD_PCT", "7.0"))
+KAMA_TREND_COOLDOWN_BARS = int(os.getenv("KAMA_TREND_COOLDOWN_BARS", "10"))
+KAMA_TREND_ATR_STOP_MULT = float(os.getenv("KAMA_TREND_ATR_STOP_MULT", "2.5"))
+KAMA_TREND_ATR_TARGET_MULT = float(os.getenv("KAMA_TREND_ATR_TARGET_MULT", "2.5"))
+KAMA_TREND_ENTRY_VALIDITY_MINUTES = int(os.getenv("KAMA_TREND_ENTRY_VALIDITY_MINUTES", "30"))
+MACD_EMA_STRATEGY_ID = "macd-ema-v1"
+MACD_EMA_EMA_PERIOD = int(os.getenv("MACD_EMA_EMA_PERIOD", "100"))
+MACD_EMA_FAST_PERIOD = int(os.getenv("MACD_EMA_FAST_PERIOD", "12"))
+MACD_EMA_SLOW_PERIOD = int(os.getenv("MACD_EMA_SLOW_PERIOD", "26"))
+MACD_EMA_SIGNAL_PERIOD = int(os.getenv("MACD_EMA_SIGNAL_PERIOD", "9"))
+MACD_EMA_ATR_PERIOD = int(os.getenv("MACD_EMA_ATR_PERIOD", "14"))
+MACD_EMA_STOP_ATR_MULT = float(os.getenv("MACD_EMA_STOP_ATR_MULT", "2.0"))
+MACD_EMA_ENTRY_VALIDITY_MINUTES = int(os.getenv("MACD_EMA_ENTRY_VALIDITY_MINUTES", "60"))
+MR_VWAP_STRATEGY_ID = "mr-vwap-locked-v1"
+MR_VWAP_RANGE_SLOPE = float(os.getenv("MR_VWAP_RANGE_SLOPE", "0.25"))
+MR_VWAP_ATR_BUFFER = float(os.getenv("MR_VWAP_ATR_BUFFER", "0.5"))
+MR_VWAP_MINIMUM_RR = float(os.getenv("MR_VWAP_MINIMUM_RR", "1.2"))
+MR_VWAP_RSI_LOWER = float(os.getenv("MR_VWAP_RSI_LOWER", "40.0"))
+MR_VWAP_RSI_UPPER = float(os.getenv("MR_VWAP_RSI_UPPER", "60.0"))
+MR_VWAP_TARGET_R_CAP = float(os.getenv("MR_VWAP_TARGET_R_CAP", "2.0"))
+MR_VWAP_CONFIRMATION_WINDOW_BARS = int(os.getenv("MR_VWAP_CONFIRMATION_WINDOW_BARS", "3"))
+MR_VWAP_ANCHOR_SEED_HOURS = int(os.getenv("MR_VWAP_ANCHOR_SEED_HOURS", "72"))
+MR_VWAP_ENTRY_VALIDITY_MINUTES = int(os.getenv("MR_VWAP_ENTRY_VALIDITY_MINUTES", "5"))
+TREND_PULLBACK_STRATEGY_ID = "trend-pullback-vwap-v1"
+TREND_PULLBACK_TREND_SLOPE = float(os.getenv("TREND_PULLBACK_TREND_SLOPE", "0.5"))
+TREND_PULLBACK_ATR_BUFFER = float(os.getenv("TREND_PULLBACK_ATR_BUFFER", "0.5"))
+TREND_PULLBACK_MINIMUM_RR = float(os.getenv("TREND_PULLBACK_MINIMUM_RR", "1.2"))
+TREND_PULLBACK_TARGET_R_FIXED = float(os.getenv("TREND_PULLBACK_TARGET_R_FIXED", "2.0"))
+TREND_PULLBACK_ENTRY_VALIDITY_MINUTES = int(os.getenv("TREND_PULLBACK_ENTRY_VALIDITY_MINUTES", "5"))
+TREND_WALL_V5_STRATEGY_ID = "trend-wall-v5"
+TREND_WALL_V5_WALL_PROXIMITY = float(os.getenv("TREND_WALL_V5_WALL_PROXIMITY", "0.01"))
+TREND_WALL_V5_ATR_LENGTH = int(os.getenv("TREND_WALL_V5_ATR_LENGTH", "16"))
+TREND_WALL_V5_ATR_STOP_MULTIPLIER = float(os.getenv("TREND_WALL_V5_ATR_STOP_MULTIPLIER", "1.0"))
+TREND_WALL_V5_ATR_EXIT_MULTIPLIER = float(os.getenv("TREND_WALL_V5_ATR_EXIT_MULTIPLIER", "0.5"))
+TREND_WALL_V5_ADX_MIN = float(os.getenv("TREND_WALL_V5_ADX_MIN", "20.0"))
+TREND_WALL_V5_ENTRY_VALIDITY_MINUTES = int(os.getenv("TREND_WALL_V5_ENTRY_VALIDITY_MINUTES", "30"))
 WS_STREAM_TIMEFRAMES = [
     value.strip().lower()
     for value in os.getenv("WS_STREAM_TIMEFRAMES", "5m").split(",")
@@ -336,15 +437,14 @@ def expand_perp_symbols(bases: List[str], venue: str = "bybit") -> List[str]:
     return [b if str(b).upper().endswith("USDT") else f"{b}USDT" for b in bases]
 
 
+# Runtime allowlist. Default flips the production set to the vectorbt
+# engine-handoff ports; the legacy 12-strategy set is disabled by default and
+# remains available by setting STRATEGY_ENABLED_IDS explicitly.
 STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
         "STRATEGY_ENABLED_IDS",
-        "failed-break-v3,bb-rsi-meanrev-v1,williams-fractal-scalp-v1,"
-        "ema9-adx-stochrsi-state-v1,"
-        "dual-zone-follower-v3,dual-zone-short-follower-v3,"
-        "ema20-pullback-h4-trend-v1,gold-trend-ema-bb-stoch-v1,"
-        "mtf-exhaustion-reversal-v1,ema99-double-touch-stochrsi-state-v1,"
-        "ema7-26-cross-hammer-shooting-star-1h-adx-v1"
+        "bb-tp-race-locked-v1,bb-squeeze-trend-v1,kama-trend-following-v1,"
+        "macd-ema-v1,mr-vwap-locked-v1,trend-pullback-vwap-v1,trend-wall-v5"
     ).split(",") if s.strip()
 )
 

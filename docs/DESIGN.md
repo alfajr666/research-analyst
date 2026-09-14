@@ -71,7 +71,7 @@ The engine **never holds exchange credentials and never places orders**.
 | `confluence_scoring.py` | `weighted_confluence`, `proximity_score`, `confidence_from_confluence` → uncalibrated `confidence`. |
 | `analyze.py` | Broad TA profiling (VWAP/VA, EMA, HVN/LVN, RSI) used by confluence alerts. |
 | `accumulation_evaluator.py`, `alpha_evaluator.py`, `regime_signal.py`, `regime_evaluator.py`, `outcome_evaluator.py` | Legacy + v2 evaluators and regime/outcome scoring. |
-| `strategy_*.py` (`accumulation_base_v2`, `impulse_ignition_v2`, `continuation_breakout_v2`, `rsi_reclaim_v1`, `liquidity_sweep_reversal_v1`) | Concrete strategy plugins (each exposes `run_plugin`). |
+| `strategies/v2/*.py`, `strategies/compact/*.py` | Concrete strategy plugins (each exposes `run_plugin`); `strategies/v2/adx.py` holds the shared in-house ADX. The default production set is the 7 self-contained vectorbt engine-handoff ports (`bb_tp_race_locked_v1`, `bb_squeeze_trend_v1`, `kama_trend_following_v1`, `macd_ema_v1`, `mr_vwap_locked_v1`, `trend_pullback_vwap_v1`, `trend_wall_v5` — see `specs/strategy-vectorbt-ports-v1.md`). |
 | `alpha_outbox.py` | Append-only, atomic, deduplicated event writer. Enforces `data_purity` emit gate. |
 | `signal_publisher.py` | Persists outbox → `alpha_events`, delivers to Telegram/Discord, retries (lease), routes research note. |
 | `discord_transport.py`, `discord_format.py` | Discord webhook transport + markdown formatters (`format_discord_signal`). |
@@ -250,9 +250,13 @@ the executor remains strategy-dumb but safety-authoritative.
 - **Registry:** `strategy_plugins._REGISTRY` keyed by `strategy_id`; `StrategyPlugin`
   = `{id, version, required_datasets, optional_datasets, run}`.
 - **Enable/disable:** `config.STRATEGY_ENABLED_IDS` (allowlist), plus
-  `STRATEGY_ACTIVE_IDS` and `plugin_states`. Active plugins form the live admission
-  set; compact strategies retain their Hyro permanent-asset route and fan out to
-  Fundamo for the effective watchlist universe. Other registered plugins remain
+  `STRATEGY_ACTIVE_IDS` and `plugin_states`. The default allowlist is the 7
+  vectorbt engine-handoff ports; the legacy production set
+  (`LEGACY_PRODUCTION_STRATEGY_IDS`) is registered but disabled by default and
+  re-enabled by setting `STRATEGY_ENABLED_IDS` explicitly. Active plugins form the
+  live admission set; all ported plugins are Fundamo-routed, while legacy compact
+  strategies retain their Hyro permanent-asset route and fan out to Fundamo for
+  the effective watchlist universe. Other registered plugins remain
   available for research.
 - **Active/inactive [TARGET nuance]:** currently "enabled" = participates in the
   cutoff. Add a **runtime `active` flag** (per-plugin, toggleable without restart)
@@ -335,7 +339,7 @@ through pruning.
 | `WS_BINANCE_ENABLED` | `false` | Opt-in WS source. |
 | `WS_STREAM_TIMEFRAMES` | `5m` | Base streamed TF (15m resampled from 5m). |
 | `WS_MARKPRICE_ENABLED` | `true` | Stream markPrice for live state. |
-| `STRATEGY_ENABLED_IDS` | (v1+v2 allowlist) | Compiled plugin allowlist. |
+| `STRATEGY_ENABLED_IDS` | `config.PORTED_STRATEGY_IDS` (the 7 engine-handoff ports) | Compiled plugin allowlist; legacy production set is opt-in. |
 | `STRATEGY_ACTIVE_IDS` | (empty ⇒ all enabled active) | Runtime active/inactive allowlist; `plugin_states` overrides per-id. |
 | `DISCORD_ALPHA_WEBHOOK_URL` | "" | Signal delivery channel. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | "" | Telegram mirror. |

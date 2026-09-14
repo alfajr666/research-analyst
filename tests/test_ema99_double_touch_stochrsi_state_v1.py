@@ -34,7 +34,9 @@ class Ema99DoubleTouchTests(unittest.TestCase):
 
     def test_registered_at_five_minute_cadence_and_enabled(self):
         self.assertEqual(_REGISTRY[STRATEGY_ID].cadence, "5m")
-        self.assertIn(STRATEGY_ID, config.STRATEGY_ENABLED_IDS)
+        # Default allowlist is now the vectorbt ports; this strategy remains a
+        # registered opt-in enableable via STRATEGY_ENABLED_IDS.
+        self.assertIn(STRATEGY_ID, config.LEGACY_PRODUCTION_STRATEGY_IDS)
         self.assertNotIn("1m", _REGISTRY[STRATEGY_ID].required_intervals)
 
     def test_long_entry_uses_5m_trigger_and_saved_touch_stop(self):

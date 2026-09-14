@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-09-09
+**Last reviewed:** 2026-09-14
 
 Research Analyst is a read-and-decide market research service. It consumes
 public market data, evaluates versioned strategy plugins, records auditable
@@ -205,13 +205,39 @@ admission, sizing, or executor protections.
 
 See `specs/regime-history-bootstrap-v2.md`,
 `specs/reversal-regime-gate-v1.md`, and
-`specs/regime-session-module-v1.md` for the normative contracts. The default
-rollout remains `REGIME_SESSION_MODE=shadow` until replay, lookahead,
-coexistence, and candidate-admission validation are complete.
+`specs/regime-session-module-v1.md` for the normative contracts.The default rollout remains `REGIME_SESSION_MODE=shadow` until replay, lookahead,
+coexistence, and candidate-admission validation are complete. The managed env
+maps in `ops/oxfile.toml` pin `REGIME_SESSION_MODE=shadow` explicitly on all
+five core targets so every process agrees on the mode.
 
 ## Live Strategy Set
 
-The current production allowlist contains 12 plugins:
+The default production allowlist contains the 7 vectorbt engine-handoff ports
+(`specs/strategy-vectorbt-ports-v1.md`). Each port is a self-contained plugin
+built on the repository's native indicator engines — no shared port module and
+no vectorbt, pandas, or numpy dependency:
+
+| Strategy | Cadence | Family | Route |
+| --- | --- | --- | --- |
+| `bb-tp-race-locked-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
+| `bb-squeeze-trend-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+| `kama-trend-following-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+| `macd-ema-v1` | 5m cutoff, 1h frame | trend | Bybit Fundamo |
+| `mr-vwap-locked-v1` | 5m cutoff, 15m frame | mean_reversion | Bybit Fundamo |
+| `trend-pullback-vwap-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
+| `trend-wall-v5` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+
+All ported plugins evaluate on completed `5m` cutoffs; the `15m`, `30m`, and
+`1h` signal frames are derived causally from completed bars and never merge
+with canonical execution data. `bb-tp-race-locked-v1` preserves its intrabar
+TP-race lifecycle by emitting an executor `bracket_spec` in candidate metadata;
+the executor owns the arming, break-even latch, and TP-race behavior.
+
+The legacy 12-plugin production set remains registered but is disabled by
+default (`LEGACY_PRODUCTION_STRATEGY_IDS`); re-enable it explicitly through
+`STRATEGY_ENABLED_IDS`:
+
+| Strategy | Cadence | Family | Route |
 
 | Strategy | Cadence | Family | Account |
 | --- | --- | --- | --- |

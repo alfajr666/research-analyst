@@ -45,7 +45,10 @@ ADMISSION_STRATEGY_IDS = {"failed-break-v3", "bb-rsi-meanrev-v1",
                             "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1",
                               "trend-wall-v1", "ema9-adx-stochrsi-state-v1",
                               "ema99-double-touch-stochrsi-state-v1",
-                              "ema7-26-cross-hammer-shooting-star-1h-adx-v1"}
+                              "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
+                              "bb-tp-race-locked-v1", "bb-squeeze-trend-v1",
+                              "kama-trend-following-v1", "macd-ema-v1",
+                              "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5"}
 
 
 def _get_bar_purity(conn, asset: str, observed_at: Any, interval: str = "15m") -> Dict[str, Any]:
@@ -98,6 +101,8 @@ KNOWN_STRATEGIES = {
     "ema9-adx-stochrsi-state-v1",
     "ema99-double-touch-stochrsi-state-v1",
     "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
+    "bb-tp-race-locked-v1", "bb-squeeze-trend-v1", "kama-trend-following-v1",
+    "macd-ema-v1", "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5",
 }
 
 @dataclass
@@ -145,6 +150,13 @@ def _load_builtin_plugins():
     from strategies.v2.ema9_adx_stochrsi_state_v1 import run_plugin as ema9_adx_run
     from strategies.v2.ema99_double_touch_stochrsi_state_v1 import run_plugin as ema99_double_touch_run
     from strategies.v2.ema7_26_cross_hammer_shooting_star_v1 import run_plugin as ema7_26_hammer_run
+    from strategies.v2.bb_tp_race_locked_v1 import run_plugin as bb_tp_race_run
+    from strategies.v2.bb_squeeze_trend_v1 import run_plugin as bb_squeeze_run
+    from strategies.v2.kama_trend_following_v1 import run_plugin as kama_trend_run
+    from strategies.v2.macd_ema_v1 import run_plugin as macd_ema_run
+    from strategies.v2.mr_vwap_locked_v1 import run_plugin as mr_vwap_run
+    from strategies.v2.trend_pullback_vwap_v1 import run_plugin as trend_pullback_run
+    from strategies.v2.trend_wall_v5 import run_plugin as trend_wall_v5_run
 
     register(StrategyPlugin("accumulation-base-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), acc_v2_run, "15m", "mean_reversion"))
     register(StrategyPlugin("impulse-ignition-v2", "v2", ("bars_15m",), ("fvg_1h", "fvg_4h", "vp"), ign_v2_run, "15m", "trend"))
@@ -167,6 +179,22 @@ def _load_builtin_plugins():
     register(StrategyPlugin("ema9-adx-stochrsi-state-v1", "v2", ("bars_5m",), (), ema9_adx_run, "5m", "trend"))
     register(StrategyPlugin("ema99-double-touch-stochrsi-state-v1", "v2", ("bars_5m",), (), ema99_double_touch_run, "5m", "trend"))
     register(StrategyPlugin("ema7-26-cross-hammer-shooting-star-1h-adx-v1", "v1", ("bars_5m",), (), ema7_26_hammer_run, "5m", "reversal"))
+    # vectorbt engine-handoff ports. All evaluate from canonical 5m cutoffs;
+    # 15m/30m frames are resampled/grouped in-plugin, HTF from regime-owned bars.
+    register(StrategyPlugin("bb-tp-race-locked-v1", "v1", ("bars_5m",), (), bb_tp_race_run, "5m", "trend",
+                            required_intervals=("5m", "15m", "1h"), lookback_days=20))
+    register(StrategyPlugin("bb-squeeze-trend-v1", "v1", ("bars_5m",), (), bb_squeeze_run, "5m", "trend",
+                            required_intervals=("5m", "1h"), lookback_days=20))
+    register(StrategyPlugin("kama-trend-following-v1", "v1", ("bars_5m",), (), kama_trend_run, "5m", "trend",
+                            required_intervals=("5m", "1h"), lookback_days=20, stateful=True))
+    register(StrategyPlugin("macd-ema-v1", "v1", ("bars_5m",), (), macd_ema_run, "5m", "trend",
+                            required_intervals=("5m", "1h"), lookback_days=20))
+    register(StrategyPlugin("mr-vwap-locked-v1", "v1", ("bars_5m",), (), mr_vwap_run, "5m", "mean_reversion",
+                            required_intervals=("5m", "1h"), lookback_days=20, stateful=True))
+    register(StrategyPlugin("trend-pullback-vwap-v1", "v1", ("bars_5m",), (), trend_pullback_run, "5m", "trend",
+                            required_intervals=("5m", "1h"), lookback_days=20, stateful=True))
+    register(StrategyPlugin("trend-wall-v5", "v1", ("bars_5m",), (), trend_wall_v5_run, "5m", "trend",
+                            required_intervals=("5m", "1h"), lookback_days=20))
 
     requirements = {
         "failed-break-v3": ("5m", "4h", ("5m", {"stoch": {"stoch": (14, 14, 3, 3)}}), True),
