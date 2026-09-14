@@ -8,6 +8,7 @@ LOG="$ROOT/data/db-compaction.log"
 STOP_TIMEOUT="${DB_COMPACTION_STOP_TIMEOUT_SECONDS:-120}"
 MIN_FREE_GB="${DB_COMPACTION_MIN_FREE_GB:-20}"
 MAKE_BACKUP="${DB_COMPACTION_BACKUP:-false}"
+OXMGR="${OXMGR_BIN:-/home/ubuntu/.npm-global/bin/oxmgr}"
 
 usage() {
   printf '%s\n' \
@@ -81,6 +82,7 @@ SERVICES=(
   research-analyst-regime-session
   research-analyst-ws
   research-analyst-symbol-rotation
+  research-analyst-strategy-runner
 )
 REQUIRED_SERVICES=(
   research-analyst-orchestrator
@@ -189,7 +191,7 @@ PY
 
 service_status() {
   local service="$1"
-  oxmgr list --json | python3 -c '
+  "$OXMGR" list --json | python3 -c '
 import json
 import sys
 
@@ -250,7 +252,7 @@ restart_services() {
   for service in "${MANAGED_SERVICES[@]}"; do
     if [[ "${WAS_ACTIVE[$service]}" == true ]]; then
       log "starting $service"
-      if ! oxmgr restart "$service"; then
+      if ! "$OXMGR" restart "$service"; then
         log "restart failed: $service"
         restart_failed=true
       fi
@@ -280,7 +282,7 @@ trap 'restart_services "$?"' EXIT
 for service in "${MANAGED_SERVICES[@]}"; do
   if [[ "$(service_status "$service")" != "stopped" ]]; then
     log "stopping $service"
-    oxmgr stop "$service"
+    "$OXMGR" stop "$service"
   fi
 done
 

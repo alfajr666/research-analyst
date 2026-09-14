@@ -72,29 +72,66 @@ class ExecutionAdapterTests(unittest.TestCase):
         invalid_geometry = event()
         invalid_geometry["alpha_id"] = "bad-geometry"
         invalid_geometry["targets"] = [90]
-        expired = event()
-        expired["alpha_id"] = "expired"
-        expired["valid_until"] = (self.now - timedelta(seconds=1)).isoformat()
         multi_target = event()
         multi_target["alpha_id"] = "multi-target"
         multi_target["targets"] = [110, 120]
-        inactive = event()
-        inactive["alpha_id"] = "inactive"
-        inactive["status"] = "invalidated"
         unsupported_entry = event()
         unsupported_entry["alpha_id"] = "unsupported-entry"
         unsupported_entry["entry_condition"]["type"] = "breakout_above"
-        for payload in (invalid_geometry, expired, multi_target, inactive, unsupported_entry):
+        for payload in (invalid_geometry, multi_target, unsupported_entry):
             self.persist(payload)
 
-        self.assertEqual(self.adapter().deliver(self.connection), {"written": 0, "acknowledged": 0, "skipped": 5, "failed": 0})
+        self.assertEqual(self.adapter().deliver(self.connection), {"written": 0, "acknowledged": 0, "skipped": 3, "failed": 0})
         self.assertEqual(self.connection.execute("SELECT alpha_id, reason FROM execution_deliveries ORDER BY alpha_id").fetchall(), [
             ("bad-geometry", "invalid_directional_geometry"),
-            ("expired", "expired"),
-            ("inactive", "inactive"),
             ("multi-target", "multi_target"),
             ("unsupported-entry", "unsupported_entry_condition"),
         ])
+
+    def test_expired_and_inactive_events_are_never_scanned(self):
+        """Terminal events stay out of the scan: no ledger rows, no outbox work."""
+        expired = event()
+        expired["alpha_id"] = "expired"
+        expired["valid_until"] = (self.now - timedelta(seconds=1)).isoformat()
+        inactive = event()
+        inactive["alpha_id"] = "inactive"
+        inactive["status"] = "invalidated"
+        for payload in (expired, inactive):
+            self.persist(payload)
+
+        self.assertEqual(self.adapter().deliver(self.connection), {"written": 0, "acknowledged": 0, "skipped": 0, "failed": 0})
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM execution_deliveries").fetchone()[0], 0)
+
+    def test_scan_is_freshest_and_highest_confidence_first_with_limit(self):
+        """Bounded scan: quality-ordered, capped, and never full-history."""
+        import execution_adapter
+
+        old = event()
+        old["alpha_id"] = "old-low"
+        old["observed_at"] = (self.now - timedelta(hours=3)).isoformat()
+        old["confidence"] = 0.2
+        fresh = event()
+        fresh["alpha_id"] = "fresh-high"
+        fresh["observed_at"] = (self.now - timedelta(minutes=1)).isoformat()
+        fresh["confidence"] = 0.9
+        mid = event()
+        mid["alpha_id"] = "mid"
+        mid["observed_at"] = (self.now - timedelta(hours=1)).isoformat()
+        mid["confidence"] = 0.5
+        for payload in (old, fresh, mid):
+            self.persist(payload)
+
+        original = execution_adapter.DEFAULT_SCAN_LIMIT
+        execution_adapter.DEFAULT_SCAN_LIMIT = 2
+        try:
+            # Fresh + highest-confidence first: 'old-low' falls outside the cap.
+            results = self.adapter().deliver(self.connection)
+            self.assertEqual(results["written"], 2)
+            self.assertFalse((self.outbox / "bybit-test" / "old-low.json").exists())
+            self.assertTrue((self.outbox / "bybit-test" / "fresh-high.json").exists())
+            self.assertTrue((self.outbox / "bybit-test" / "mid.json").exists())
+        finally:
+            execution_adapter.DEFAULT_SCAN_LIMIT = original
 
     def test_static_allowlist_rejection_is_terminal(self):
         payload = event()

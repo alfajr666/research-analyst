@@ -392,11 +392,11 @@ MARKET_REGIME_RETENTION_DAYS = int(os.getenv("MARKET_REGIME_RETENTION_DAYS", "36
 ANALYST_SNAPSHOT_RETENTION_DAYS = int(os.getenv("ANALYST_SNAPSHOT_RETENTION_DAYS", "2"))
 ANALYST_CUTOFF_RETENTION_DAYS = int(os.getenv("ANALYST_CUTOFF_RETENTION_DAYS", "30"))
 ANALYST_PIPELINE_RETENTION_DAYS = int(os.getenv("ANALYST_PIPELINE_RETENTION_DAYS", "30"))
-ANALYST_RAW_SIGNAL_RETENTION_DAYS = int(os.getenv("ANALYST_RAW_SIGNAL_RETENTION_DAYS", "90"))
+ANALYST_RAW_SIGNAL_RETENTION_DAYS = int(os.getenv("ANALYST_RAW_SIGNAL_RETENTION_DAYS", "3"))
 ANALYST_COVERAGE_RETENTION_DAYS = int(os.getenv("ANALYST_COVERAGE_RETENTION_DAYS", "7"))
-ANALYST_CANDIDATE_RETENTION_DAYS = int(os.getenv("ANALYST_CANDIDATE_RETENTION_DAYS", "90"))
-ANALYST_EVENT_RETENTION_DAYS = int(os.getenv("ANALYST_EVENT_RETENTION_DAYS", "365"))
-ANALYST_DELIVERY_RETENTION_DAYS = int(os.getenv("ANALYST_DELIVERY_RETENTION_DAYS", "365"))
+ANALYST_CANDIDATE_RETENTION_DAYS = int(os.getenv("ANALYST_CANDIDATE_RETENTION_DAYS", "7"))
+ANALYST_EVENT_RETENTION_DAYS = int(os.getenv("ANALYST_EVENT_RETENTION_DAYS", "7"))
+ANALYST_DELIVERY_RETENTION_DAYS = int(os.getenv("ANALYST_DELIVERY_RETENTION_DAYS", "7"))
 ANALYST_METRICS_RETENTION_DAYS = int(os.getenv("ANALYST_METRICS_RETENTION_DAYS", "30"))
 ANALYST_RESEARCH_RETENTION_DAYS = int(os.getenv("ANALYST_RESEARCH_RETENTION_DAYS", "30"))
 
@@ -997,6 +997,28 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                 )
             """)
             conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (confidence_migration,))
+
+        # Active-event scan index shared by the execution adapter (bounded
+        # freshest/highest-confidence delivery scan) and signal_publisher's
+        # expire sweep. Equality on status first, then the valid_until range.
+        # Guarded on the table actually existing in THIS database: shared
+        # init runs against both service DBs and only the alpha ledger owns
+        # alpha_events.
+        active_index_migration = "2026-09-14-alpha-events-active-valid-index"
+        has_alpha_events = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='alpha_events'"
+        ).fetchone() is not None
+        if has_alpha_events and conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = ?", (active_index_migration,)
+        ).fetchone() is None:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alpha_events_active_valid"
+                " ON alpha_events (status, valid_until)"
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)",
+                (active_index_migration,),
+            )
 
         research_migration = "2026-08-16-phase1-research-ledger"
         research_applied = conn.execute(

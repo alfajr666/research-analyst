@@ -21,6 +21,27 @@ POLL_INTERVAL_SECONDS = 30
 MAX_DELIVERY_ATTEMPTS = 5
 RETRY_BASE_SECONDS = 30
 CLAIM_LEASE_SECONDS = 60
+
+# Large diagnostic blocks that are embedded in alpha events for the in-memory
+# pipeline but are never re-read from the database. Persisting them made
+# alpha_events rows average ~800 KB (multi-MB worst case) and grew the analyst
+# DB by hundreds of MB per day. Discord/Telegram render from the live event,
+# and the execution adapter validates geometry/status only, so dropping these
+# from the persisted copy loses nothing downstream (Discord remains the log).
+_EVENT_STORAGE_DROP_KEYS = (
+    "_score_result",
+    "_admission_result",
+    "structural_context",
+    "engine_htf_provenance",
+)
+
+
+def _slim_event_for_storage(event: dict) -> dict:
+    """Return the event without oversized diagnostic-only blocks."""
+    if not isinstance(event, dict):
+        return event
+    slimmed = {k: v for k, v in event.items() if k not in _EVENT_STORAGE_DROP_KEYS}
+    return slimmed
 REQUIRED_FIELDS = {
     "schema_version", "alpha_id", "strategy_id", "asset", "direction",
     "setup_class", "phase", "observed_at", "valid_until", "horizon_minutes",
@@ -203,7 +224,7 @@ class SignalPublisher:
             event["dedupe_key"], event["alpha_id"], event["strategy_id"], event["asset"],
             event["direction"], event["setup_class"], event["phase"], status,
             parse_timestamp(event["observed_at"]), expires_at,
-            json.dumps(event, sort_keys=True, separators=(",", ":")), now,
+            json.dumps(_slim_event_for_storage(event), sort_keys=True, separators=(",", ":")), now,
         )).fetchone()
         if result is None:
             return False

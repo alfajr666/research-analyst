@@ -590,9 +590,15 @@ def _finish_pipeline_run(run_id: str, status: str, error: Exception | None = Non
             """, (
                 completed_at, status, freshness, len(list(OUTBOX_DIR.glob("*.json"))),
                 str(error)[:500] if error else None,
+                # Persist compact counters only; per-strategy detail goes to
+                # stdout + health.json (watchdog), not the database. Full
+                # evaluation payloads made pipeline_runs ~83 KB/row.
                 json.dumps({
                     "data_latest_at": latest_data_at.isoformat() if latest_data_at else None,
-                    "evaluation": LAST_EVALUATION_OBSERVABILITY,
+                    "evaluation": {
+                        k: v for k, v in LAST_EVALUATION_OBSERVABILITY.items()
+                        if k != "by_interval"
+                    },
                 }, default=str),
                 run_id,
             ))

@@ -16,6 +16,20 @@ from signal_publisher import parse_timestamp
 
 TARGETS = frozenset({"bybit", "bybit-test", "mexc", "propr"})
 
+# Delivery only ever makes sense for work that is still executable. The scan
+# is bounded to active, unexpired events, freshest and highest-confidence
+# first, so an ever-growing alpha_events table never turns a delivery pass
+# into a full-history scan. Expired/Inactive events were always terminal
+# skips; filtering them at query level skips the permanent ledger spam too.
+DEFAULT_SCAN_LIMIT = 500
+
+
+def _scan_limit() -> int:
+    try:
+        return max(1, int(os.getenv("EXECUTION_ADAPTER_SCAN_LIMIT", str(DEFAULT_SCAN_LIMIT))))
+    except ValueError:
+        return DEFAULT_SCAN_LIMIT
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -218,10 +232,17 @@ class ExecutionAdapter:
         if not self.targets:
             return results
         now = self.now()
-        rows = connection.execute("""
+        query = """
             SELECT alpha_id, status, event_json FROM alpha_events
-        """).fetchall()
-        for alpha_id, status, serialized_event in rows:
+            WHERE status = 'active' AND valid_until > ?
+            ORDER BY
+                CAST(json_extract(event_json, '$.confidence') AS REAL) DESC,
+                observed_at DESC,
+                alpha_id
+            LIMIT ?
+        """
+        cursor = connection.execute(query, (now, _scan_limit()))
+        for alpha_id, status, serialized_event in cursor:
             event = json.loads(serialized_event)
             event["alpha_id"] = alpha_id
             event["status"] = status

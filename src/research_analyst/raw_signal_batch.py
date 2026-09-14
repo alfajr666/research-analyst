@@ -97,8 +97,11 @@ def record_status(raw_signal_id, *, hard_gate_status=None, score_status=None,
                                       score_policy_version, conflict_group_key
                                FROM raw_signal_status_history
                                WHERE raw_signal_id=? ORDER BY recorded_at DESC LIMIT 1""", (raw_signal_id,)).fetchone()
+        # score_components_json is a write-only diagnostic (no reader anywhere);
+        # persisting full component maps grew this table to GBs. Score and
+        # policy version remain the durable record.
         values = [hard_gate_status, score_status, clash_status, executor_intent_status,
-                  score, json.dumps(score_components, sort_keys=True) if isinstance(score_components, dict) else score_components,
+                  score, None,
                   score_policy_version, conflict_group_key]
         values = [value if value is not None else (prior[i] if prior else None) for i, value in enumerate(values)]
         conn.execute("""INSERT INTO raw_signal_status_history
