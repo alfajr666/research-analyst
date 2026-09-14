@@ -194,6 +194,42 @@ but disabled.
   the ports add no new admission bypass. `trend-wall-v5` keeps the legacy
   `trend-wall-v1` family (trend) so regime hysteresis semantics are unchanged.
 
+## Cutoff semantics and backtest parity
+
+All ports evaluate on completed `5m` cutoffs — the RA-native evaluation
+heartbeat. The gateway emits a trigger when a 5m bar completes; the cutoff
+(e.g. `14:45:00`) is the consistency timestamp asserting "every bar with
+`source_end <= cutoff` exists". The cadence is *not* 5m signal cadence: each
+port gates on its own frame boundary in `run_plugin`, so signal cadence equals
+the backtest cadence (15m strategies fire 4x/hour, 30m strategies 2x/hour,
+`macd-ema-v1` hourly).
+
+Signal math and event timing are unchanged from the backtest: thresholds,
+indicator formulas, state machines, and trigger conditions are transcribed
+from the authority code, a signal frame bar closes at the same bar in both
+systems, and entry price is the completed-bar close in both. Four differences,
+all execution-side, none signal-side:
+
+1. **In-trade exits.** The backtest monitored exits per bar. In RA, mechanical
+   exits are either replayed completed-bar state (`evaluate_exit`: trend-pullback
+   6-step machine, MACD dataframe exit, trend-wall structure exit) or delegated
+   to the executor (`bb-tp-race-locked-v1` intrabar TP race via
+   `metadata.bracket_spec`).
+2. **Position state.** Backtest in-position flags are replaced by RA's
+   `has_active_event` guard plus publisher dedupe — replay-deterministic, no
+   hidden state, and strictly no *more* signals than the backtest.
+3. **No sizing/fees/slippage.** Backtest PnL was net of engine-side costs; RA
+   emits geometry only. Admission and RR gates are preserved; profit
+   expectations from the backtest are not transferable.
+4. **5m scan frequency.** The engine checks the 15m/30m conditions every 5m
+   cutoff, but causal grouping, per-boundary gating, and dedupe guarantee no
+   signal the backtest would not have produced at the same bar.
+
+The backtest verdicts in the handoff (e.g. trend-pullback median PF 0.871)
+come from a different data window and venue sweep. The ports reproduce the
+*logic*, not those statistics; live behavior must be validated through the
+RA pipeline (raw signals -> admission -> shadow regime) before conclusions.
+
 ## Verification
 
 ```bash
