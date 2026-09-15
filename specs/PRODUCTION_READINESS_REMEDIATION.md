@@ -96,3 +96,11 @@ Acceptance:
 3. Add durable outbox publication state and retry tests.
 4. Verify live counts and trigger recovery before enabling additional strategy
    families.
+
+## 6. Verification Note (2026-09-15)
+
+Full repository suite green (437 passed) with no live credentials. Live
+managed workers (symbol-rotation, ws, regime-session, strategy-runner,
+orchestrator) healthy with fresh cutoffs; shared-bus fan-out to both `bybit`
+and `propr` targets enabled and independently receipted. Item-level sign-off
+remains with the repository owner; this note records test evidence only.

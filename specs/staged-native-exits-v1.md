@@ -1,7 +1,17 @@
 # Staged Native Exits v1
 
-**Status:** RA normative (implemented in research-analyst). Intent-bus, standalone PM,
-and executor sections are normative-deferred and owned by separate changes.
+**Status:** RA normative (implemented in research-analyst). Intent-bus §3
+implemented in the shared bus package (`staged_native_targets` forwarding in
+`producer_adapters.build_research_analyst_delivery`, price-list
+`hints.targets` plus full-fidelity `hints.native_targets` and
+`take_profit_mode` passthrough on the Propr path; Bybit path already forwards
+the envelope verbatim). PM §4 partially implemented in `llm-position-manager`
+(intent `native_targets` normalization, bus ingestion from top-level
+`targets`/`hints.native_targets`/`hints.targets`, exposure in the provider
+payload via `intent.to_dict()`; execution semantics unchanged — single venue
+TP remains the backstop). Per-level NEAR_TP completion flags and per-level
+idempotency remain normative-deferred. Executor §5 unchanged (no change
+required under venue-TP-furthest).
 
 ## 1. Background
 
@@ -75,36 +85,58 @@ The admission fingerprint binds the full `targets` array in addition to
 strategies (notably `bb-tp-race-locked-v1` tp1 → tp2); replay baselines for
 those strategies restart at this contract version.
 
-## 3. Intent-bus contract (normative-deferred, separate change)
+## 3. Intent-bus contract (implemented 2026-09-15)
 
 - Bybit deliveries already forward the RA envelope verbatim, so `targets`,
   `take_profit_mode`, and strategy metadata flow without adapter changes.
   `validate_bybit_geometry` checks scalars only; `assert_no_sizing_hints`
   forbids only entry-sizing keys (`fraction` is an exit directive, not entry
   sizing).
-- Promote bus `hints.targets` from dead payload to the real array for
-  consumers that read hints (separate bus-repo change with contract version).
+- The Propr RA adapter (`build_research_analyst_delivery`, target=propr)
+  normalizes the admitted envelope `targets` via `staged_native_targets`:
+  `hints.targets` is the price list (existing `float(targets[0])` consumers
+  keep working), `hints.native_targets` carries the full
+  `[{price, fraction}]` fidelity, and `take_profit_mode` passes through
+  top-level. Additive optional keys: no bus contract version bump; scanners
+  (unscored, no staged exits) are unaffected.
 
-## 4. Standalone PM contract (normative-deferred, separate change)
+## 4. Standalone PM contract (implemented 2026-09-15)
 
-- Intent gains `targets[]`; per-level completion flags generalize
-  `near_tp_reduction_completed`.
-- The NEAR_TP policy fires only the nearest uncompleted in-band level per
-  cycle with that level's fraction; stable idempotency key per level.
-- Enforce sum(fractions) <= 1 at contract normalization; tie completion flags
-  to `lifecycle_revision` so re-entries reset.
-- Feed the array plus completed levels into the LLM context so discretionary
-  REDUCE/EXIT sizes against remaining size.
-- Reconciliation unchanged: a venue TP fill reads as flat from venue state;
-  PM never infers positions.
+- Intent gains `native_targets[]` (`pm/contracts.normalize_native_targets`):
+  bounded (8), lenient (malformed entries dropped, `sum(fractions) <= 1`
+  enforced, otherwise degrades to `[]` = single venue-TP behavior). The key is
+  omitted from `to_dict()` when empty so stored single-TP rows round-trip
+  unchanged (no fingerprint or idempotency drift).
+- Ingestion (`pm/feeds._intent_from_delivery`) reads top-level `targets`
+  (Bybit verbatim path), `hints.native_targets` (Propr path), or legacy
+  `hints.targets` prices; the array flows into the LLM context via
+  `intent.to_dict()` as advisory evidence.
+- NEAR_TP decisions carry `target_levels` (Decision field, engine-attached
+  from the matched intent) so venues can fire per-level reductions.
+- The reference consumer (`pm/consumers._target_plan`) selects the nearest
+  uncompleted in-band level with that level's fraction; sole null-fraction
+  levels and level-less decisions keep legacy single-TP flow.
 
-## 5. Executor contract (normative-deferred, separate change if any)
+## 5. Executor contract (implemented 2026-09-15 in both venues)
 
-No change required under venue-TP-furthest: the executor keeps placing one
-venue TP (`take_profit`) plus SL and validating PM decisions. IOC today covers
-limit entries only; market entries are immediate. Any multi-order native
-bracket execution is explicitly out of scope: intermediate levels are managed
-by PM decisions, not venue orders.
+Both venues implement per-level NEAR_TP firing with venue-owned selection:
+
+- The decision-carried `target_levels` array is validated leniently; absent
+  or invalid arrays keep exact legacy single-shot behavior.
+- The venue fires only the nearest uncompleted in-band level per cycle with
+  that level's fraction of the current remainder (intermediate levels only;
+  the null-fraction final level belongs to the native TP backstop, except a
+  sole null level which keeps legacy behavior with the configured fraction).
+- Completion is recorded per level with a stable per-level key
+  (Bybit: `near_tp_levels` table scoped by position/instance/revision;
+  Propr: `PM_NEAR_TP_REDUCED_L{index}` journal events), tied to the position
+  instance so re-entries reset. Legacy one-time rows are still written, so
+  level-less decisions stay fail-closed.
+- Observations expose `near_tp_completed_levels` (`[{index, price}]`) alongside
+  the legacy `near_tp_reduction_completed` flag; the PM consumes both.
+- No multi-order native bracket execution: intermediate levels remain
+  PM-decision-driven, exactly as originally scoped. IOC today covers limit
+  entries only; market entries are immediate.
 
 ## 6. Rollout record (research-analyst)
 
@@ -115,3 +147,15 @@ Replay baselines for multi-target strategies (`bb-tp-race-locked-v1`)
 restart at this contract version; single-target fingerprints are unchanged.
 Downstream bus/PM/executor changes are pending; until then the bus forwards
 the envelope verbatim and the venue TP behaves as the single backstop.
+
+2026-09-15 transport slice: shared-bus Propr adapter forwards real staged
+levels (`hints.targets` prices + `hints.native_targets` full fidelity +
+`take_profit_mode`); standalone PM ingests `native_targets` and exposes them
+in the provider payload as advisory evidence. Execution semantics unchanged;
+per-level NEAR_TP state machine still deferred (see §4).
+
+2026-09-15 execution slice: per-level NEAR_TP firing implemented in the
+standalone PM (Decision.target_levels carriage, reference-consumer selection)
+and both venue executors (venue-owned selection, level fractions, per-level
+completion records, observation seam). Legacy single-TP behavior preserved
+whenever the level array is absent or invalid.
