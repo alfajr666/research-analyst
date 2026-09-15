@@ -194,3 +194,61 @@ def test_opposite_direction_clash_requires_score_margin():
     assert result["selected_candidate_ids"] == []
     assert all(item["status"] == "eligible_suppressed_by_opposite_direction_clash"
                for item in result["results"])
+
+
+def _multi_candidate(targets, strategy_id="bb-tp-race-locked-v1"):
+    event = _candidate(95.0)
+    event["strategy_id"] = strategy_id
+    event["targets"] = targets
+    return event
+
+
+def test_multi_level_native_targets_select_furthest_venue_tp():
+    result = admit(_multi_candidate([110.0, 115.0]), now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert result["hard_gate"] == "pass"
+    assert result["selected_take_profit"] == 115.0
+    assert result["selected_take_profit_source"] == "native_furthest"
+    assert result["native_targets"] == [
+        {"price": 110.0, "fraction": 0.5},
+        {"price": 115.0, "fraction": None},
+    ]
+    assert result["rr"] == 2.0
+
+
+def test_non_monotonic_native_targets_fail():
+    result = admit(_multi_candidate([110.0, 108.0]), now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert result["hard_gate"] == "fail"
+    assert "monotonic" in "; ".join(result["hard_gate_reasons"])
+
+
+def test_native_tp1_below_min_rr_fails_without_exemption():
+    result = admit(
+        _multi_candidate([101.0], strategy_id="impulse-ignition-v1"),
+        now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    assert result["hard_gate"] == "fail"
+    assert "reward/risk below minimum" in result["hard_gate_reasons"]
+    assert result["min_rr_exempt_native"] is False
+
+
+def test_exempt_native_tp1_passes_with_recorded_exemption():
+    result = admit(
+        _multi_candidate([101.0], strategy_id="kama-trend-following-v1"),
+        now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    assert result["hard_gate"] == "pass"
+    assert result["min_rr_exempt_native"] is True
+    assert result["selected_take_profit"] == 101.0
+    assert result["selected_take_profit_source"] == "native_furthest"
+
+
+def test_fingerprint_binds_multi_level_array_across_spellings():
+    base = {"candidate_id": "id", "strategy_id": "s", "asset": "BTC", "direction": "long",
+            "entry_price": 100, "invalidation_price": 95,
+            "observed_at": "2026-01-01T00:00:00Z", "valid_until": "2026-01-01T00:05:00Z"}
+    single = dict(base, targets=[110])
+    multi = dict(base, targets=[110, 115])
+    multi_dicts = dict(base, targets=[{"price": 110.0, "fraction": 0.5},
+                                      {"price": 115.0, "fraction": None}])
+    assert candidate_admission_fingerprint(multi) == candidate_admission_fingerprint(multi_dicts)
+    assert candidate_admission_fingerprint(multi) != candidate_admission_fingerprint(single)

@@ -259,5 +259,31 @@ def test_score_eligible_compact_fundamo_handoff_preserves_account_fingerprint():
     assert ok, reason
 
 
+def test_envelope_carries_full_native_array_and_venue_tp():
+    event = _alpha_event(strategy_id="bb-tp-race-locked-v1", targets=[110.0, 120.0])
+    intent = build_executor_intent(event)
+    assert intent["take_profit"] == 120.0
+    assert intent["targets"] == [
+        {"price": 110.0, "fraction": 0.5},
+        {"price": 120.0, "fraction": None},
+    ]
+    assert intent["take_profit_mode"] == "bracket_tp1_tp2_race"
+    assert intent["metadata"]["target_source"] == "strategy_target"
+
+
+def test_envelope_mode_defaults_to_fixed_full_close():
+    intent = build_executor_intent(_alpha_event())
+    assert intent["take_profit_mode"] == "fixed_full_close"
+    assert intent["take_profit"] == 110
+    assert intent["targets"] == [{"price": 110.0, "fraction": None}]
+
+
+def test_malformed_native_array_fails_closed_without_fallback():
+    intent = build_executor_intent(_alpha_event(targets=["oops"]))
+    assert intent["take_profit"] is None
+    assert intent["targets"] == []
+
+
+
 if __name__ == "__main__":
     unittest.main()

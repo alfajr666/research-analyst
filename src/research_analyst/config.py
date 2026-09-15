@@ -512,6 +512,25 @@ INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "hyro")
 INTENT_TAKE_PROFIT_MODE = os.getenv("INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
 INTENT_VALIDITY_MINUTES = int(os.getenv("INTENT_VALIDITY_MINUTES", "5"))
 INTENT_MIN_RR = float(os.getenv("INTENT_MIN_RR", "2.0"))
+# Staged native exits (spec staged-native-exits-v1.md). Native multi-level
+# targets keep their full array through admission; the venue TP is the furthest
+# admitted level. Strategies whose edge is a sub-minimum native TP1 are exempt
+# from the reward/risk gate with the exemption recorded in the proof.
+NATIVE_TP_MIN_RR_EXEMPT_IDS = frozenset(
+    value.strip()
+    for value in os.getenv("NATIVE_TP_MIN_RR_EXEMPT_IDS", "kama-trend-following-v1").split(",")
+    if value.strip()
+)
+NATIVE_TARGET_DEFAULT_FRACTION = float(os.getenv("NATIVE_TARGET_DEFAULT_FRACTION", "0.5"))
+if not 0 < NATIVE_TARGET_DEFAULT_FRACTION <= 1:
+    raise ValueError("NATIVE_TARGET_DEFAULT_FRACTION must be in (0, 1]")
+# Per-strategy exit mode. Precedence: explicit caller argument > INTENT_ROUTING
+# entry > this map > INTENT_TAKE_PROFIT_MODE.
+STRATEGY_TAKE_PROFIT_MODES = {
+    "bb-tp-race-locked-v1": "bracket_tp1_tp2_race",
+    "mr-vwap-locked-v1": "vwap_target",
+    "kama-trend-following-v1": "symmetric_atr_bracket",
+}
 INTENT_MIN_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MIN_STOP_DISTANCE_PCT", "0.001"))
 INTENT_MIN_STOP_ATR_MULTIPLIER = float(os.getenv("INTENT_MIN_STOP_ATR_MULTIPLIER", "0.25"))
 DATA_FRESHNESS_MAX_SECONDS = float(os.getenv("DATA_FRESHNESS_MAX_SECONDS", "600"))

@@ -149,6 +149,81 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def _parse_target_level(item: object) -> dict | None:
+    """Parse one raw target price or {price, fraction} mapping."""
+    price = item.get("price") if isinstance(item, dict) else item
+    fraction = item.get("fraction") if isinstance(item, dict) else None
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(price) and price > 0):
+        return None
+    if fraction is not None:
+        try:
+            fraction = float(fraction)
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(fraction) and 0 < fraction <= 1):
+            return None
+    return {"price": price, "fraction": fraction}
+
+
+def coerce_envelope_levels(raw: object) -> list[dict] | None:
+    """Coerce an event target array to [{price, fraction}] for the envelope.
+
+    Returns [] for empty input and None when input is present but unparseable,
+    so callers fail closed instead of fabricating a fallback target.
+    """
+    if not raw:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        return None
+    default_fraction = float(getattr(config, "NATIVE_TARGET_DEFAULT_FRACTION", 0.5))
+    levels = [_parse_target_level(item) for item in raw]
+    if not levels or any(level is None for level in levels):
+        return None
+    for level in levels[:-1]:
+        if level["fraction"] is None:
+            level["fraction"] = default_fraction
+    levels[-1]["fraction"] = None
+    return levels
+
+
+def _native_target_levels(candidate: dict, direction: str,
+                          entry: float, stop: float) -> tuple[list[dict], str | None]:
+    """Normalize candidate targets to admitted [{price, fraction}] levels.
+
+    Returns (levels, error). Levels are near-to-far; the final level is the
+    venue TP with fraction None (remainder for the venue order). Prices must
+    be finite, positive, and strictly monotonic away from entry in the trade
+    direction. Unspecified intermediate fractions default to
+    NATIVE_TARGET_DEFAULT_FRACTION of current size at trigger time, so
+    cascading levels can never exceed the remaining position.
+    """
+    raw = candidate.get("targets") or []
+    if not raw:
+        return [], None
+    if not isinstance(raw, (list, tuple)):
+        return [], "native target price is invalid"
+    default_fraction = float(getattr(config, "NATIVE_TARGET_DEFAULT_FRACTION", 0.5))
+    levels = [_parse_target_level(item) for item in raw]
+    if not levels or any(level is None for level in levels):
+        return [], "native target price is invalid"
+    previous = entry
+    for level in levels:
+        if direction == "long" and not (level["price"] > previous):
+            return [], "native targets are not monotonic away from entry"
+        if direction == "short" and not (level["price"] < previous):
+            return [], "native targets are not monotonic away from entry"
+        previous = level["price"]
+    for level in levels[:-1]:
+        if level["fraction"] is None:
+            level["fraction"] = default_fraction
+    levels[-1]["fraction"] = None
+    return levels, None
+
+
 def derive_2r_target(direction, entry, stop):
     """Return the producer fallback target when all price inputs are valid."""
     if not (_number(entry) and entry > 0 and _number(stop) and stop > 0):
@@ -175,8 +250,17 @@ def candidate_admission_fingerprint(candidate: dict) -> str:
     if entry is None:
         entry = (candidate.get("entry_condition") or {}).get("price")
     stop = candidate.get("invalidation_price", candidate.get("stop_loss"))
-    targets = candidate.get("targets") or []
-    target = targets[0] if targets else candidate.get("take_profit")
+    raw_targets = candidate.get("targets") or []
+    first_level = raw_targets[0] if raw_targets else None
+    if first_level is None:
+        target = candidate.get("take_profit")
+    else:
+        target = first_level.get("price") if isinstance(first_level, dict) else first_level
+    # Canonicalize ints to floats so int/float spellings of one price share
+    # a fingerprint (envelope levels always carry floats).
+    entry = float(entry) if isinstance(entry, (int, float)) and not isinstance(entry, bool) else entry
+    stop = float(stop) if isinstance(stop, (int, float)) and not isinstance(stop, bool) else stop
+    target = float(target) if isinstance(target, (int, float)) and not isinstance(target, bool) else target
     try:
         observed_at = (
             _normalise_closed_bar_timestamp(candidate.get("observed_at")).isoformat()
@@ -203,6 +287,23 @@ def candidate_admission_fingerprint(candidate: dict) -> str:
         "observed_at": observed_at,
         "valid_until": valid_until,
     }
+    native_prices: list[float] = []
+    for item in candidate.get("targets") or []:
+        price = item.get("price") if isinstance(item, dict) else item
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            native_prices = []
+            break
+        if not math.isfinite(price):
+            native_prices = []
+            break
+        native_prices.append(price)
+    if len(native_prices) > 1:
+        # Multi-level native exits change admitted economics (venue TP is the
+        # furthest level); bind the array. Single-level fingerprints stay
+        # byte-identical.
+        material["native_targets"] = native_prices
     return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
@@ -246,15 +347,26 @@ def admit(
     if entry is None:
         entry = (candidate.get("entry_condition") or {}).get("price")
     targets = candidate.get("targets") or []
-    target = targets[0] if targets else candidate.get("take_profit")
-    stop = candidate.get("invalidation_price", candidate.get("stop_loss"))
+    target = None
+    if targets:
+        first = targets[0]
+        target = first.get("price") if isinstance(first, dict) else first
     if target is None:
+        target = candidate.get("take_profit")
+    stop = candidate.get("invalidation_price", candidate.get("stop_loss"))
+    if target is None and not targets:
         target = derive_2r_target(candidate.get("direction"), entry, stop)
     if not all(_number(v) and v > 0 for v in (entry, stop, target)):
         reasons.append("prices must be finite and positive")
     direction = str(candidate.get("direction", "")).lower()
     if direction not in {"long", "short"}:
         reasons.append("direction is invalid")
+    native_levels: list[dict] = []
+    if direction in {"long", "short"} and _number(entry) and _number(stop) and entry > 0 and stop > 0:
+        native_levels, levels_error = _native_target_levels(candidate, direction, entry, stop)
+        if levels_error:
+            reasons.append(levels_error)
+            native_levels = []
     if _number(entry) and _number(stop) and _number(target):
         geometry = stop < entry < target if direction == "long" else target < entry < stop
         if not geometry:
@@ -263,7 +375,12 @@ def admit(
         reward = abs(target - entry)
         rr = reward / risk if risk else 0.0
         distance = risk / entry
-        if rr < float(getattr(config, "INTENT_MIN_RR", 2.0)):
+        min_rr_exempt_native = (
+            bool(native_levels)
+            and rr < float(getattr(config, "INTENT_MIN_RR", 2.0))
+            and str(candidate.get("strategy_id") or "") in getattr(config, "NATIVE_TP_MIN_RR_EXEMPT_IDS", frozenset())
+        )
+        if rr < float(getattr(config, "INTENT_MIN_RR", 2.0)) and not min_rr_exempt_native:
             reasons.append("reward/risk below minimum")
         context_atr = ((structural_context or candidate.get("structural_context") or {}).get("atr_by_timeframe") or {}).get("4h")
         atr14_4h = context_atr if _number(context_atr) else candidate.get("atr14_4h")
@@ -283,6 +400,7 @@ def admit(
         multiplier = float(getattr(config, "INTENT_MIN_STOP_ATR_MULTIPLIER", 0.25))
         absolute_floor = float(getattr(config, "INTENT_MIN_STOP_DISTANCE_PCT", .001))
         atr_floor = 0.0
+        min_rr_exempt_native = False
     try:
         expiry = _time(candidate["valid_until"])
         if expiry <= (now or datetime.now(timezone.utc)).astimezone(timezone.utc):
@@ -303,11 +421,27 @@ def admit(
     if structural["structural_stop_gate"] != "pass":
         reasons.extend(f"structural stop: {reason}" for reason in structural["structural_stop_reasons"])
     atr_pct = float(atr14_4h) / entry if _number(atr14_4h) and _number(entry) and entry > 0 else None
+    # Venue TP is the furthest admitted native level (a venue order inside
+    # PM-managed levels would cut the runner before the PM poll can act),
+    # else the TP1/fallback target above.
+    if native_levels:
+        venue_target = native_levels[-1]["price"]
+        venue_source = "native_furthest"
+    else:
+        venue_target = target
+        venue_source = (
+            "producer_derived_2r"
+            if target is not None and not (candidate.get("targets") or candidate.get("take_profit"))
+            else "strategy_target"
+        )
     return {"hard_gate": "pass" if not reasons else "fail", "hard_gate_reasons": reasons,
              "candidate_id": identity,
              "candidate_fingerprint": candidate_admission_fingerprint(fingerprint_candidate),
             **symbol_policy,
-            "rr": rr, "stop_distance_pct": distance, "selected_take_profit": target,
+            "rr": rr, "stop_distance_pct": distance, "selected_take_profit": venue_target,
+            "selected_take_profit_source": venue_source,
+            "native_targets": native_levels,
+            "min_rr_exempt_native": bool(min_rr_exempt_native),
             "atr14_4h": atr14_4h, "stop_atr_multiple": distance / atr_pct if distance is not None and atr_pct else None,
             "effective_min_stop_distance_pct": max(absolute_floor, atr_floor),
             "data_freshness_seconds": freshness, **structural}

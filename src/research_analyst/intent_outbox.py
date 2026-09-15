@@ -111,7 +111,12 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
             admission.get("resolved_account")
             if isinstance(admission, dict) else None
         ) or resolved_account(event.get("strategy_id"))
-    take_profit_mode = take_profit_mode or route.get("take_profit_mode") or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
+    take_profit_mode = (
+        take_profit_mode
+        or route.get("take_profit_mode")
+        or (getattr(config, "STRATEGY_TAKE_PROFIT_MODES", {}) or {}).get(event.get("strategy_id"))
+        or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
+    )
     validity_minutes = (
         validity_minutes if validity_minutes is not None
         else route.get("validity_minutes", getattr(config, "INTENT_VALIDITY_MINUTES", 5))
@@ -139,15 +144,33 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
     entry_price = event.get("entry_price") or entry_condition.get("price")
 
     stop_loss = event.get("invalidation_price", event.get("stop_loss"))
-    targets = event.get("targets") or []
-    take_profit = targets[0] if targets else event.get("take_profit")
-    target_source = "strategy_target" if take_profit is not None else None
-    if take_profit is None:
+    admission = admission or event.get("_score_result") or event.get("_admission_result")
+    admitted_levels = (admission.get("native_targets") if isinstance(admission, dict) else None) or []
+    raw_targets = event.get("targets") or []
+    if admitted_levels:
+        # Admitted multi-level array; the venue TP is the furthest level.
+        targets = [dict(level) for level in admitted_levels]
+        take_profit = (admission.get("selected_take_profit")
+                       if isinstance(admission, dict) else None)
+        target_source = ((admission.get("selected_take_profit_source")
+                          if isinstance(admission, dict) else None)
+                         or "native_furthest")
+    else:
+        from trade_admission import coerce_envelope_levels
+        coerced = coerce_envelope_levels(raw_targets)
+        if coerced is None:
+            # Malformed native array: fail closed without a fabricated fallback.
+            targets, take_profit, target_source = [], None, None
+        else:
+            targets = coerced
+            take_profit = targets[-1]["price"] if targets else event.get("take_profit")
+            target_source = "strategy_target" if take_profit is not None else None
+    if take_profit is None and target_source is None and not raw_targets and not admitted_levels:
         take_profit = derive_2r_target(direction, entry_price, stop_loss)
         if take_profit is not None:
             target_source = "producer_derived_2r"
+            targets = [{"price": take_profit, "fraction": None}]
 
-    admission = admission or event.get("_score_result") or event.get("_admission_result")
     quality_score = admission.get("quality_score") if isinstance(admission, dict) else None
     # Sizing is executor-owned: the analyst never dictates quantity/risk_amount.
     # Pass through any non-sizing metadata the strategy attached; the executor
@@ -185,6 +208,7 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
         "entry_price": entry_price,
         "stop_loss": stop_loss,
         "take_profit": take_profit,
+        "targets": targets,
         "take_profit_mode": take_profit_mode,
         "setup_class": event.get("setup_class"),
         "phase": event.get("phase"),
@@ -224,6 +248,7 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
             "entry_price": intent.get("entry_price"),
             "invalidation_price": intent.get("stop_loss"),
             "take_profit": intent.get("take_profit"),
+            "targets": intent.get("targets"),
             "observed_at": intent.get("observed_at"),
             "valid_until": intent.get("entry_valid_until"),
         }
@@ -257,6 +282,7 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         "entry_price": intent.get("entry_price"),
         "invalidation_price": intent.get("stop_loss"),
         "take_profit": intent.get("take_profit"),
+        "targets": intent.get("targets"),
         "observed_at": intent.get("observed_at"),
         "valid_until": intent.get("entry_valid_until"),
         "data_freshness_seconds": proof.get("data_freshness_seconds"),
