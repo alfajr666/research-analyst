@@ -217,15 +217,15 @@ The default production allowlist contains the 7 vectorbt engine-handoff ports
 built on the repository's native indicator engines — no shared port module and
 no vectorbt, pandas, or numpy dependency:
 
-| Strategy | Cadence | Family | Route |
+| Strategy | Cadence | Family | Execution |
 | --- | --- | --- | --- |
-| `bb-tp-race-locked-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
-| `bb-squeeze-trend-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
-| `kama-trend-following-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
-| `macd-ema-v1` | 5m cutoff, 1h frame | trend | Bybit Fundamo |
-| `mr-vwap-locked-v1` | 5m cutoff, 15m frame | mean_reversion | Bybit Fundamo |
-| `trend-pullback-vwap-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
-| `trend-wall-v5` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+| `bb-tp-race-locked-v1` | 5m cutoff, 15m frame | trend | Bybit executor |
+| `bb-squeeze-trend-v1` | 5m cutoff, 30m frame | trend | Bybit executor |
+| `kama-trend-following-v1` | 5m cutoff, 30m frame | trend | Bybit executor |
+| `macd-ema-v1` | 5m cutoff, 1h frame | trend | Bybit executor |
+| `mr-vwap-locked-v1` | 5m cutoff, 15m frame | mean_reversion | Bybit executor |
+| `trend-pullback-vwap-v1` | 5m cutoff, 15m frame | trend | Bybit executor |
+| `trend-wall-v5` | 5m cutoff, 30m frame | trend | Bybit executor |
 
 All ported plugins evaluate on completed `5m` cutoffs; the `15m`, `30m`, and
 `1h` signal frames are derived causally from completed bars and never merge
@@ -237,29 +237,26 @@ The legacy 12-plugin production set remains registered but is disabled by
 default (`LEGACY_PRODUCTION_STRATEGY_IDS`); re-enable it explicitly through
 `STRATEGY_ENABLED_IDS`:
 
-| Strategy | Cadence | Family | Route |
-
-| Strategy | Cadence | Family | Account |
+| Strategy | Cadence | Family | Execution |
 | --- | --- | --- | --- |
-| `failed-break-v3` | 5m | reversal | Hyro |
-| `bb-rsi-meanrev-v1` | 5m | mean_reversion | Hyro |
-| `williams-fractal-scalp-v1` | 5m | trend | Hyro |
-| `ema9-adx-stochrsi-state-v1` | 5m | trend | Hyro |
-| `dual-zone-follower-v3` | 5m | trend | Fundamo |
-| `dual-zone-short-follower-v3` | 5m | trend | Fundamo |
-| `ema99-retest-adx-v1` | 5m | trend | downstream router |
-| `ema20-pullback-h4-trend-v1` | 5m | trend | Fundamo |
-| `gold-trend-ema-bb-stoch-v1` | 5m | trend | Fundamo |
-| `mtf-exhaustion-reversal-v1` | 5m | reversal | Fundamo |
-| `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Fundamo |
-| `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Fundamo |
+| `failed-break-v3` | 5m | reversal | Bybit executor |
+| `bb-rsi-meanrev-v1` | 5m | mean_reversion | Bybit executor |
+| `williams-fractal-scalp-v1` | 5m | trend | Bybit executor |
+| `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit executor |
+| `dual-zone-follower-v3` | 5m | trend | Bybit executor |
+| `dual-zone-short-follower-v3` | 5m | trend | Bybit executor |
+| `ema99-retest-adx-v1` | 5m | trend | Bybit executor |
+| `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit executor |
+| `gold-trend-ema-bb-stoch-v1` | 5m | trend | Bybit executor |
+| `mtf-exhaustion-reversal-v1` | 5m | reversal | Bybit executor |
+| `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Bybit executor |
+| `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Bybit executor |
 
-Compact strategies retain their Bybit Hyro route for `BTC`, `ETH`, `PAXG`, and
-`QQQ`, and additionally fan out to Bybit Fundamo for every asset in the
-cutoff-bound effective universe. Candidate metadata or caller arguments cannot
-override either route. Fundamo strategies may trade every asset in the effective
-universe. The downstream router currently maps the EMA99 delivery to
-`bybit/fundamo`.
+Account routing is venue-owned, not strategy-owned. The Bybit executor applies
+the profile capability policy: `bybit/hyro` allows only `BTC`, `ETH`, `PAXG`,
+and `QQQ` for any strategy, while `bybit/fundamo` allows every strategy and
+venue-admitted symbol. RA does not define an account-specific asset or strategy
+allowlist, and invalid profile combinations are rejected before an order call.
 Propr fan-out is an independent shared-bus target.
 
 Production indicators use the tested in-house EMA, RSI, ATR, ADX, StochRSI, and

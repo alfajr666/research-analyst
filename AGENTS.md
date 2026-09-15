@@ -168,42 +168,43 @@ The default production allowlist currently contains the 7 vectorbt
 engine-handoff ports (`specs/strategy-vectorbt-ports-v1.md`; source authority
 in the engine-handoff documents of the source repository):
 
-| Strategy | Cadence | Family | Route |
+| Strategy | Cadence | Family | Execution |
 | --- | --- | --- | --- |
-| `bb-tp-race-locked-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
-| `bb-squeeze-trend-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
-| `kama-trend-following-v1` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
-| `macd-ema-v1` | 5m cutoff, 1h frame | trend | Bybit Fundamo |
-| `mr-vwap-locked-v1` | 5m cutoff, 15m frame | mean_reversion | Bybit Fundamo |
-| `trend-pullback-vwap-v1` | 5m cutoff, 15m frame | trend | Bybit Fundamo |
-| `trend-wall-v5` | 5m cutoff, 30m frame | trend | Bybit Fundamo |
+| `bb-tp-race-locked-v1` | 5m cutoff, 15m frame | trend | Bybit executor |
+| `bb-squeeze-trend-v1` | 5m cutoff, 30m frame | trend | Bybit executor |
+| `kama-trend-following-v1` | 5m cutoff, 30m frame | trend | Bybit executor |
+| `macd-ema-v1` | 5m cutoff, 1h frame | trend | Bybit executor |
+| `mr-vwap-locked-v1` | 5m cutoff, 15m frame | mean_reversion | Bybit executor |
+| `trend-pullback-vwap-v1` | 5m cutoff, 15m frame | trend | Bybit executor |
+| `trend-wall-v5` | 5m cutoff, 30m frame | trend | Bybit executor |
 
 The legacy 12-plugin production set remains registered and is disabled by
 default; enable it explicitly through `STRATEGY_ENABLED_IDS`:
 
-| Strategy | Cadence | Family | Route |
+| Strategy | Cadence | Family | Execution |
 | --- | --- | --- | --- |
-| `failed-break-v3` | 5m | reversal | Bybit Hyro + Fundamo |
-| `bb-rsi-meanrev-v1` | 5m | mean_reversion | Bybit Hyro + Fundamo |
-| `williams-fractal-scalp-v1` | 5m | trend | Bybit Hyro + Fundamo |
-| `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit Hyro + Fundamo |
-| `dual-zone-follower-v3` | 5m | trend | Bybit Fundamo |
-| `dual-zone-short-follower-v3` | 5m | trend | Bybit Fundamo |
-| `ema99-retest-adx-v1` | 5m | trend | downstream router |
-| `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit Fundamo |
-| `gold-trend-ema-bb-stoch-v1` | 5m | trend | Bybit Fundamo |
-| `mtf-exhaustion-reversal-v1` | 5m | reversal | Bybit Fundamo |
-| `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Bybit Fundamo |
-| `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Bybit Fundamo |
+| `failed-break-v3` | 5m | reversal | Bybit executor |
+| `bb-rsi-meanrev-v1` | 5m | mean_reversion | Bybit executor |
+| `williams-fractal-scalp-v1` | 5m | trend | Bybit executor |
+| `ema9-adx-stochrsi-state-v1` | 5m | trend | Bybit executor |
+| `dual-zone-follower-v3` | 5m | trend | Bybit executor |
+| `dual-zone-short-follower-v3` | 5m | trend | Bybit executor |
+| `ema99-retest-adx-v1` | 5m | trend | Bybit executor |
+| `ema20-pullback-h4-trend-v1` | 5m | trend | Bybit executor |
+| `gold-trend-ema-bb-stoch-v1` | 5m | trend | Bybit executor |
+| `mtf-exhaustion-reversal-v1` | 5m | reversal | Bybit executor |
+| `ema99-double-touch-stochrsi-state-v1` | 5m | trend | Bybit executor |
+| `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | 5m | reversal | Bybit executor |
 
 The retired research plugins (`accumulation-base-v2`, `impulse-ignition-v2`,
 `continuation-breakout-v2`, `rsi-reclaim-v1`, `liquidity-sweep-reversal-v1`,
 `ema9-continuation-stochrsi-v1`, `ema-stack-15m-adx-stochrsi-5m-v1`,
 `trend-wall-v1`) remain registered for replay and research use only.
 
-Compact strategies retain their Hyro route for `BTC`, `ETH`, `PAXG`, and `QQQ`,
-and additionally fan out to Fundamo for assets in the effective universe.
-The downstream router currently maps the EMA99 delivery to `bybit/fundamo`.
+Account capability is executor-owned: `bybit/hyro` allows `BTC`, `ETH`, `PAXG`,
+and `QQQ` for any strategy, while `bybit/fundamo` allows every strategy and
+venue-admitted symbol. RA publishes strategy and symbol evidence; it does not
+own account-specific routing or capability allowlists.
 Propr fan-out is independent and enabled only by its shared-bus switch.
 
 Production strategies use the repository's tested in-house EMA, RSI, ATR, ADX,

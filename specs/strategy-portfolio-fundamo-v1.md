@@ -8,11 +8,9 @@ and repair requirements are defined by
 
 ## Purpose
 
-Fundamo-routed strategy families evaluate the cutoff-bound effective watchlist
-plus permanent assets and route their executor intents exclusively to the Fundamo
-Bybit profile. Compact strategies retain their Hyro permanent-asset route and
-additionally fan out to the Fundamo profile for every effective-universe asset.
-Evaluation scope is governed by
+The strategy portfolio evaluates the cutoff-bound effective watchlist plus
+permanent assets. Account capability and profile routing are owned by the Bybit
+executor under `specs/venue-owned-account-routing-v1.md`. Evaluation scope is governed by
 `specs/strategy-symbol-performance-rotation-v1.md`.
 
 The former dual-zone strategy family is retired. Its IDs must not remain enabled,
@@ -21,21 +19,18 @@ strategy is the current replacement for that trend slot.
 
 ## Strategy IDs
 
-The current Fundamo-routed IDs are:
+The strategy IDs covered by this portfolio are:
 
-| Strategy ID | Route |
+| Strategy ID | Execution |
 |---|---|
-| `dual-zone-follower-v3` | Bybit Fundamo |
-| `dual-zone-short-follower-v3` | Bybit Fundamo |
-| `ema99-retest-adx-v1` | Bybit Fundamo |
-| `ema20-pullback-h4-trend-v1` | Bybit Fundamo |
-| `gold-trend-ema-bb-stoch-v1` | Bybit Fundamo |
-| `mtf-exhaustion-reversal-v1` | Bybit Fundamo |
-| `ema99-double-touch-stochrsi-state-v1` | Bybit Fundamo |
-| `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | Bybit Fundamo |
-
-Compact strategy IDs are not part of this portfolio. They are hard-routed to
-Bybit Hyro and restricted to the permanent assets.
+| `dual-zone-follower-v3` | Bybit executor |
+| `dual-zone-short-follower-v3` | Bybit executor |
+| `ema99-retest-adx-v1` | Bybit executor |
+| `ema20-pullback-h4-trend-v1` | Bybit executor |
+| `gold-trend-ema-bb-stoch-v1` | Bybit executor |
+| `mtf-exhaustion-reversal-v1` | Bybit executor |
+| `ema99-double-touch-stochrsi-state-v1` | Bybit executor |
+| `ema7-26-cross-hammer-shooting-star-1h-adx-v1` | Bybit executor |
 
 ## Universe
 
@@ -98,7 +93,7 @@ symbol-account-strategy hard gate + global admission
 alpha outbox
         |
         v
-intent builder -> shared SQLite intent bus -> bybit/fundamo
+intent builder -> shared SQLite intent bus -> Bybit executor profile policy
 ```
 
 Admission owns freshness, stop geometry, minimum RR, maximum stop distance,
@@ -112,9 +107,10 @@ admission later rejects.
    wiring. Historical events remain immutable.
 3. Add all new IDs to the appropriate admission/purity classification used by
    the alpha outbox.
-4. Add explicit downstream routing entries for every new ID to Fundamo.
-5. Apply symbol-account-strategy policy downstream; compact Hyro restrictions and
-   route forcing must not be implemented inside strategy code.
+4. Publish strategy/symbol intent to the Bybit executor without strategy-owned
+   account capability routing.
+5. Apply the venue-owned profile capability policy downstream; account and
+   symbol restrictions must not be implemented inside strategy code.
 6. Add configuration prefixes and documented defaults without changing global
    intent sizing ownership.
 7. Preserve plugin failure isolation: one strategy or symbol failure must not

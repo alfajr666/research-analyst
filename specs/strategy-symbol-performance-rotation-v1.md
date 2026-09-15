@@ -78,36 +78,13 @@ The evaluator passes the same effective subscription universe to every active
 strategy applicable to the cutoff. No strategy may contain an asset allowlist or
 decide whether to evaluate a symbol from account or rotation policy.
 
-All active strategies receive the same effective universe. Admission then applies
-the account policy: compact strategies retain their Hyro route for permanent
-assets and additionally fan out to Fundamo for assets in the effective universe,
-while Fundamo strategies are hard-routed to Fundamo. Candidate account metadata
-cannot override these routes.
-
-```text
-failed-break-v3                                  -> hyro    -> permanent assets
-failed-break-v3                                  -> fundamo -> effective watchlist universe
-bb-rsi-meanrev-v1                               -> hyro    -> permanent assets
-bb-rsi-meanrev-v1                               -> fundamo -> effective watchlist universe
-williams-fractal-scalp-v1                       -> hyro    -> permanent assets
-williams-fractal-scalp-v1                       -> fundamo -> effective watchlist universe
-ema9-adx-stochrsi-state-v1                      -> hyro    -> permanent assets
-ema9-adx-stochrsi-state-v1                      -> fundamo -> effective watchlist universe
-dual-zone-follower-v3                           -> fundamo -> effective watchlist universe
-dual-zone-short-follower-v3                     -> fundamo -> effective watchlist universe
-ema99-retest-adx-v1                             -> fundamo -> effective watchlist universe
-ema20-pullback-h4-trend-v1                      -> fundamo -> effective watchlist universe
-gold-trend-ema-bb-stoch-v1                      -> fundamo -> effective watchlist universe
-mtf-exhaustion-reversal-v1                      -> fundamo -> effective watchlist universe
-ema99-double-touch-stochrsi-state-v1            -> fundamo -> effective watchlist universe
-ema7-26-cross-hammer-shooting-star-1h-adx-v1    -> fundamo -> effective watchlist universe
-```
+All active strategies receive the same effective universe. Account capability and
+profile routing are applied by the venue executor, not by strategy admission.
 
 All strategies calculate candidates for every symbol in the subscription
-universe. The hard gate rejects compact candidates for non-permanent symbols
-before scoring and intent publication. Fundamo candidates are admitted for any
-asset in the cutoff-bound effective watchlist universe. If rotation is disabled
-or unavailable, the safe scope is permanent-only.
+universe. If rotation is disabled or unavailable, the safe scope is
+permanent-only. The executor applies its own profile capability gate before
+execution.
 
 ## Configuration
 

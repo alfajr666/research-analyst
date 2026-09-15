@@ -3,7 +3,7 @@
 ## Status
 
 Implementation specification. The strategy is enabled in the agreed portfolio
-rollout as a compact Hyro strategy. Runtime activation still requires a
+rollout as a legacy strategy. Runtime activation still requires a
 controlled service restart and post-restart verification.
 
 ## Identity and Scope

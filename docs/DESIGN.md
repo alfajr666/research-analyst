@@ -142,7 +142,7 @@ Mapping (internal α-event → executor intent):
 | `delivery_id` | `alpha_id` (stable; executor journal dedupes) |
 | `source` | `INTENT_SOURCE` (default `research-analyst`) |
 | `exchange_id` | `INTENT_EXCHANGE_ID` (default `bybit`) |
-| `account_id` | Policy-owned route; compact strategies fan out to `hyro` for permanent assets and `fundamo` for effective-universe assets, while Fundamo strategies are hard-routed to `fundamo`; otherwise `INTENT_ACCOUNT_ID` (default `hyro`) |
+| `account_id` | Executor-owned profile route; RA does not decide account capability or maintain account-specific symbol/strategy policy |
 | `asset` | `asset` |
 | `symbol` | `to_ccxt_perp_symbol(asset)` → `BTC/USDT:USDT` |
 | `direction` | `direction` upper (`long/bullish`→`LONG`, `short/bearish`→`SHORT`) |
@@ -172,8 +172,9 @@ enable the intended bus target with `INTENT_BUS_BYBIT_ENABLED` or
 `INTENT_BUS_PROPR_ENABLED`.
 
 Position management is handled by the standalone PM and executor repositories.
-This repository only publishes the validated intent and its producer-owned target;
-the executor remains strategy-dumb but safety-authoritative.
+This repository only publishes the validated strategy/symbol intent and its
+producer-owned exchange target; account capability and final profile admission
+belong to the venue executor, which remains strategy-dumb but safety-authoritative.
 
 ---
 
@@ -184,11 +185,10 @@ the executor remains strategy-dumb but safety-authoritative.
 - **Effective universe.** `ws_gateway` consumes the rotation feed's unexpired
   sticky watchlist plus `BTC`, `ETH`, `PAXG`, and `QQQUSDT`. Invalid or expired
   feeds fail closed to those permanent symbols.
-- **Account policy.** Compact strategies retain their Hyro route for the four
-  permanent assets and additionally fan out to Fundamo for every asset in the
-  cutoff-bound effective universe. Fundamo strategies admit every asset in that
-  universe. Candidate metadata and caller arguments cannot override either route.
-  This policy is checked during admission, not in strategy plugins.
+- **Account capability.** The Bybit executor owns profile admission. `bybit/hyro`
+  accepts only `BTC`, `ETH`, `PAXG`, and `QQQ` for any strategy; `bybit/fundamo`
+  accepts every strategy and every venue-admitted asset. Research Analyst does
+  not encode this policy in strategy plugins or candidate admission.
 - **Capacity.** The default 80-symbol effective-universe cap produces at most
   160 5m/markPrice streams (see `specs/ws-ingestion.md`).
 

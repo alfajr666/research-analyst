@@ -36,12 +36,11 @@ disagree or agree on the same symbol?**
 
 ## Scope
 
-This policy applies to every live strategy candidate. Compact strategies are
-hard-routed to Bybit Hyro and restricted to the four permanent assets. Fundamo
-strategies are hard-routed to Bybit Fundamo and may use the cutoff-bound effective
-universe. Candidate account metadata cannot override these routes. It applies
-before intent delivery. Advisory alpha events may retain candidates that do not
-become executor intents.
+This policy applies to every live strategy candidate. It validates strategy
+geometry and evidence before intent delivery; it does not select an account or
+define account capabilities. Bybit profile admission is owned by the executor
+under `specs/venue-owned-account-routing-v1.md`. Advisory alpha events may
+retain candidates that do not become executor intents.
 
 ## Candidate Contract
 

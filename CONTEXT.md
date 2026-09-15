@@ -18,12 +18,14 @@
 - **Strategy**: a symbol-dumb producer of candidates from the data delivered to
   it.
 - **Candidate**: a strategy's proposed trade, before execution admission.
-- **Symbol-account-strategy policy**: the rule defining which account may trade
-  which canonical symbol for a given strategy.
-- **Compact account policy**: compact strategies retain their Hyro route for the
-  four permanent assets and additionally fan out to Fundamo for assets in the
-  effective universe. Candidate metadata cannot override either route. Fundamo
-  strategies may trade any asset in the effective universe.
+- **Venue capability policy**: the executor-owned rule defining which configured
+  account may accept a canonical symbol and strategy. Research Analyst does not
+  own this policy.
+- **Bybit account profiles**: `bybit/hyro` accepts only `BTC`, `ETH`, `PAXG`,
+  and `QQQ`, with all strategies eligible; `bybit/fundamo` accepts every
+  strategy and symbol admitted by the venue. The executor is the final gate.
+- **Research intent**: a strategy/symbol thesis with exchange and target
+  metadata, but no producer-owned account capability decision.
 - **Hard gate**: a deterministic rejection that prevents a candidate from
   proceeding to scoring or execution publication.
 - **Market regime**: the current completed-bar behavior of an asset, such as

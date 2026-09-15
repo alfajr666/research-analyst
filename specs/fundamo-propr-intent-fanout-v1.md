@@ -2,12 +2,13 @@
 
 ## Status
 
-Implementation specification. No implementation is included in this document.
+Superseded for account routing by
+`specs/venue-owned-account-routing-v1.md`. The target fan-out remains an
+independent shared-bus concern; profile capability belongs to each executor.
 
 ## Goal
 
-Deliver every admitted intent from active, non-compact Fundamo strategy families to
-both independent execution accounts:
+Deliver every admitted intent to its enabled independent execution targets:
 
 ```text
 one admitted analyst event
@@ -36,9 +37,6 @@ In scope:
   - `ema99-double-touch-stochrsi-state-v1`
   - `ema7-26-cross-hammer-shooting-star-1h-adx-v1`
 
-Compact strategies are hard-routed to Bybit Hyro and are excluded from this
-fan-out. They may trade only `BTC`, `ETH`, `PAXG`, and `QQQ`; candidate metadata
-cannot override that route.
 - Shared SQLite intent-bus delivery records and receipts.
 - Propr consumer compatibility and end-to-end verification.
 - Per-target/account observability and idempotency.
@@ -50,7 +48,7 @@ Out of scope:
 - Direct writes to Propr filesystem inboxes.
 - Making Fundamo and Propr share position state.
 - Changing Propr SDK behavior or editing `propr_sdk`.
-- Routing unrelated Hyro strategies to Propr.
+- Routing account capabilities in Research Analyst.
 
 ## Current repository facts
 

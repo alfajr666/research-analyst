@@ -233,7 +233,7 @@ account_id: fundamo
 ```
 
 The effective rotation watchlist and permanent assets are supplied by the
-evaluator for each cutoff. This Fundamo strategy does not use a compact Hyro
+evaluator for each cutoff. This strategy does not use a Hyro-only
 asset set or a repository static symbol list.
 
 ## Logging and Observability
