@@ -512,6 +512,7 @@ class SharedComputationContext:
         self.stats = {
             "frame_hits": 0,
             "frame_misses": 0,
+            "frame_cover_hits": 0,
             "feature_hits": 0,
             "feature_misses": 0,
             "dmi_hits": 0,
@@ -550,9 +551,92 @@ class SharedComputationContext:
         if cached is not None:
             self.stats["frame_hits"] += 1
             return cached
+        covering = self._covering_frame(asset, interval, int(lookback_days), cutoff)
+        if covering is not None:
+            self.stats["frame_cover_hits"] += 1
+            self._frames[key] = covering
+            return covering
         self.stats["frame_misses"] += 1
         frame = self._load_sequential_frame(asset, interval, cutoff, lookback_days)
         self._frames[key] = frame
+        return frame
+
+    def _covering_frame(self, asset: str, interval: str, lookback_days: int,
+                        cutoff: datetime) -> pl.DataFrame | None:
+        """Serve a narrower window from an already-cached wider frame.
+
+        The evaluation preload warms the registered strategy lookback while
+        plugins consume their execution window; without this the same
+        asset/interval is re-read from SQLite once per lookback. Direct
+        1h/4h content is lookback-independent (fixed native seed depth), so
+        it is shared as-is. A cached 5m frame filtered to the requested
+        window holds exactly the rows a fresh load would return:
+        per-timestamp preference is deterministic, SQL bounds are
+        inclusive, and reusing the first read of an evaluation adds no new
+        staleness assumption beyond what exact-key caching already has.
+        Derived 15m frames are rebuilt from the cached 5m base in
+        _load_sequential_frame, never by truncating resampled buckets.
+        """
+        best_lookback: int | None = None
+        for cached_asset, cached_interval, cached_lookback in self._frames:
+            if cached_asset != asset or cached_interval != interval:
+                continue
+            if int(cached_lookback) <= int(lookback_days):
+                continue
+            if best_lookback is None or int(cached_lookback) < best_lookback:
+                best_lookback = int(cached_lookback)
+        if best_lookback is None:
+            return None
+        frame = self._frames[(asset, interval, best_lookback)]
+        if interval in {"1h", "4h"}:
+            return frame
+        if interval != "5m" or "timestamp" not in frame.columns:
+            return None
+        start = cutoff - timedelta(days=int(lookback_days))
+        return frame.filter(pl.col("timestamp") >= start)
+
+    def _derive_15m_from_cached_5m(self, asset: str, cutoff: datetime,
+                                   lookback_days: int) -> pl.DataFrame | None:
+        """Resample the cached 5m base instead of re-reading it from SQLite.
+
+        The fresh path queries this exact 5m window and runs the identical
+        resample, so filtering the already-preferred cached base to that
+        window reproduces the fresh 15m frame exactly while skipping the
+        SQL. An empty cached base reproduces the fresh empty result.
+        """
+        base_needed = max(int(lookback_days), 16)
+        best: int | None = None
+        for cached_asset, cached_interval, cached_lookback in self._frames:
+            if cached_asset != asset or cached_interval != "5m":
+                continue
+            if int(cached_lookback) < base_needed:
+                continue
+            if best is None or int(cached_lookback) < best:
+                best = int(cached_lookback)
+        if best is None:
+            return None
+        base = self._frames[(asset, "5m", best)]
+        if "timestamp" not in base.columns:
+            return None
+        window_start = cutoff - timedelta(days=base_needed)
+        frame = resample_ohlcv(base.filter(pl.col("timestamp") >= window_start), "15m")
+        cache_key = (
+            self.market_db_path, self.feed_id, self.source_contract, asset, "15m",
+            int(lookback_days), None,
+        )
+        _SEQUENTIAL_FRAME_CACHE[cache_key] = {
+            "cutoff": cutoff,
+            "frame": frame,
+            "feed_id": self.feed_id,
+            "source_contract": self.source_contract,
+            "source_high_water": _source_high_water(
+                self.market_conn, asset, "15m", cutoff,
+                cutoff - timedelta(days=int(lookback_days)),
+            ),
+        }
+        while len(_SEQUENTIAL_FRAME_CACHE) > _SEQUENTIAL_FRAME_CACHE_LIMIT:
+            _SEQUENTIAL_FRAME_CACHE.pop(next(iter(_SEQUENTIAL_FRAME_CACHE)))
+        self.stats["frame_cover_hits"] += 1
         return frame
 
     def _load_sequential_frame(self, asset: str, interval: str, cutoff: datetime,
@@ -562,6 +646,10 @@ class SharedComputationContext:
         if direct is not None and interval in {"1h", "4h"}:
             self.stats["sequential_misses"] += 1
             return direct.load(asset, interval, lookback_days)
+        if interval == "15m":
+            derived = self._derive_15m_from_cached_5m(asset, cutoff, int(lookback_days))
+            if derived is not None:
+                return derived
         cache_key = (
             self.market_db_path, self.feed_id, self.source_contract, asset, interval,
             int(lookback_days), self.htf_cutoff if interval in {"1h", "4h"} else None,

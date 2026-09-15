@@ -239,6 +239,22 @@ once per asset, interval, cutoff, and feature contract:
 - regime numerical inputs;
 - structural ATR and bar-validity columns.
 
+Requests for the same asset, interval, and cutoff at a narrower lookback are
+served from a cached wider frame when the equivalence is exact:
+
+- direct 1h/4h frames are shared as-is; their content is lookback-independent
+  (fixed native seed depth);
+- a cached 5m frame filtered to the requested window holds exactly the rows a
+  fresh load would return (deterministic per-timestamp preference, inclusive
+  SQL bounds, first read of the evaluation);
+- 15m frames are never served by truncating resampled buckets; they are
+  resampled from the cached 5m base over the exact fresh window, skipping
+  only the SQL.
+
+Covering reuse is observed as `frame_cover_hits` in the computation stats. As
+with all Level 1 reuse, it is an optimization; the served frames are
+bit-for-bit identical to fresh loads.
+
 Strategies declare their required frames and feature specifications before
 execution. The context unions compatible requirements and computes shared
 features once. A strategy must not recompute a feature under a different local
