@@ -33,18 +33,10 @@ from structural_stop import (
     _normalise_closed_bar_timestamp,
 )
 
-FUNDAMO_STRATEGY_IDS = frozenset((
-    "dual-zone-follower-v3",
-    "dual-zone-short-follower-v3",
-    "ema99-retest-adx-v1",
-    "ema20-pullback-h4-trend-v1",
-    "ema-stack-15m-adx-stochrsi-5m-v1",
-    "gold-trend-ema-bb-stoch-v1",
-    "mtf-exhaustion-reversal-v1",
-    "trend-wall-v1",
-    "ema99-double-touch-stochrsi-state-v1",
-    "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
-))
+# Mirror of config.FUNDAMO_STRATEGY_IDS (legacy set plus the vectorbt
+# engine-handoff ports). A stale hardcoded copy here published port-strategy
+# intents for non-permanent assets to bybit/hyro (2026-09-15).
+FUNDAMO_STRATEGY_IDS = frozenset(getattr(config, "FUNDAMO_STRATEGY_IDS", ()))
 from trade_admission import (
     canonical_asset,
     candidate_admission_fingerprint,
@@ -265,6 +257,24 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         freshness = proof.get("data_freshness_seconds")
         if not isinstance(freshness, (int, float)) or not math.isfinite(freshness) or freshness < 0:
             return False, "score proof freshness is invalid"
+        # Re-derive the symbol-account policy at the handoff seam (mirrors the
+        # schema-v1 check). A score result is eligible only for its admitted
+        # account/asset pair; BIRB/USDT reached bybit/hyro on 2026-09-15 when a
+        # stale strategy list resolved a Fundamo port to the Hyro default and
+        # the v2 path skipped this re-verification.
+        symbol_policy = admit_symbol_account(
+            {
+                "strategy_id": metadata.get("strategy_id"),
+                "asset": intent.get("asset"),
+                "_execution_account": proof.get("resolved_account"),
+            },
+            effective_universe=proof.get("effective_universe_assets"),
+            effective_universe_version=proof.get("effective_universe_version"),
+        )
+        if symbol_policy["symbol_account_gate"] != "pass":
+            return False, "score proof symbol-account policy is invalid"
+        if intent.get("exchange_id") != "bybit" or intent.get("account_id") != symbol_policy["resolved_account"]:
+            return False, "intent routing is inconsistent with admission policy"
         return True, ""
     if proof.get("hard_gate") != "pass":
         return False, "admission hard gate did not pass"

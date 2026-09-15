@@ -200,6 +200,10 @@ def _multi_candidate(targets, strategy_id="bb-tp-race-locked-v1"):
     event = _candidate(95.0)
     event["strategy_id"] = strategy_id
     event["targets"] = targets
+    # Fundamo-routed port strategies require the effective watchlist universe,
+    # mirroring the production pipeline (trade_quality.resolve / strategy_plugins).
+    event["effective_universe_assets"] = ["BTC"]
+    event["effective_universe_version"] = "feed-test"
     return event
 
 

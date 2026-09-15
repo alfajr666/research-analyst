@@ -259,6 +259,43 @@ def test_score_eligible_compact_fundamo_handoff_preserves_account_fingerprint():
     assert ok, reason
 
 
+def test_vectorbt_port_strategies_route_to_fundamo():
+    """Regression: stale strategy lists resolved the ports to bybit/hyro."""
+    from trade_admission import resolved_account
+
+    for strategy in (
+        "bb-tp-race-locked-v1", "bb-squeeze-trend-v1", "kama-trend-following-v1",
+        "macd-ema-v1", "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5",
+    ):
+        assert resolved_account(strategy) == "fundamo", strategy
+        intent = build_executor_intent(_alpha_event(strategy_id=strategy, asset="BTC"))
+        assert (intent["exchange_id"], intent["account_id"]) == ("bybit", "fundamo"), strategy
+
+
+def test_schema_v2_handoff_rejects_non_permanent_asset_on_hyro():
+    """Regression: BIRB/USDT reached bybit/hyro via macd-ema-v1 on 2026-09-15.
+
+    The schema-v2 verify path skipped the symbol-account re-verification that
+    schema-v1 performs, so a stale routing default published the delivery.
+    """
+    event = _alpha_event(
+        strategy_id="macd-ema-v1",
+        asset="BIRB",
+        candidate_id="birb-hyro-candidate",
+        valid_until="2099-01-01T00:05:00Z",
+        data_freshness_seconds=1.0,
+    )
+    admission = score_candidate(event, regime_mode="off")
+    assert admission["score_decision"] == "eligible"
+    # Reproduce the incident envelope: proof and envelope both route to hyro.
+    admission["resolved_account"] = "hyro"
+    intent = build_executor_intent(event, admission=admission)
+    assert intent["account_id"] == "hyro"
+    ok, reason = verify_intent_admission(intent)
+    assert not ok
+    assert "symbol-account policy is invalid" in reason
+
+
 def test_envelope_carries_full_native_array_and_venue_tp():
     event = _alpha_event(strategy_id="bb-tp-race-locked-v1", targets=[110.0, 120.0])
     intent = build_executor_intent(event)
