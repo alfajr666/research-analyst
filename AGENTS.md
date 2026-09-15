@@ -302,6 +302,17 @@ Research Analyst publishes validated trade intents only and does not run a PM
 loop or write executor position-decision files. The executor remains
 authoritative for venue state, protection, hard exits, and execution.
 
+## Notification Ownership
+
+Research Analyst never sends fills, positions, or execution confirmations.
+Its Discord surface is advisory raw-signal batches only (fixed-width table,
+display-truncated strategy names, canonical IDs unchanged). Trade entry/exit
+cards belong exclusively to the venue executors and are sent only from
+venue-confirmed state. Strategy evaluation is allowlist-gated
+(`STRATEGY_ENABLED_IDS`, default the 7 vectorbt engine-handoff ports);
+legacy/retired plugins stay registered for replay/research and can only emit
+by explicit opt-in.
+
 ## Operations
 
 Production services are managed by `oxmgr`. Do not start gateway, orchestrator,
