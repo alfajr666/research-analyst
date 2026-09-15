@@ -76,6 +76,11 @@ def _record_message(is_bar: bool = False) -> None:
         _HEALTH["last_bar_at"] = now
 
 
+def _mark_connection_healthy() -> None:
+    """Clear a transient connection error after a reconnect succeeds."""
+    _HEALTH["last_error"] = None
+
+
 async def health_monitor() -> None:
     while True:
         last_bar = _HEALTH["last_bar_at"]
@@ -799,6 +804,7 @@ async def _bybit_conn(topics: List[str], queue: asyncio.Queue, source: str) -> N
             async with websockets.connect(BYBIT_WS_URL, ping_interval=15, ping_timeout=10) as ws:
                 backoff = 1.0
                 _HEALTH["active_connections"] += 1
+                _mark_connection_healthy()
                 await ws.send(json.dumps({"op": "subscribe", "args": topics}))
 
                 async def heartbeat() -> None:

@@ -21,6 +21,12 @@ def test_plan_bybit_streams_shards():
     assert shards[0][0] == "kline.5.BASE0USDT"
 
 
+def test_successful_connection_clears_transient_error():
+    wsg._HEALTH["last_error"] = "timed out during opening handshake"
+    wsg._mark_connection_healthy()
+    assert wsg._HEALTH["last_error"] is None
+
+
 def test_gateway_disabled_rotation_mode_is_permanent_only(monkeypatch):
     monkeypatch.setattr(config, "SYMBOL_ROTATION_ENABLED", False)
     monkeypatch.setattr(config, "EXECUTOR_SNAPSHOT_DIR", "")
