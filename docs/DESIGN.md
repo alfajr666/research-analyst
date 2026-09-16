@@ -310,9 +310,11 @@ not run in a live worker. The installed compaction schedule is Sunday at
 
 | Data | Keep | Rationale |
 | --- | --- | --- |
-| 5m / 15m (resampled) | 30 / 90 days | main evaluation horizon |
-| HTF 1h / 4h bars | 365 days | regime and strategy context |
+| 5m / 15m (resampled) | 21 / 30 days | covers the 20-day max declared strategy lookback + 1d margin |
+| Legacy 1h / 4h residues | 30 / 45 days | drain-only; HTF context comes from regime direct history |
 | `structure_zones` | no persisted rows | recomputed from bars when needed |
+
+Defaults are locked by `specs/resource-footprint-retention-v1.md`.
 The emit-gate (`data_purity`) and `cutoff_runs` finalization must remain intact
 through pruning.
 
@@ -369,7 +371,7 @@ through pruning.
      are **retired** — kept registered but defaulted to `inactive` so they no longer evaluate; they can
     be re-activated via the flag. Hard-deletion of the legacy code is a separate, optional step.
  7. **Tiered prune** ✅ — `prune_db` now deletes `source_observations` per interval via
-     `config.PRUNE_INTERVAL_DAYS` (5m=30d, 15m=90d, 1h/4h=365d; `0` disables a tier).
+     `config.PRUNE_INTERVAL_DAYS` (5m=21d, 15m=30d, 1h=30d, 4h=45d; `0` disables a tier).
     Uncovered intervals fall back to the legacy `futures_retention_days`.
   9. **Performance rotation** ✅ — the symbol-rotation worker publishes the
       versioned feed consumed by `ws_gateway`; the gateway retains permanent

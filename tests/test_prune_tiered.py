@@ -29,13 +29,13 @@ class TieredPruneTests(unittest.TestCase):
         conn = config.get_db_connection(read_only=False, db_path=self.db)
         try:
             # old vs recent for each tier
-            _insert_obs(conn, "1m", 10)   # beyond 7d -> prune
+            _insert_obs(conn, "1m", 10)   # uncovered tier; fallback retention prunes
             _insert_obs(conn, "1m", 1)    # keep
-            _insert_obs(conn, "5m", 40)   # beyond 30d -> prune
+            _insert_obs(conn, "5m", 40)   # beyond PRUNE_5M_DAYS -> prune
             _insert_obs(conn, "5m", 5)    # keep
-            _insert_obs(conn, "15m", 100) # beyond 90d -> prune
+            _insert_obs(conn, "15m", 100) # beyond PRUNE_15M_DAYS -> prune
             _insert_obs(conn, "15m", 10)  # keep
-            _insert_obs(conn, "1h", 400)  # beyond 365d -> prune
+            _insert_obs(conn, "1h", 400)  # beyond PRUNE_1H_DAYS -> prune
             _insert_obs(conn, "1h", 10)   # keep
             _insert_obs(conn, "1d", 100)  # uncovered -> fallback futures_retention_days=5 -> prune
             _insert_obs(conn, "1d", 1)    # keep (fallback)

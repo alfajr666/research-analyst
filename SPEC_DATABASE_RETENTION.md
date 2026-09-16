@@ -22,21 +22,30 @@ most 5,000 rows, commits immediately, yields between batches, and uses a passive
 WAL checkpoint. A pass may drain an existing backlog through multiple short
 batches. Active, pending, running, and retryable work is preserved.
 
-Default windows are:
+Default windows are locked by `specs/resource-footprint-retention-v1.md` and
+sized to the live consumer set rather than research convenience. The gateway
+persists only 5m (streamed) and 15m (derived) bars; strategy and admission
+HTF context comes exclusively from regime-owned direct history.
 
 | Store/table family | Retention |
 | --- | ---: |
 | Market option-chain snapshots | 3 days |
-| Market 5m / 15m bars | 30 / 90 days |
-| Market 1h / 4h bars | 365 days |
-| Market discovery / watchlist history | 90 / 365 days |
+| Market 5m bars | 21 days |
+| Market 15m bars (derived) | 30 days |
+| Market legacy 1h / 4h residues | 30 / 45 days (drain-only; no live reader) |
+| Market discovery / watchlist history | 90 days |
+| Market legacy regime rows | 30 days |
 | Analyst feature snapshots | 2 days |
-| Raw signals and status history | 90 days |
+| Raw signals and status history | 3 days |
 | Evaluation coverage | 7 days |
-| Candidate ledger | 90 days |
-| Alpha, PM, delivery, and research audit data | 30-365 days by table |
-| Regime scores / gate decisions | 30 / 90 days |
+| Candidate ledger | 7 days |
+| Alpha, PM, delivery, and research audit data | 7-30 days by table |
+| Regime scores / gate decisions | 14 / 30 days |
 | Direct regime 1h / 4h seed history | 3 / 14 days minimum |
+
+The 5m/15m windows cover the maximum declared strategy lookback (20 days)
+plus one day: retention must never truncate a requested frame. See the
+retention-floor invariant in `specs/resource-footprint-retention-v1.md` §4.1.
 
 The legacy analyst `structure_zones` table is retained in the schema for
 compatibility but is no longer written or read. Retention drains any remaining
