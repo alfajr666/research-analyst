@@ -892,6 +892,27 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
             )
         except Exception as exc:
             print(f"trade-quality market context unavailable for {asset}: {exc}")
+    derivatives_contexts = {}
+    if getattr(config, "OI_SHADOW_ENABLED", False) and candidates:
+        try:
+            from open_interest import collect_candidate_oi, load_observations
+            conn_oi = config.get_db_connection(db_path=db_path)
+            try:
+                collect_candidate_oi(
+                    conn_oi,
+                    [canonical_asset(candidate.get("asset")) for candidate in candidates],
+                    cutoff,
+                )
+                conn_oi.commit()
+                for asset in {canonical_asset(candidate.get("asset")) for candidate in candidates}:
+                    native = f"{asset}USDT"
+                    observations = load_observations(conn_oi, "bybit", native, "5m", cutoff)
+                    closes = [float(row.get("close")) for row in (market_bars_by_asset.get(asset) or []) if row.get("close") is not None]
+                    derivatives_contexts[asset] = {"observations": observations, "price_closes": closes[-13:]}
+            finally:
+                conn_oi.close()
+        except Exception as exc:
+            print(f"trade-quality OI context unavailable: {exc}")
     decision = resolve(
         candidates,
         structural_contexts=structural_contexts,
@@ -900,6 +921,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         now=now,
         effective_universe=attempted_symbols,
         effective_universe_version=feed_metadata.get("effective_universe_version"),
+        derivatives_contexts=derivatives_contexts,
     )
     structural_15m_enabled = bool(getattr(config, "STRUCTURAL_15M_ZONES_ENABLED", False))
     timeframe_counts = {timeframe: 0 for timeframe in ("4h", "1h", "15m", "none")}
@@ -967,6 +989,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         asset_key = canonical_asset(event.get("asset"))
         event["_regime_decision"] = (regime_scope.get("decisions") or {}).get(asset_key)
         event["structural_context"] = structural_contexts.get(canonical_asset(event.get("asset")))
+        event["_derivatives_context"] = derivatives_contexts.get(canonical_asset(event.get("asset")))
         context = event["structural_context"] or {}
         selected_zone = next(
             (zone for zone in context.get("zones", [])

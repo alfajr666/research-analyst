@@ -196,6 +196,7 @@ def prune_analyst_db(
         "alpha_confidence_observations": ("observed_at", "ANALYST_EVENT_RETENTION_DAYS"),
         "alpha_event_status_history": ("recorded_at", "ANALYST_EVENT_RETENTION_DAYS"),
         "entry_policy_observations": ("observed_at", "ANALYST_EVENT_RETENTION_DAYS"),
+        "oi_observations": ("source_at", "OI_RETENTION_DAYS"),
     }
     for table, (column, setting) in direct_retention.items():
         predicate = f"{column} < ?"

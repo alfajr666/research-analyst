@@ -116,7 +116,8 @@ returns `value=0.5`, `status=unavailable`.
 
 ## Weighting and acceptance
 
-OI initially persists with weight `0.0`; operational scores and verdicts remain
+OI initially persists with weight `0.0` and `OI_SHADOW_ENABLED=false` by default;
+operational scores and verdicts remain
 unchanged. Its presence bumps score policy/profile versions for provenance.
 
 If promoted, OI weight must not exceed `0.08`. Take weight primarily from RVOL

@@ -22,6 +22,7 @@ QUALITY_COMPONENTS = (
     "rvol",
     "funding_overheating",
     "contradiction",
+    "oi_participation",
 )
 
 
@@ -40,6 +41,7 @@ NEUTRAL_WEIGHTS = {
     "rvol": 0.0875,
     "funding_overheating": 0.0875,
     "contradiction": 0.0875,
+    "oi_participation": 0.0,
 }
 
 PROFILE_WEIGHTS: dict[str, dict[str, float]] = {
@@ -59,6 +61,7 @@ PROFILE_WEIGHTS: dict[str, dict[str, float]] = {
         "rvol": 0.126,
         "funding_overheating": 0.056,
         "contradiction": 0.07,
+        "oi_participation": 0.0,
     },
     "mean_reversion": {
         "identity_validity": 0.05,
@@ -75,6 +78,7 @@ PROFILE_WEIGHTS: dict[str, dict[str, float]] = {
         "rvol": 0.07,
         "funding_overheating": 0.126,
         "contradiction": 0.084,
+        "oi_participation": 0.0,
     },
     "reversal": {
         "identity_validity": 0.05,
@@ -91,6 +95,7 @@ PROFILE_WEIGHTS: dict[str, dict[str, float]] = {
         "rvol": 0.112,
         "funding_overheating": 0.126,
         "contradiction": 0.07,
+        "oi_participation": 0.0,
     },
 }
 

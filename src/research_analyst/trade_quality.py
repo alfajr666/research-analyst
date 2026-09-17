@@ -65,11 +65,12 @@ def score_candidate(
     regime_decision: Mapping[str, Any] | None = None,
     regime_mode: str | None = None,
     now: datetime | None = None,
+    derivatives_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return one immutable, auditable score result for a candidate."""
     mode = str(regime_mode or getattr(config, "REGIME_SESSION_MODE", "off")).lower()
     family = str(candidate.get("market_family") or "unknown").lower()
-    context = ScoreContext(candidate, structural_context, market_bars, regime_decision, mode, now)
+    context = ScoreContext(candidate, structural_context, market_bars, regime_decision, mode, now, derivatives_context)
     observations = [component(context).as_dict() for component in COMPONENTS]
     readiness = _regime_readiness(context)
     if readiness is not None:
@@ -161,6 +162,7 @@ def resolve(
     market_bars_by_asset: dict[str, Any] | None = None,
     regime_scope: Mapping[str, Any] | None = None,
     now: datetime | None = None,
+    derivatives_contexts: dict[str, Mapping[str, Any]] | None = None,
     effective_universe: Iterable[object] | None = None,
     effective_universe_version: object | None = None,
 ) -> dict[str, Any]:
@@ -187,6 +189,7 @@ def resolve(
             regime_decision=decision,
             regime_mode=mode,
             now=now,
+            derivatives_context=(derivatives_contexts or {}).get(asset),
         )
         result["entry_policy_status"] = "shadow_would_block" if policy.get("decision") == "would_block" else policy.get("decision")
         result["entry_policy_reasons"] = policy.get("reasons", [])

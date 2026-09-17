@@ -98,6 +98,7 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         regime_mode=admission_event.get("_regime_mode") or (
             "off" if not (event.get("_score_result") or event.get("_admission_result")) else None
         ),
+        derivatives_context=admission_event.get("_derivatives_context"),
     )
     complete_candidate = _is_complete_candidate(event)
     if raw_id and complete_candidate:

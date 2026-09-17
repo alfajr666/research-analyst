@@ -50,6 +50,8 @@ if RAW_SIGNAL_DISCORD_BATCH_MINUTES <= 0 or 60 % RAW_SIGNAL_DISCORD_BATCH_MINUTE
 # Config Settings
 MARKET_DB_PATH = os.getenv("MARKET_DB_PATH", str(DEFAULT_DB_DIR / "market.sqlite3"))
 ANALYST_DB_PATH = os.getenv("ANALYST_DB_PATH", str(DEFAULT_DB_DIR / "analyst.sqlite3"))
+OI_RETENTION_DAYS = int(os.getenv("OI_RETENTION_DAYS", "30"))
+OI_SHADOW_ENABLED = os.getenv("OI_SHADOW_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 ENTRY_POLICY_MODE = os.getenv("ENTRY_POLICY_MODE", "shadow").strip().lower()
 if ENTRY_POLICY_MODE not in {"off", "shadow", "enforce"}:
     raise ValueError("ENTRY_POLICY_MODE must be off, shadow, or enforce")
@@ -681,6 +683,8 @@ def init_analyst_db(db_path: str | Path | None = None):
 
     conn = get_db_connection(db_path=target)
     try:
+        from open_interest import init_schema as init_oi_schema
+        init_oi_schema(conn)
         conn.execute("""CREATE TABLE IF NOT EXISTS cutoff_runs (
             cutoff_id VARCHAR PRIMARY KEY, cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
             status VARCHAR NOT NULL, started_at TIMESTAMP WITH TIME ZONE NOT NULL,

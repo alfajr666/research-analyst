@@ -50,6 +50,7 @@ class ScoreContext:
     regime_decision: Mapping[str, Any] | None = None
     regime_mode: str = "off"
     now: datetime | None = None
+    derivatives_context: Mapping[str, Any] | None = None
 
 
 def _finite(value: Any) -> bool:
@@ -378,6 +379,19 @@ def contradiction(context: ScoreContext) -> ComponentObservation:
     return _observation("contradiction", "quality", value, status, "opposing structural context evaluated", raw_inputs={"opposite_distance_atr": opposite})
 
 
+def oi_participation(context: ScoreContext) -> ComponentObservation:
+    from open_interest import oi_participation_score
+
+    derivatives = context.derivatives_context or {}
+    observations = derivatives.get("observations") if isinstance(derivatives, Mapping) else None
+    price_closes = derivatives.get("price_closes") if isinstance(derivatives, Mapping) else None
+    result = oi_participation_score(context.candidate, observations or [], price_closes)
+    return _observation(
+        "oi_participation", "quality", result["value"], result["status"], result["reason"],
+        raw_inputs={key: result[key] for key in ("observations", "oi_change", "price_change") if key in result},
+    )
+
+
 COMPONENTS: tuple[Callable[[ScoreContext], ComponentObservation], ...] = (
     identity_validity,
     price_geometry,
@@ -394,4 +408,5 @@ COMPONENTS: tuple[Callable[[ScoreContext], ComponentObservation], ...] = (
     rvol,
     funding_overheating,
     contradiction,
+    oi_participation,
 )
