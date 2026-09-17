@@ -21,8 +21,7 @@ completed 5m inputs with explicit 5m provenance.
 
 ### Out of scope
 
-- Executor-owned 1m position snapshots consumed by standalone-llm-pm. They are an
-  independent executor handoff contract and remain unchanged.
+- Executor-owned position snapshots and all downstream position management.
 - Regime-owned direct 1h/4h history.
 - Hybrid 1h/4h seed and canonical 5m-tail behavior.
 - Structural admission, executor sizing, protection, fills, and receipts.
@@ -43,9 +42,8 @@ completed 5m inputs with explicit 5m provenance.
    them to 5m.
 7. Existing 1m trigger files are ignored by pending/claim/recovery scans and
    are not deleted by the service.
-8. standalone-llm-pm continues to read executor 1m position snapshots.
-9. Account-symbol admission remains downstream of strategy evaluation.
-10. Strategy IDs remain stable for the configured production handoff, while
+8. Account-symbol admission remains downstream of strategy evaluation.
+9. Strategy IDs remain stable for the configured production handoff, while
     their `plugin_version` and feature provenance advance to `v2` where the
     strategy semantics changed.
 
@@ -111,13 +109,12 @@ signals remain historical records; new signals identify the v2 plugin version.
 ## 5. Rollout and recovery
 
 1. Deploy code and config defaults together.
-2. Restart the managed gateway, orchestrator, regime worker, symbol rotation
-   worker through `oxmgr`; standalone-llm-pm is managed separately.
+2. Restart the managed gateway, orchestrator, regime worker, and symbol rotation
+   worker through `oxmgr`.
 3. Verify the gateway reports only 5m market topics and fresh 5m bars.
 4. Verify the trigger spool and orchestrator report only 5m evaluations.
 5. Verify each rewritten strategy's required intervals contain no 1m entry.
-6. Keep executor 1m snapshots and standalone PM decisions operationally unchanged.
-7. If rollback is required, restore the prior code and configuration; do not
+6. If rollback is required, restore the prior code and configuration; do not
    rewrite or delete historical 1m observations or trigger files.
 
 ## 6. Acceptance criteria
@@ -129,5 +126,4 @@ signals remain historical records; new signals identify the v2 plugin version.
   emit v2 provenance.
 - 1m trigger files are ignored and never executed.
 - Derived 15m/1h/4h and hybrid HTF tests remain green.
-- standalone-llm-pm continues to process executor 1m snapshots.
 - Full unit and integration test suites pass.

@@ -32,8 +32,8 @@ completed market cutoff
   -> hard admission and clash resolution
   -> selected alpha event
   -> alpha outbox
-  -> public message publisher
-  -> optional executor intent delivery
+  -> TradeIntent construction
+  -> shared-bus publication
 ```
 
 The strategy plugin remains the producer of the market thesis. The publisher
@@ -101,7 +101,7 @@ The executor continues to own:
 - Sizing, leverage, and portfolio risk.
 - Fill and execution receipts.
 
-Confidence, calibrated or otherwise, must not alter an executor intent's:
+Confidence, calibrated or otherwise, must not alter a TradeIntent's:
 
 - Entry, stop, target, or validity window.
 - Direction or strategy identity.
@@ -120,7 +120,7 @@ Public alpha messages must not display:
 - `confidence`;
 - `confidence_status`;
 - a derived confidence percentage;
-- an LLM confidence percentage.
+- a model-generated confidence percentage.
 
 The internal fields remain persisted. Removing them from the message does not
 remove them from the event schema or audit trail.
@@ -170,10 +170,10 @@ identifiable.
 
 ## 4. Cross-Producer Calibration Architecture
 
-### 4.1 Shared data, not shared intent bus
+### 4.1 Shared data, not the TradeIntent bus
 
 Calibration must support events from multiple producers, but it must not use
-the executor intent bus as its primary data source.
+the shared TradeIntent bus as its primary data source.
 
 The intent bus is unsuitable as the calibration source because it can omit:
 
@@ -206,7 +206,7 @@ The calibrator is a separate scheduled process or command. It must:
 - Never write to the orchestrator-owned analyst database.
 - Own its separate calibration database or artifact directory.
 - Never run inside the five-minute orchestrator call stack.
-- Never make a network or LLM call on the evaluation path.
+- Never make a network or model call on the evaluation path.
 
 The recommended storage is:
 
@@ -331,22 +331,11 @@ confidence_status = calibrated_v1
 Only then may a numeric confidence be shown publicly, together with the model
 version and enough sample context to prevent false precision.
 
-## 5. LLM Boundary
+## 5. Deterministic Boundary
 
-An LLM is not a confidence calibrator.
-
-LLM review may later provide separate advisory fields such as:
-
-- `support`;
-- `caution`;
-- `oppose`;
-- rationale;
-- counter-evidence;
-- data gaps;
-- delivery priority.
-
-LLM output must not modify deterministic confidence, promote a calibration
-version, change an event, suppress admission, or alter an executor intent.
+Analyst-local model review is out of scope. Only versioned offline calibration
+artifacts may affect a future confidence mapping, and they must never change an
+event, suppress admission, or alter a TradeIntent.
 
 ## 6. Failure Behavior
 
@@ -360,7 +349,7 @@ version, change an event, suppress admission, or alter an executor intent.
 ## 7. Acceptance Criteria
 
 - The live five-minute evaluation path has no dependency on the calibrator
-  process, calibration database, or LLM.
+  process, calibration database, or model service.
 - Both producers can contribute events without sharing executor-bus ownership.
 - Candidate outcomes are reproducible from point-in-time event and market data.
 - Strategy, channel, direction, and producer identity remain queryable.
@@ -383,4 +372,4 @@ The following remains intentionally undecided:
 - the promotion thresholds;
 - whether and how calibrated confidence is displayed publicly.
 
-No LLM-generated confidence is authorized by this specification.
+No model-generated confidence is authorized by this specification.

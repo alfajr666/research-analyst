@@ -14,7 +14,7 @@ The policy follows the option-scanner retention contract while respecting the
 analyst's three database ownership boundaries. Operational intent, delivery,
 position, fill, and outcome records are not removed merely to reduce file size.
 Recomputable market snapshots and analyst materializations may have explicit
-age-based retention; LLM, regime, and research audit records use longer,
+age-based retention; regime and deterministic audit records use longer,
 configurable windows.
 
 Online cleanup runs every six hours by default. Each delete statement removes at

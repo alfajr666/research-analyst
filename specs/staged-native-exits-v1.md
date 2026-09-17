@@ -5,32 +5,17 @@ implemented in the shared bus package (`staged_native_targets` forwarding in
 `producer_adapters.build_research_analyst_delivery`, price-list
 `hints.targets` plus full-fidelity `hints.native_targets` and
 `take_profit_mode` passthrough on the Propr path; Bybit path already forwards
-the envelope verbatim). PM §4 partially implemented in `llm-position-manager`
-(intent `native_targets` normalization, bus ingestion from top-level
-`targets`/`hints.native_targets`/`hints.targets`, exposure in the provider
-payload via `intent.to_dict()`; execution semantics unchanged — single venue
-TP remains the backstop). Per-level NEAR_TP completion flags and per-level
-idempotency remain normative-deferred. Executor §5 unchanged (no change
-required under venue-TP-furthest).
+the envelope verbatim). Downstream position-management and execution semantics
+are outside Research Analyst; the single venue TP remains the executor
+backstop. Per-level completion and idempotency are downstream concerns.
 
 ## 1. Background
 
-Research Analyst intents carry a single take-profit: the first native strategy
-target when present, else the 2R producer fallback (`derive_2r_target`). Multi-level
-native exits (`bb-tp-race-locked-v1` tp1/tp2 ATR bracket) lose every level past the
-first at admission, and the standalone PM can only manage a single
-`original_target` (one NEAR_TP scale-out). The venue TP, the RA default TP, and
-the strategy-native scale-out levels must be distinct, auditable fields so each
-owner (RA, executor, PM) acts on the right one:
-
-- RA produces intents: entry, SL, venue TP (2R default), native `targets[]`.
-- Executor executes: entry, SL, one venue TP. No exit discretion.
-- PM manages: staged scale-outs at native levels, time exits, adverse-TA exits.
-  PM decisions stay advisory; the executor validates. Venue SL/TP remain the
-  hard safety net and are never transferred to PM.
-
-The 2R default is retained. The standalone PM moves profit-taking higher via
-native levels; the RA default is not raised.
+Research Analyst previously collapsed multi-level strategy targets to one
+take-profit. This contract preserves the full native target array through
+admission and the shared-bus TradeIntent. The 2R producer fallback remains for
+strategies without a native target. Execution and staged-exit behavior are
+downstream and outside this repository.
 
 ## 2. RA contract (normative, implemented)
 
@@ -69,7 +54,7 @@ geometry-checked only (a farther level trivially clears a nearer level's RR).
 
 ### 2.4 Executor envelope
 
-`build_executor_intent` emits:
+`build_trade_intent` emits:
 
 - `take_profit`: venue TP (2.2).
 - `targets`: full admitted `[{price, fraction}]` array, venue level last.
@@ -109,7 +94,7 @@ those strategies restart at this contract version.
   unchanged (no fingerprint or idempotency drift).
 - Ingestion (`pm/feeds._intent_from_delivery`) reads top-level `targets`
   (Bybit verbatim path), `hints.native_targets` (Propr path), or legacy
-  `hints.targets` prices; the array flows into the LLM context via
+  `hints.targets` prices; downstream consumers receive the array through
   `intent.to_dict()` as advisory evidence.
 - NEAR_TP decisions carry `target_levels` (Decision field, engine-attached
   from the matched intent) so venues can fire per-level reductions.
@@ -145,17 +130,5 @@ the full native array, venue TP is furthest-native, TP1 min-RR exemption is
 recorded, envelopes carry `targets[]` with per-strategy `take_profit_mode`.
 Replay baselines for multi-target strategies (`bb-tp-race-locked-v1`)
 restart at this contract version; single-target fingerprints are unchanged.
-Downstream bus/PM/executor changes are pending; until then the bus forwards
-the envelope verbatim and the venue TP behaves as the single backstop.
-
-2026-09-15 transport slice: shared-bus Propr adapter forwards real staged
-levels (`hints.targets` prices + `hints.native_targets` full fidelity +
-`take_profit_mode`); standalone PM ingests `native_targets` and exposes them
-in the provider payload as advisory evidence. Execution semantics unchanged;
-per-level NEAR_TP state machine still deferred (see §4).
-
-2026-09-15 execution slice: per-level NEAR_TP firing implemented in the
-standalone PM (Decision.target_levels carriage, reference-consumer selection)
-and both venue executors (venue-owned selection, level fractions, per-level
-completion records, observation seam). Legacy single-TP behavior preserved
-whenever the level array is absent or invalid.
+The shared bus forwards the envelope verbatim. This repository makes no claim
+about how downstream consumers interpret or execute individual target levels.

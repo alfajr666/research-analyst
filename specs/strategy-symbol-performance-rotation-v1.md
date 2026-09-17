@@ -57,7 +57,7 @@ boundary, not a performance optimization.
 - **Symbol-account-strategy policy**: the allowlist mapping a symbol, account,
   and strategy to permission to create an intent.
 - **Hard gate**: a rejection that prevents a candidate from reaching scoring,
-  alpha publication, or executor intent delivery.
+  alpha persistence, or shared-bus publication.
 
 ## Invariants
 

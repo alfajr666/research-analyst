@@ -948,7 +948,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                 hard_gate_status=result["hard_gate"],
                 score_status=result.get("score_status", "scored"),
                 clash_status="pending" if score_rejected else "conflict" if conflict else "selected" if selected_candidate else "suppressed",
-                executor_intent_status="not_eligible" if score_rejected else "written" if selected_candidate else "not_selected",
+                executor_intent_status="not_eligible" if score_rejected else "selected" if selected_candidate else "not_selected",
                 reason="; ".join(result.get("score_reasons", [])) or result.get("status"),
                 score=result.get("score"),
                 score_components=result.get("components"),

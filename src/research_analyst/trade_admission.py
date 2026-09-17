@@ -43,14 +43,13 @@ def canonical_asset(value: object) -> str:
 
 
 def resolved_account(strategy_id: object) -> str:
-    """Resolve routing from strategy configuration, never candidate metadata."""
+    """Resolve the schema account field from the canonical strategy sets."""
     strategy_id = str(strategy_id or "")
     if strategy_id in COMPACT_STRATEGIES:
         return "hyro"
     if strategy_id in FUNDAMO_STRATEGIES:
         return "fundamo"
-    route = (getattr(config, "INTENT_ROUTING", {}) or {}).get(strategy_id, {}) or {}
-    return str(route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro"))
+    return str(getattr(config, "INTENT_ACCOUNT_ID", "hyro"))
 
 
 def execution_accounts(
@@ -746,7 +745,7 @@ def resolve(
         elif result["hard_gate"] != "pass":
             result["status"] = "hard_gate_failed"
         elif cid in selected_set:
-            result["status"] = "selected_for_executor"
+            result["status"] = "selected_for_publication"
         else:
             result["status"] = "eligible_suppressed_by_same_direction_rank"
     for asset, account in sorted({

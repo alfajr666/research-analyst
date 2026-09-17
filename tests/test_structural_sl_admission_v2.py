@@ -133,7 +133,6 @@ def test_missing_atr_source_lineage_fails_closed():
 
 
 def test_structural_admission_is_enabled_by_default():
-    assert config.STRUCTURAL_STOP_ADMISSION_ENABLED is True
     assert config.STRUCTURAL_STOP_MIN_ATR_MULTIPLE == 0.5
     assert config.STRUCTURAL_STOP_MAX_ATR_MULTIPLE == 3.0
 

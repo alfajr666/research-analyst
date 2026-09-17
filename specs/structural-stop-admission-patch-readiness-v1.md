@@ -52,7 +52,7 @@ move, widen, tighten, or otherwise mutate that stop.
 - A strategy-declared structural-reference event contract.
 - A separate deterministic structural-stop pass/reject gate.
 - Revalidation at the alpha-outbox boundary.
-- Consistent PM context without PM stop mutation.
+- An immutable shared-bus intent payload without stop mutation.
 - Audit history, dry-run rollout, and rollback.
 
 ### Out of scope
@@ -80,7 +80,7 @@ The principal implementation seams are:
 | Candidate invocation | `src/research_analyst/strategy_plugins.py` | Must attach per-asset freshness, ATR provenance, and structural context. |
 | Existing admission | `src/research_analyst/trade_admission.py` | Remains authoritative for current hard gates. |
 | Alpha and intent handoff | `src/research_analyst/alpha_outbox.py`, `intent_outbox.py` | Must revalidate and preserve the original stop. |
-| PM context | standalone-llm-pm | Consumes the originating immutable plan outside this repository. |
+| Publication boundary | shared intent bus | Receives the originating immutable plan and ends this repository's responsibility. |
 
 The existing admission specification remains authoritative for current geometry,
 RR, ATR, expiry, freshness, and identity rules. This patch adds a new policy;
@@ -111,13 +111,9 @@ repository state.
 
 ### P1 blockers
 
-1. PM does not retain the complete originating stop/protection context.
-2. PM active-intent lookup is not unambiguously tied to the originating intent
-   and can use expired plans.
-3. Alpha delivery status can conflate file selection with bus publication.
-4. Rotation ranking accepts sparse 24-hour spans and has global freshness logic.
-5. Gateway and orchestrator health do not show per-asset market coverage.
-6. The legacy execution adapter can read events outside the new gate boundary.
+1. Alpha delivery status can conflate file selection with bus publication.
+2. Rotation ranking accepts sparse 24-hour spans and has global freshness logic.
+3. Gateway and orchestrator health do not show per-asset market coverage.
 
 ## 5. Required Patches
 
@@ -161,7 +157,7 @@ Replace the global behavior in:
 - `strategy_plugins._bars_available()`;
 - orchestrator health queries;
 - rotation source validation;
-- PM context admission.
+- shared-bus intent construction.
 
 One asset must never inherit freshness, availability, or coverage from another.
 
@@ -215,7 +211,7 @@ including:
 - ATR and EMA warmups;
 - swing confirmation windows;
 - FVG and OB lifecycle windows;
-- any active PM context requirement.
+- the complete shared-bus intent provenance requirement.
 
 The current six-hour startup backfill is not sufficient. Rotation-time backfill
 and reconnect gap fill must be durable, retryable, and observable through the
@@ -351,26 +347,22 @@ must not be hidden inside the current ATR admission.
 The gate runs before scoring and clash resolution. Failed candidates remain in
 the raw ledger with durable reasons and cannot reach alpha or executor delivery.
 
-### Patch H: Handoff and PM consistency
+### Patch H: Shared-bus handoff consistency
 
-At `alpha_outbox.write_event()` and any compatibility adapter boundary:
+At `alpha_outbox.write_event()` and the shared-bus publication boundary:
 
 - recompute or verify structural admission;
 - preserve the exact proposed stop;
 - reject stale or bypassed admission results;
-- distinguish selection, alpha persistence, bus publication, executor acceptance,
-  and execution.
+- distinguish selection, alpha persistence, and bus publication.
 
-The standalone PM must receive the originating immutable plan, including:
+The shared-bus intent must preserve the originating immutable plan, including:
 
 - exact intent identity;
 - original direction and entry;
 - original stop and target;
 - structural reference and provenance;
-- current executor mark/protection/lifecycle state.
-
-PM may advise `HOLD`, `REDUCE`, `EXIT`, or `NEAR_TP`, but may not modify the
-structural stop or substitute an expired plan.
+- the admission proof and exact evaluation cutoff.
 
 ## 6. Acceptance Test Matrix
 
@@ -416,13 +408,12 @@ structural stop or substitute an expired plan.
 - Admission never mutates `invalidation_price`.
 - Alpha and intent handoff preserve the exact stop and reference ID.
 
-### PM and delivery
+### Shared-bus delivery
 
-- PM receives the same immutable stop/reference as the originating event.
+- The shared bus receives the same immutable stop/reference as the originating event.
 - Expired event lookup cannot replace the originating intent.
-- PM failures produce safe HOLD behavior without stop mutation.
 - A failed bus publication is not reported as a successful write.
-- Legacy compatibility delivery cannot bypass structural admission.
+- No compatibility delivery can bypass structural admission.
 
 ## 7. Rollout
 
@@ -448,8 +439,8 @@ enabled during rollback.
 - Newly rotated assets remain warming until ready.
 - No unresolved cutoff timestamp mismatch.
 - Zone lifecycle tests pass for both directions.
-- Structural reference survives candidate, alpha, intent, and PM boundaries.
+- Structural reference survives candidate, alpha, and shared-bus intent boundaries.
 - Audit-only run has reviewed rejection and unavailable rates.
-- No structural-gate bypass exists in shared-bus or compatibility paths.
+- No structural-gate bypass exists in the shared-bus path.
 - Services are restarted only through `oxmgr`, followed by live health and
   receipt verification.

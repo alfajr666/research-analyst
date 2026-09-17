@@ -1,4 +1,3 @@
-import json
 import math
 import os
 import stat
@@ -39,14 +38,10 @@ load_dotenv(ENV_FILE)
 DEFAULT_DB_DIR = BASE_DIR / "data"
 DEFAULT_DB_DIR.mkdir(parents=True, exist_ok=True)
 
-# API Keys and Credentials
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-# Discord incoming webhooks (optional). Empty URL disables that stream.
-DISCORD_ALPHA_WEBHOOK_URL = os.getenv("DISCORD_ALPHA_WEBHOOK_URL", "")
+# Advisory raw-signal Discord batches are the repository's only notification surface.
 RAW_SIGNAL_DISCORD_BATCH_ENABLED = os.getenv("RAW_SIGNAL_DISCORD_BATCH_ENABLED", "false").lower() == "true"
 RAW_SIGNAL_DISCORD_BATCH_MINUTES = int(os.getenv("RAW_SIGNAL_DISCORD_BATCH_MINUTES", "30"))
-RAW_SIGNAL_DISCORD_WEBHOOK_URL = os.getenv("RAW_SIGNAL_DISCORD_WEBHOOK_URL", DISCORD_ALPHA_WEBHOOK_URL)
+RAW_SIGNAL_DISCORD_WEBHOOK_URL = os.getenv("RAW_SIGNAL_DISCORD_WEBHOOK_URL", "")
 RAW_BATCH_CLAIM_LEASE_SECONDS = int(os.getenv("RAW_BATCH_CLAIM_LEASE_SECONDS", "120"))
 RAW_BATCH_MAX_ATTEMPTS = int(os.getenv("RAW_BATCH_MAX_ATTEMPTS", "5"))
 RAW_BATCH_RETRY_BACKOFF_SECONDS = int(os.getenv("RAW_BATCH_RETRY_BACKOFF_SECONDS", "30"))
@@ -116,7 +111,6 @@ EVALUATION_TRIGGER_DIR = Path(os.getenv("EVALUATION_TRIGGER_DIR", str(DEFAULT_DB
 EVALUATION_RECOVERY_SCAN_SECONDS = int(os.getenv("EVALUATION_RECOVERY_SCAN_SECONDS", "5"))
 EVALUATION_LEASE_SECONDS = int(os.getenv("EVALUATION_LEASE_SECONDS", "600"))
 EVALUATION_MAX_RETRIES = int(os.getenv("EVALUATION_MAX_RETRIES", "5"))
-EXECUTION_BACKFILL_HOURS = int(os.getenv("EXECUTION_BACKFILL_HOURS", "24"))
 STRATEGY_RUNNER_ENABLED = os.getenv("STRATEGY_RUNNER_ENABLED", "false").lower() in (
     "1", "true", "yes", "on"
 )
@@ -128,32 +122,29 @@ STRATEGY_RUNNER_TIMEOUT_SECONDS = float(os.getenv("STRATEGY_RUNNER_TIMEOUT_SECON
 # Tables are deliberately classified here, at the schema boundary.  Startup
 # must never repair a database by creating tables owned by the other service.
 MARKET_SCHEMA_TABLES = frozenset({
-    "option_chains", "daily_options_summary", "brain_outputs", "confluence_alerts",
+    "option_chains", "daily_options_summary", "brain_outputs",
     "scanner_history", "universe_snapshots", "broad_discovery_snapshots",
     "discovery_watchlist_history", "regime_signals",
     "source_observations", "source_request_log",
 })
 ANALYST_SCHEMA_TABLES = frozenset({
     "plugin_states", "alpha_candidates",
-    "alpha_events", "signal_deliveries", "alpha_event_status_history",
-    "alpha_confidence_observations", "research_requests", "research_reports",
-    "research_run_metrics", "research_artifacts", "research_evidence", "pipeline_runs",
-    "execution_deliveries", "cutoff_runs", "feature_snapshots", "structure_zones",
+    "alpha_events", "alpha_event_status_history", "alpha_confidence_observations",
+    "pipeline_runs", "cutoff_runs", "feature_snapshots", "structure_zones",
     "entry_policy_observations", "regime_scores", "regime_gate_decisions",
 })
 
 
 # Upstream performance rotation.
 SYMBOL_ROTATION_ENABLED = os.getenv("SYMBOL_ROTATION_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-SYMBOL_ROTATION_REFRESH_HOURS = int(os.getenv("SYMBOL_ROTATION_REFRESH_HOURS", os.getenv("SYMBOL_ROTATION_CADENCE_HOURS", "4")))
-SYMBOL_ROTATION_CADENCE_HOURS = SYMBOL_ROTATION_REFRESH_HOURS  # compatibility alias
+SYMBOL_ROTATION_REFRESH_HOURS = int(os.getenv("SYMBOL_ROTATION_REFRESH_HOURS", "4"))
 SYMBOL_ROTATION_LOOKBACK_HOURS = int(os.getenv("SYMBOL_ROTATION_LOOKBACK_HOURS", "24"))
 SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT = int(os.getenv("SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT", "30"))
 SYMBOL_ROTATION_BAR_INTERVAL = os.getenv("SYMBOL_ROTATION_BAR_INTERVAL", "5m").strip()
 SYMBOL_ROTATION_FEED_PATH = Path(os.getenv("SYMBOL_ROTATION_FEED_PATH", str(DEFAULT_DB_DIR / "symbol_rotation_feed.json")))
 SYMBOL_ROTATION_SOURCE_MAX_AGE_HOURS = float(os.getenv("SYMBOL_ROTATION_SOURCE_MAX_AGE_HOURS", "6"))
 SYMBOL_ROTATION_WATCHLIST_TTL_HOURS = float(os.getenv("SYMBOL_ROTATION_WATCHLIST_TTL_HOURS", "72"))
-SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS = int(os.getenv("SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS", "80"))
+SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS = int(os.getenv("SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS", "160"))
 if SYMBOL_ROTATION_REFRESH_HOURS <= 0:
     raise ValueError("SYMBOL_ROTATION_REFRESH_HOURS must be positive")
 if SYMBOL_ROTATION_LOOKBACK_HOURS <= 0:
@@ -178,21 +169,18 @@ if SYMBOL_ROTATION_ROTATING_SYMBOL_COUNT > SYMBOL_ROTATION_WATCHLIST_MAX_SYMBOLS
 # WS provider toggles. Bybit is the default public source; Binance is opt-in/off.
 WS_BYBIT_ENABLED = os.getenv("WS_BYBIT_ENABLED", "true").lower() == "true"
 WS_BINANCE_ENABLED = os.getenv("WS_BINANCE_ENABLED", "false").lower() == "true"
-COMPACT_STRATEGY_ASSETS = frozenset(("BTC", "ETH", "PAXG", "QQQ"))
 # vectorbt engine-handoff ports: registry metadata (compact routing, defaults
 # for ADMISSION_STRATEGY_IDS in strategy_plugins).
 PORTED_STRATEGY_IDS = frozenset((
     "bb-tp-race-locked-v1", "bb-squeeze-trend-v1", "kama-trend-following-v1",
     "macd-ema-v1", "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5",
 ))
-PORTED_FUNDAMO_STRATEGY_IDS = PORTED_STRATEGY_IDS
 LEGACY_PRODUCTION_STRATEGY_IDS = frozenset((
     "failed-break-v3", "bb-rsi-meanrev-v1", "williams-fractal-scalp-v1",
-    "ema9-continuation-stochrsi-v1", "dual-zone-follower-v3",
+    "ema9-adx-stochrsi-state-v1", "dual-zone-follower-v3",
     "dual-zone-short-follower-v3", "ema99-retest-adx-v1",
-    "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
-    "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
-    "ema9-adx-stochrsi-state-v1", "ema99-double-touch-stochrsi-state-v1",
+    "ema20-pullback-h4-trend-v1", "gold-trend-ema-bb-stoch-v1",
+    "mtf-exhaustion-reversal-v1", "ema99-double-touch-stochrsi-state-v1",
     "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
 ))
 COMPACT_STRATEGY_IDS = frozenset((
@@ -205,7 +193,7 @@ FUNDAMO_STRATEGY_IDS = frozenset((
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
-)) | PORTED_FUNDAMO_STRATEGY_IDS
+)) | PORTED_STRATEGY_IDS
 DUAL_ZONE_V3_EXIT_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_EXIT_EMA_LENGTH", "7"))
 DUAL_ZONE_V3_ANCHOR_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_ANCHOR_EMA_LENGTH", "26"))
 DUAL_ZONE_V3_TREND_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_TREND_EMA_LENGTH", "99"))
@@ -353,7 +341,6 @@ BB_TP_RACE_TP2_ATR48 = float(os.getenv("BB_TP_RACE_TP2_ATR48", "2.0"))
 BB_TP_RACE_TP3_EMA_ATR_MULT = float(os.getenv("BB_TP_RACE_TP3_EMA_ATR_MULT", "0.5"))
 BB_TP_RACE_BEP_ARM_ATR16 = float(os.getenv("BB_TP_RACE_BEP_ARM_ATR16", "1.0"))
 BB_TP_RACE_ENTRY_VALIDITY_MINUTES = int(os.getenv("BB_TP_RACE_ENTRY_VALIDITY_MINUTES", "15"))
-BB_TP_RACE_TREND_EMA_MIN_BARS = int(os.getenv("BB_TP_RACE_TREND_EMA_MIN_BARS", "200"))
 BB_SQUEEZE_TREND_STRATEGY_ID = "bb-squeeze-trend-v1"
 BB_SQUEEZE_BB_PERIOD = int(os.getenv("BB_SQUEEZE_BB_PERIOD", "29"))
 BB_SQUEEZE_BB_DEV = float(os.getenv("BB_SQUEEZE_BB_DEV", "1.82"))
@@ -423,6 +410,9 @@ WS_MARKPRICE_ENABLED = os.getenv("WS_MARKPRICE_ENABLED", "true").lower() == "tru
 # Shard size for Bybit (per-connection topic cap). Binance uses one combined conn.
 WS_BYBIT_SHARD = int(os.getenv("WS_BYBIT_SHARD", "20"))
 WS_BACKFILL_HOURS = int(os.getenv("WS_BACKFILL_HOURS", "6"))
+WS_RESAMPLE_LOOKBACK_MIN = int(os.getenv("WS_RESAMPLE_LOOKBACK_MIN", "1440"))
+WS_RESAMPLE_REPAIR_MIN = int(os.getenv("WS_RESAMPLE_REPAIR_MIN", "30"))
+WS_STALE_SECONDS = int(os.getenv("WS_STALE_SECONDS", "180"))
 # Source names stamped on native bars (purity = "pure_ws", accepted by emit gate).
 BYBIT_WS_SOURCE = "bybit_ws"
 BINANCE_WS_SOURCE = "binance_ws"
@@ -499,16 +489,10 @@ ANALYST_RAW_SIGNAL_RETENTION_DAYS = int(os.getenv("ANALYST_RAW_SIGNAL_RETENTION_
 ANALYST_COVERAGE_RETENTION_DAYS = int(os.getenv("ANALYST_COVERAGE_RETENTION_DAYS", "7"))
 ANALYST_CANDIDATE_RETENTION_DAYS = int(os.getenv("ANALYST_CANDIDATE_RETENTION_DAYS", "7"))
 ANALYST_EVENT_RETENTION_DAYS = int(os.getenv("ANALYST_EVENT_RETENTION_DAYS", "7"))
-ANALYST_DELIVERY_RETENTION_DAYS = int(os.getenv("ANALYST_DELIVERY_RETENTION_DAYS", "7"))
 ANALYST_METRICS_RETENTION_DAYS = int(os.getenv("ANALYST_METRICS_RETENTION_DAYS", "30"))
-ANALYST_RESEARCH_RETENTION_DAYS = int(os.getenv("ANALYST_RESEARCH_RETENTION_DAYS", "30"))
 
-# Trade-intent delivery (see bybit-executor/AGENTS.md "Trade Intent Contract",
-# schema_version 2 for score-aware intents). The internal alpha event is the advisory record (Discord);
-# this envelope is published to the shared SQLite bus for executor handoff.
-# Deliberately OFF by default (INTENT_DELIVERY_ENABLED).
-BYBIT_EXECUTOR_DIR = os.getenv("BYBIT_EXECUTOR_DIR", "")
-INTENT_DELIVERY_ENABLED = os.getenv("INTENT_DELIVERY_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+# Shared-bus TradeIntent schema defaults. Publication is controlled only by an
+# absolute INTENT_BUS_DB and the target switches below.
 INTENT_SOURCE = os.getenv("INTENT_SOURCE", "research-analyst")
 INTENT_EXCHANGE_ID = os.getenv("INTENT_EXCHANGE_ID", "bybit")
 INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "hyro")
@@ -527,8 +511,8 @@ NATIVE_TP_MIN_RR_EXEMPT_IDS = frozenset(
 NATIVE_TARGET_DEFAULT_FRACTION = float(os.getenv("NATIVE_TARGET_DEFAULT_FRACTION", "0.5"))
 if not 0 < NATIVE_TARGET_DEFAULT_FRACTION <= 1:
     raise ValueError("NATIVE_TARGET_DEFAULT_FRACTION must be in (0, 1]")
-# Per-strategy exit mode. Precedence: explicit caller argument > INTENT_ROUTING
-# entry > this map > INTENT_TAKE_PROFIT_MODE.
+# Per-strategy exit mode. Precedence: explicit caller argument > this map >
+# INTENT_TAKE_PROFIT_MODE.
 STRATEGY_TAKE_PROFIT_MODES = {
     "bb-tp-race-locked-v1": "bracket_tp1_tp2_race",
     "mr-vwap-locked-v1": "vwap_target",
@@ -556,7 +540,6 @@ if TRADE_QUALITY_RVOL_LOOKBACK_BARS < TRADE_QUALITY_RVOL_MIN_BARS:
 if TRADE_QUALITY_FUNDING_LOOKBACK_BARS < TRADE_QUALITY_FUNDING_MIN_BARS:
     raise ValueError("TRADE_QUALITY_FUNDING_LOOKBACK_BARS must cover its minimum history")
 # Structural admission is mandatory for every candidate; it has no runtime bypass.
-STRUCTURAL_STOP_ADMISSION_ENABLED = True
 STRUCTURAL_STOP_MIN_ATR_MULTIPLE = float(os.getenv("STRUCTURAL_STOP_MIN_ATR_MULTIPLE", "0.5"))
 STRUCTURAL_STOP_MAX_ATR_MULTIPLE = float(os.getenv("STRUCTURAL_STOP_MAX_ATR_MULTIPLE", "3.0"))
 if STRUCTURAL_STOP_MIN_ATR_MULTIPLE < 0 or STRUCTURAL_STOP_MAX_ATR_MULTIPLE < STRUCTURAL_STOP_MIN_ATR_MULTIPLE:
@@ -568,40 +551,19 @@ if STRUCTURAL_15M_LOOKBACK_DAYS <= 0 or STRUCTURAL_15M_READINESS_BARS <= 0:
     raise ValueError("STRUCTURAL_15M lookback and readiness must be positive")
 if STRUCTURAL_15M_READINESS_BARS < max(3, 14, 20 + 2):
     raise ValueError("STRUCTURAL_15M_READINESS_BARS is insufficient for zone detection")
-# Per-strategy routing to executor profiles (exchange/account). JSON map keyed by
-# strategy_id; each value may override any of: exchange_id, account_id, source,
-# take_profit_mode, validity_minutes. Strategies not listed fall back to
-# the INTENT_* defaults above. Compact strategies are always forced to the
-# deployment's Hyro Bybit account by intent_outbox.
-_INTENT_ROUTING_RAW = os.getenv("INTENT_ROUTING", "{}")
-try:
-    INTENT_ROUTING = json.loads(_INTENT_ROUTING_RAW) if isinstance(_INTENT_ROUTING_RAW, str) else _INTENT_ROUTING_RAW
-    if not isinstance(INTENT_ROUTING, dict):
-        INTENT_ROUTING = {}
-except (ValueError, TypeError):
-    INTENT_ROUTING = {}
-for _fundamo_strategy in ("dual-zone-follower-v3", "dual-zone-short-follower-v3", "ema99-retest-adx-v1",
-                           "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
-                           "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1",
-                           "trend-wall-v1", "ema99-double-touch-stochrsi-state-v1",
-                           "ema7-26-cross-hammer-shooting-star-1h-adx-v1"):
-    INTENT_ROUTING.setdefault(_fundamo_strategy, {"exchange_id": "bybit", "account_id": "fundamo"})
-
 # --- Shared SQLite Intent Bus (spec SHARED_SQLITE_INTENT_BUS_SPEC.md §14) ---
-# Per spec the research-analyst publisher is gated by INTENT_BUS_DB (path) and
-# INTENT_BUS_BYBIT_ENABLED. INTENT_DELIVERY_ENABLED (elsewhere) is the overall
-# delivery gate. All default OFF; no implicit path.
+# INTENT_BUS_DB plus the target switches are the complete publication gate. All
+# default OFF; there is no compatibility delivery switch or implicit path.
+INTENT_BUS_PACKAGE_DIR = os.getenv(
+    "INTENT_BUS_PACKAGE_DIR", "/home/ubuntu/shared/intent-bus"
+)
 INTENT_BUS_BYBIT_ENABLED = os.getenv("INTENT_BUS_BYBIT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 INTENT_BUS_PROPR_ENABLED = os.getenv("INTENT_BUS_PROPR_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 _INTENT_BUS_DB_RAW = os.getenv("INTENT_BUS_DB") or ""
 INTENT_BUS_DB = str(Path(_INTENT_BUS_DB_RAW).expanduser()) if _INTENT_BUS_DB_RAW and Path(_INTENT_BUS_DB_RAW).expanduser().is_absolute() else None
-# Executor snapshot handoff used by ws_gateway to retain open-position symbols
-# during universe rotation. Position management is owned by standalone-llm-pm.
-if BYBIT_EXECUTOR_DIR:
-    _default_exec_snapshots = Path(BYBIT_EXECUTOR_DIR) / "data" / "position-snapshots"
-else:
-    _default_exec_snapshots = ""
-EXECUTOR_SNAPSHOT_DIR = os.getenv("EXECUTOR_SNAPSHOT_DIR", str(_default_exec_snapshots)) if _default_exec_snapshots else os.getenv("EXECUTOR_SNAPSHOT_DIR", "")
+# Read-only executor snapshots let ws_gateway retain open-position symbols
+# during universe rotation; they are not a position-management integration.
+EXECUTOR_SNAPSHOT_DIR = os.getenv("EXECUTOR_SNAPSHOT_DIR", "")
 
 # accumulation-base-v2 knobs (specs/strategy-accumulation-base-v2.md)
 # Defaults grilled 2026-08-18 — independent prefixes; tighter coil / emit floor.
@@ -686,47 +648,6 @@ PRICE_STRUCTURE_STRATEGY_IDS = {
 MIXED_STRATEGY_IDS = {
     "impulse-ignition-v2", "continuation-breakout-v2",
 }
-
-LLM_RESEARCH_ENABLED = os.getenv("LLM_RESEARCH_ENABLED", "false").lower() == "true"
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
-LLM_MODEL = os.getenv("LLM_MODEL", "")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-# Base URL for OpenAI-compatible routers (e.g. local 9router). Empty -> api.openai.com.
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
-LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
-LLM_MAX_REPORTS_PER_CYCLE = int(os.getenv("LLM_MAX_REPORTS_PER_CYCLE", "2"))
-LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
-LLM_RETRY_BASE_SECONDS = int(os.getenv("LLM_RETRY_BASE_SECONDS", "60"))
-LLM_MAX_INPUT_CHARS = int(os.getenv("LLM_MAX_INPUT_CHARS", "24000"))
-LLM_MAX_OUTPUT_CHARS = int(os.getenv("LLM_MAX_OUTPUT_CHARS", "6000"))
-LLM_MONTHLY_BUDGET_USD = float(os.getenv("LLM_MONTHLY_BUDGET_USD", "0"))
-LLM_INCLUDE_IN_TELEGRAM = os.getenv("LLM_INCLUDE_IN_TELEGRAM", "false").lower() == "true"
-LLM_INCLUDE_IN_DISCORD = os.getenv("LLM_INCLUDE_IN_DISCORD", os.getenv("LLM_INCLUDE_IN_TELEGRAM", "false")).lower() == "true"
-LLM_PRICING_VERSION = os.getenv("LLM_PRICING_VERSION", "openai-chat-2026-08-v1")
-LLM_INPUT_COST_PER_1K_USD = float(os.getenv("LLM_INPUT_COST_PER_1K_USD", "0"))
-LLM_OUTPUT_COST_PER_1K_USD = float(os.getenv("LLM_OUTPUT_COST_PER_1K_USD", "0"))
-# Research execution delivery is opt-in per target. Research never receives
-# exchange credentials; these paths are only shared inbox directories.
-EXECUTION_OUTBOX_DIR = Path(os.getenv("EXECUTION_OUTBOX_DIR", str(DEFAULT_DB_DIR / "execution_outbox")))
-EXECUTION_TARGETS = {
-    "bybit": {
-        "enabled": os.getenv("EXECUTION_BYBIT_ENABLED", "false").lower() == "true",
-        "asset_allowlist": frozenset(value.strip().upper() for value in os.getenv("EXECUTION_BYBIT_ASSET_ALLOWLIST", "").split(",") if value.strip()),
-    },
-    "bybit-test": {
-        "enabled": os.getenv("EXECUTION_BYBIT_TEST_ENABLED", "false").lower() == "true",
-        "asset_allowlist": frozenset(value.strip().upper() for value in os.getenv("EXECUTION_BYBIT_TEST_ASSET_ALLOWLIST", "").split(",") if value.strip()),
-    },
-    "mexc": {
-        "enabled": os.getenv("EXECUTION_MEXC_ENABLED", "false").lower() == "true",
-        "asset_allowlist": frozenset(value.strip().upper() for value in os.getenv("EXECUTION_MEXC_ASSET_ALLOWLIST", "").split(",") if value.strip()),
-    },
-    "propr": {
-        "enabled": os.getenv("EXECUTION_PROPR_ENABLED", "false").lower() == "true",
-        "tradeable_assets_path": Path(os.getenv("EXECUTION_PROPR_TRADEABLE_ASSETS_PATH", str(DEFAULT_DB_DIR / "propr_tradeable_assets.json"))),
-    },
-}
-
 
 # API Base URLs
 BYBIT_LINEAR_BASE_URL = os.getenv("BYBIT_LINEAR_BASE_URL", "https://api.bybit.com")
@@ -916,32 +837,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
             );
         """)
 
-        # Create confluence_alerts table for alert deduplication/cooldown
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS confluence_alerts (
-                underlying VARCHAR,
-                alert_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                price DOUBLE,
-                poc DOUBLE,
-                ema26 DOUBLE,
-                ema99 DOUBLE,
-                val DOUBLE,
-                vah DOUBLE,
-                hvns VARCHAR,
-                lvns VARCHAR,
-                PRIMARY KEY (underlying, alert_time)
-            );
-        """)
-
-        # Migration: add columns if upgrading from old schema
-        existing_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(confluence_alerts)").fetchall()
-        }
-        for col in ["val DOUBLE", "vah DOUBLE", "hvns VARCHAR", "lvns VARCHAR"]:
-            name = col.split()[0]
-            if name not in existing_columns:
-                conn.execute(f"ALTER TABLE confluence_alerts ADD COLUMN {col};")
-
         # Create scanner_history table for hourly rotating volume/OI scanner
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scanner_history (
@@ -1004,13 +899,11 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
         if not is_alpha:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_options_ts ON option_chains (timestamp, underlying);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_ts ON brain_outputs (timestamp, underlying);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON confluence_alerts (alert_time, underlying);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_scanner_ts ON scanner_history (timestamp, symbol);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_universe_ts ON universe_snapshots (observed_at, binance_symbol);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_ts ON alpha_candidates (observed_at, setup_class);")
 
-        # Phase 0 event ledger migration. Keeping this DDL here, rather than in
-        # SignalPublisher, gives every process the same authoritative schema.
+        # Alpha ledger schema shared by the orchestrator and intent publisher.
         migration = "2026-08-16-phase0-event-ledger"
         applied = conn.execute(
             "SELECT 1 FROM schema_migrations WHERE version = ?", (migration,)
@@ -1030,21 +923,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                     valid_until TIMESTAMP WITH TIME ZONE NOT NULL,
                     event_json VARCHAR NOT NULL,
                     persisted_at TIMESTAMP WITH TIME ZONE NOT NULL
-                );
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS signal_deliveries (
-                    delivery_id VARCHAR PRIMARY KEY,
-                    dedupe_key VARCHAR NOT NULL,
-                    channel VARCHAR NOT NULL,
-                    attempt_number INTEGER NOT NULL,
-                    status VARCHAR NOT NULL,
-                    attempted_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                    completed_at TIMESTAMP WITH TIME ZONE,
-                    next_retry_at TIMESTAMP WITH TIME ZONE,
-                    response_body VARCHAR,
-                    error_message VARCHAR,
-                    UNIQUE(dedupe_key, channel, attempt_number)
                 );
             """)
             conn.execute("""
@@ -1076,7 +954,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                     data_freshness_seconds DOUBLE,
                     lock_failures INTEGER NOT NULL DEFAULT 0,
                     outbox_depth INTEGER NOT NULL DEFAULT 0,
-                    report_queue_age_seconds DOUBLE,
                     error_message VARCHAR,
                     details_json VARCHAR NOT NULL
                 );
@@ -1085,25 +962,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
             conn.execute(
                 "INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (metrics_migration,)
             )
-
-        execution_migration = "2026-08-17-research-execution-deliveries"
-        if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (execution_migration,)).fetchone() is None:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS execution_deliveries (
-                    alpha_id VARCHAR NOT NULL,
-                    target VARCHAR NOT NULL,
-                    status VARCHAR NOT NULL,
-                    reason VARCHAR,
-                    inbox_path VARCHAR,
-                    written_at TIMESTAMP WITH TIME ZONE,
-                    acknowledged_at TIMESTAMP WITH TIME ZONE,
-                    bot_trade_id VARCHAR,
-                    bot_order_id VARCHAR,
-                    PRIMARY KEY (alpha_id, target)
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_deliveries_status ON execution_deliveries (status, written_at)")
-            conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (execution_migration,))
 
         confidence_migration = "2026-08-17-alpha-confidence-observations"
         if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (confidence_migration,)).fetchone() is None:
@@ -1120,9 +978,7 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
             """)
             conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (confidence_migration,))
 
-        # Active-event scan index shared by the execution adapter (bounded
-        # freshest/highest-confidence delivery scan) and signal_publisher's
-        # expire sweep. Equality on status first, then the valid_until range.
+        # The intent publisher uses this index for its bounded expiry sweep.
         # Guarded on the table actually existing in THIS database: shared
         # init runs against both service DBs and only the alpha ledger owns
         # alpha_events.
@@ -1141,67 +997,6 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                 "INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)",
                 (active_index_migration,),
             )
-
-        research_migration = "2026-08-16-phase1-research-ledger"
-        research_applied = conn.execute(
-            "SELECT 1 FROM schema_migrations WHERE version = ?", (research_migration,)
-        ).fetchone()
-        if research_applied is None:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS research_requests (
-                    request_id VARCHAR PRIMARY KEY, subject_type VARCHAR NOT NULL,
-                    subject_id VARCHAR NOT NULL, request_kind VARCHAR NOT NULL,
-                    as_of TIMESTAMP WITH TIME ZONE NOT NULL, input_hash VARCHAR NOT NULL,
-                    status VARCHAR NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TIMESTAMP WITH TIME ZONE NOT NULL, started_at TIMESTAMP WITH TIME ZONE,
-                     completed_at TIMESTAMP WITH TIME ZONE, next_attempt_at TIMESTAMP WITH TIME ZONE,
-                     error_code VARCHAR, error_message VARCHAR, request_input_json VARCHAR,
-                    UNIQUE(subject_type, subject_id, request_kind, input_hash)
-                );
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS research_artifacts (
-                    artifact_id VARCHAR PRIMARY KEY, request_id VARCHAR NOT NULL,
-                    schema_version INTEGER NOT NULL, model_provider VARCHAR NOT NULL,
-                    model_id VARCHAR NOT NULL, prompt_version VARCHAR NOT NULL,
-                    generated_at TIMESTAMP WITH TIME ZONE NOT NULL, verdict VARCHAR NOT NULL,
-                    report_json VARCHAR NOT NULL, input_json VARCHAR NOT NULL,
-                    provider_usage_json VARCHAR, FOREIGN KEY (request_id) REFERENCES research_requests(request_id)
-                );
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS research_evidence (
-                    evidence_id VARCHAR PRIMARY KEY, artifact_id VARCHAR NOT NULL,
-                    source_type VARCHAR NOT NULL, source_ref VARCHAR NOT NULL,
-                    observed_at TIMESTAMP WITH TIME ZONE, retrieved_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                    excerpt VARCHAR NOT NULL, FOREIGN KEY (artifact_id) REFERENCES research_artifacts(artifact_id)
-                );
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_research_requests_pending ON research_requests (status, created_at);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_research_artifacts_request ON research_artifacts (request_id, generated_at);")
-            conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (research_migration,))
-
-        research_workflow_migration = "2026-08-16-phase4-research-workflow"
-        if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (research_workflow_migration,)).fetchone() is None:
-            conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (research_workflow_migration,))
-
-        research_metrics_migration = "2026-08-16-phase3-research-metrics"
-        if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (research_metrics_migration,)).fetchone() is None:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS research_run_metrics (
-                    metric_id VARCHAR PRIMARY KEY, recorded_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                    queue_depth INTEGER NOT NULL, oldest_pending_seconds DOUBLE,
-                    monthly_cost_usd DOUBLE NOT NULL, completed_count INTEGER NOT NULL,
-                    rejected_count INTEGER NOT NULL, latency_seconds DOUBLE,
-                    oldest_report_seconds DOUBLE
-                );
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_research_run_metrics_recorded ON research_run_metrics (recorded_at);")
-            conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (research_metrics_migration,))
-
-        research_metrics_upgrade = "2026-08-16-phase3-research-metrics-v2"
-        if conn.execute("SELECT 1 FROM schema_migrations WHERE version = ?", (research_metrics_upgrade,)).fetchone() is None:
-            conn.execute("INSERT INTO schema_migrations VALUES (?, CURRENT_TIMESTAMP)", (research_metrics_upgrade,))
 
         # Append-only hourly broad-universe observations used to reproduce each
         # discovery decision, including contracts that were not selected.

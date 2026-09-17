@@ -1,28 +1,24 @@
 """Research Analyst -> Shared SQLite Intent Bus publisher (spec 3.2, 7).
 
-Wires the score-aware schema-v2 Bybit envelope (built by intent_outbox) into the
-shared bus. Routing defaults stay authoritative in intent_outbox: compact account
-fan-out, sizing executor-owned, and order_type absent. This module is a thin
-transport - it contains no venue or sizing logic.
+Wires the score-aware schema-v2 TradeIntent (built by intent_outbox) into the
+shared bus. This module is a thin transport and contains no venue, order, or
+sizing logic.
 """
 
 from __future__ import annotations
 
-import os
 import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import config
+
 # The shared bus package lives at the canonical neutral location (spec 4).
-_SHARED_BUS_DIR = os.getenv(
-    "INTENT_BUS_PACKAGE_DIR", "/home/ubuntu/shared/intent-bus"
-)
+_SHARED_BUS_DIR = config.INTENT_BUS_PACKAGE_DIR
 if _SHARED_BUS_DIR not in sys.path:
     sys.path.insert(0, _SHARED_BUS_DIR)
 
 from intent_bus import IntentBus, producer_adapters  # noqa: E402
-
-import config  # noqa: E402
 
 
 def _json_safe_intent(value: Any) -> Any:
@@ -41,9 +37,8 @@ def _json_safe_intent(value: Any) -> Any:
 
 
 def publisher_enabled() -> bool:
-    # Spec §14: research-analyst bus publish requires a configured DB path and
-    # the bybit target switch. INTENT_DELIVERY_ENABLED is the overall gate
-    # checked by the caller (alpha_outbox).
+    # Research Analyst publication has one gate: a configured bus DB plus the
+    # required Bybit target switch.
     return bool(getattr(config, "INTENT_BUS_DB", None)) and bybit_enabled()
 
 

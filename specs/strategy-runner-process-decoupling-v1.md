@@ -79,7 +79,7 @@ admission layer, publisher, trigger consumer, or database owner.
    a process crash does not silently lose a completed cutoff.
 9. As an operator, I want a runner restart during an evaluation to be safe, so
    that a cutoff can be retried without duplicate raw candidates, alpha events,
-   or executor intents.
+   or shared-bus intents.
 10. As a researcher, I want candidate records to retain the exact strategy ID,
     plugin version, cutoff, universe, and regime scope, so that results remain
     replayable after a runner deployment.

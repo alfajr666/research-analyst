@@ -37,10 +37,9 @@ disagree or agree on the same symbol?**
 ## Scope
 
 This policy applies to every live strategy candidate. It validates strategy
-geometry and evidence before intent delivery; it does not select an account or
-define account capabilities. Bybit profile admission is owned by the executor
-under `specs/venue-owned-account-routing-v1.md`. Advisory alpha events may
-retain candidates that do not become executor intents.
+geometry and evidence before shared-bus publication. Account capability and
+venue handling are downstream and outside this repository. Advisory alpha
+events may retain candidates that do not become shared-bus intents.
 
 ## Candidate Contract
 
@@ -57,9 +56,9 @@ Every strategy candidate must provide:
 Context evidence is optional for admission. A missing HTF bias, swing, FVG, or
 order block is represented as `unavailable`, not as an automatic rejection.
 
-## Hard Execution Gates
+## Hard Admission Gates
 
-Only the following categories can suppress executor intent.
+Only the following categories can suppress shared-bus publication.
 
 ### Directional geometry
 
@@ -131,13 +130,13 @@ Failure remains auditable and advisory-only:
 {
   "hard_gate": "fail",
   "hard_gate_reasons": ["reward/risk below minimum"],
-  "executor_intent": false
+  "publish_intent": false
 }
 ```
 
 ## Soft Scoring
 
-The following are scoring inputs, never unconditional execution gates:
+The following are scoring inputs, never unconditional admission gates:
 
 - HTF directional bias
 - confirmed swing structure
@@ -182,7 +181,7 @@ Clash resolution operates only on candidates that pass hard admission.
 - Break exact ties by strategy priority, then `strategy_id` lexical order.
 - Preserve every losing candidate as suppressed evidence.
 
-The default result is one executor intent per symbol and direction. A future
+The default result is one shared-bus intent per symbol and direction. A future
 portfolio policy may impose a stricter symbol-level mutex, but it must be
 declared separately from this scoring policy.
 
@@ -192,7 +191,7 @@ declared separately from this scoring policy.
 - Compute `score_margin = winner_score - loser_score`.
 - If `score_margin >= CLASH_MIN_SCORE_MARGIN`, select the winner.
 - If the margin is below the threshold, emit an advisory conflict and produce
-  no executor intent.
+  no shared-bus intent.
 
 The initial deployment default is `CLASH_MIN_SCORE_MARGIN=2.0`. This threshold
 is a clash-resolution policy, not a candidate-validity gate.
@@ -213,14 +212,14 @@ The analyst ledger must retain:
 - suppressed candidate IDs and suppression reason
 - conflict group key: `asset + cutoff`
 - score policy/version and hard-gate policy/version
-- final executor-intent decision
+- final shared-bus publication decision
 
 Advisory events must distinguish:
 
 - `hard_gate_failed`
 - `eligible_suppressed_by_same_direction_rank`
 - `eligible_suppressed_by_opposite_direction_clash`
-- `selected_for_executor`
+- `selected_for_publication`
 - `advisory_only`
 
 No candidate may be silently discarded because contextual evidence was missing
@@ -232,36 +231,34 @@ The following remain outside this resolver:
 
 - quantity and risk sizing
 - leverage and venue precision
-- account selection beyond the fixed `bybit / hyro` route
+- downstream account capability and venue handling
 - order placement, fills, and position lifecycle
 - hard stop-loss and fixed take-profit enforcement
-- LLM authority over deterministic event fields
+- model or narrative authority over deterministic event fields
 
-The standalone PM may manage an active position with `HOLD`, `REDUCE`, or
-`EXIT`, but it cannot weaken executor hard-stop or fixed-take-profit protections.
+Position management and protection changes are downstream and outside this
+repository.
 
 ## Test Requirements
 
 Tests must prove:
 
-1. Invalid long and short geometry cannot create executor intents.
-2. RR below the configured minimum cannot create executor intents.
+1. Invalid long and short geometry cannot create shared-bus intents.
+2. RR below the configured minimum cannot create shared-bus intents.
 3. HTF bias disagreement does not reject an otherwise admitted candidate.
 4. Missing FVG or order blocks do not reject an otherwise admitted
    candidate.
 5. Same-direction candidates select the highest score deterministically.
 6. Opposite-direction candidates require the configured score margin.
 7. Losing candidates and score breakdowns remain persisted.
-8. Hard-gate failures remain advisory-only and are not sent to the executor.
-9. All selected intents route to `bybit / hyro`.
-10. Score and LLM annotations cannot modify entry, stop, target, direction, or
+8. Hard-gate failures remain advisory-only and are not published to the bus.
+9. All selected intents validate against the shared-bus TradeIntent schema.
+10. Score annotations cannot modify entry, stop, target, direction, or
     hard-gate status.
 
 ## Related Documents
 
 - `specs/adr-strategy-confluence-scoring.md`
-- `specs/research-to-bot-execution-adapter.md`
-- standalone-llm-pm repository
 - `specs/alpha-outcome-policy.md`
 - `agent.md`
 - `README.md`

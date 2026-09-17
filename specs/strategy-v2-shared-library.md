@@ -10,7 +10,7 @@ contracts in the per-family specs.
 
 1. One place for bias, zones, compression, ATR geometry, emit floor, re-arm.
 2. Per-family plugins only own **thesis gates + trigger geometry + weight maps**.
-3. Keep confidence uncalibrated; LLM booster outside this library.
+3. Keep confidence uncalibrated; narrative/model judgment is out of scope.
 
 ## Non-goals
 

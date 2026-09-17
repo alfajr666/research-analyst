@@ -9,11 +9,8 @@ from trade_admission import resolve
 
 
 def test_declared_covered_structure_reaches_executor_selection():
-    previous = {
-        "STRUCTURAL_STOP_ADMISSION_ENABLED": config.STRUCTURAL_STOP_ADMISSION_ENABLED,
-    }
+    previous = {}
     try:
-        config.STRUCTURAL_STOP_ADMISSION_ENABLED = True
         observed = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
         candidate = {
             "candidate_id": "candidate-1",
@@ -50,7 +47,7 @@ def test_declared_covered_structure_reaches_executor_selection():
 
         assert result["selected_candidate_ids"] == ["candidate-1"]
         selected = result["results"][0]
-        assert selected["status"] == "selected_for_executor"
+        assert selected["status"] == "selected_for_publication"
         assert selected["structural_stop_gate"] == "pass"
         assert selected["selected_zone_id"] == "zone-1"
     finally:
@@ -59,11 +56,8 @@ def test_declared_covered_structure_reaches_executor_selection():
 
 
 def test_uncovered_structure_is_rejected_before_scoring():
-    previous = {
-        "STRUCTURAL_STOP_ADMISSION_ENABLED": config.STRUCTURAL_STOP_ADMISSION_ENABLED,
-    }
+    previous = {}
     try:
-        config.STRUCTURAL_STOP_ADMISSION_ENABLED = True
         observed = datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc)
         candidate = {
             "candidate_id": "candidate-2",

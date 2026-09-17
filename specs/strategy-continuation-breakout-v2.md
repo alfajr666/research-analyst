@@ -25,7 +25,6 @@ Optional weight profiles may appear in config and `feature_snapshot` only.
 - `specs/strategy-impulse-ignition-v2.md`
 - `specs/data-platform-strategy-plugins.md`
 - `specs/alpha-outcome-policy.md`
-- `specs/llm-research-agent.md`
 
 ## Thesis
 
@@ -53,7 +52,7 @@ finalized 15m cutoff
   → S_min + top-N
   → re-arm (one active per asset+direction for this strategy_id)
   → breakout event → outbox → channels
-  → optional LLM booster (delivery order only)
+  → deterministic admission → shared intent bus
 ```
 
 ## Hard gates
@@ -159,12 +158,6 @@ Then re-arm filter.
 | `phase` | `armed_flag_breakout` |
 | `direction` | from bias + trend gates |
 
-## LLM booster
-
-Post-emit only. `stance` + `boost` for **delivery order**. Never mutates
-direction, entry, inv, targets, snapshot, `confidence`, or `confidence_status`.
-Not an emit gate.
-
 ## Lifecycle vs v1
 
 1. Register **`continuation-breakout-v2`**.
@@ -190,7 +183,6 @@ presets not in strategy_id.
 | `r_max` | max flag risk / ATR |
 | `S_min`, `N_top` | emit floor |
 | weight profiles | optional soft weights in config/snapshot |
-| `llm_boost` cap | delivery priority |
 
 ## Family separation
 
@@ -207,7 +199,7 @@ presets not in strategy_id.
 - Embedding early/balanced/confirmed in `strategy_id`
 - Post-break chase entries as the primary arm
 - Family mutex across strategy ids
-- Calibrated or LLM-written confidence
+- Calibrated or model-written confidence
 - Clamped stops; dual %-targets from v1
 - Sizing / venue / orders
 
@@ -224,5 +216,4 @@ presets not in strategy_id.
 - [ ] S_min + top-N; one active per asset+direction for this id
 - [ ] No mutex with other v2 families
 - [ ] Preset names only in snapshot/config if used
-- [ ] LLM booster order-only
 - [ ] v1 parallel then disable; PIT replay only

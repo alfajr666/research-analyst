@@ -31,7 +31,6 @@ def test_gateway_disabled_rotation_mode_is_permanent_only(monkeypatch):
     monkeypatch.setattr(config, "SYMBOL_ROTATION_ENABLED", False)
     monkeypatch.setattr(config, "EXECUTOR_SNAPSHOT_DIR", "")
     assert wsg.select_universe() == ["BTC", "ETH", "PAXG", "QQQ"]
-    assert config.COMPACT_STRATEGY_ASSETS == frozenset({"BTC", "ETH", "PAXG", "QQQ"})
 
 
 def test_gateway_keeps_fresh_open_position_after_rotation_drop(monkeypatch, tmp_path):
@@ -58,11 +57,10 @@ def test_gateway_keeps_fresh_open_position_after_rotation_drop(monkeypatch, tmp_
     assert wsg.select_universe() == ["BTC", "ETH", "SOL"]
 
 
-def test_backfill_hours_follow_execution_contract(monkeypatch):
+def test_backfill_hours_use_gateway_warmup_setting(monkeypatch):
     monkeypatch.setattr(config, "WS_BACKFILL_HOURS", 6)
-    monkeypatch.setattr(config, "EXECUTION_BACKFILL_HOURS", 24)
 
-    assert wsg._backfill_hours() == 24
+    assert wsg._backfill_hours() == 6
 
 
 def test_plan_binance_streams_single_conn():

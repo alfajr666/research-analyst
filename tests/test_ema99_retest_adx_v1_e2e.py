@@ -5,7 +5,7 @@ from unittest.mock import patch
 import polars as pl
 
 import config
-from intent_outbox import build_executor_intent, validate_geometry
+from intent_outbox import build_trade_intent, validate_geometry
 from strategy_plugins import _REGISTRY
 from trade_admission import admit
 from strategies.v2.ema99_retest_adx_v1 import STRATEGY_ID, evaluate_symbol
@@ -70,7 +70,7 @@ class Ema99RetestE2ETests(unittest.TestCase):
         admission = admit(event, now=cutoff + timedelta(minutes=1), effective_universe=["BTC"])
         self.assertEqual(admission["hard_gate"], "pass", admission)
         self.assertNotIn("account_id", event)
-        intent = build_executor_intent(event)
+        intent = build_trade_intent(event)
         self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "fundamo"))
         self.assertEqual(intent["metadata"]["target_source"], "producer_derived_2r")
         self.assertTrue(validate_geometry(intent)[0])

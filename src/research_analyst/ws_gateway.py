@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -40,14 +39,9 @@ MARKET_KIND = "usdt_perp"
 BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
 BINANCE_WS_URL = "wss://fstream.binance.com/stream"
 
-# How far back the resample window looks when building derived TFs from 5m.
-RESAMPLE_LOOKBACK_MIN = int(os.getenv("WS_RESAMPLE_LOOKBACK_MIN", "1440"))  # 24h of 5m
-RESAMPLE_REPAIR_MIN = int(os.getenv("WS_RESAMPLE_REPAIR_MIN", "30"))
-
 # Streamed base timeframes -> exchange-specific tokens.
 STREAMED_TFS = list(config.WS_STREAM_TIMEFRAMES)
 WS_MESSAGE_TIMEOUT_SECONDS = 90
-WS_STALE_SECONDS = int(os.getenv("WS_STALE_SECONDS", "180"))
 _STARTED_MONOTONIC = time.monotonic()
 _LAST_MARKET_MAINTENANCE = 0.0
 _RESAMPLE_STATE: Dict[tuple[str, str, str], datetime] = {}
@@ -85,13 +79,13 @@ async def health_monitor() -> None:
     while True:
         last_bar = _HEALTH["last_bar_at"]
         stale = (
-            (datetime.now(timezone.utc) - datetime.fromisoformat(last_bar)).total_seconds() > WS_STALE_SECONDS
+            (datetime.now(timezone.utc) - datetime.fromisoformat(last_bar)).total_seconds() > config.WS_STALE_SECONDS
             if last_bar
-            else time.monotonic() - _STARTED_MONOTONIC > WS_STALE_SECONDS
+            else time.monotonic() - _STARTED_MONOTONIC > config.WS_STALE_SECONDS
         )
         _write_health("stale" if stale else "healthy")
         if stale and _HEALTH["active_connections"] > 0:
-            raise RuntimeError(f"WebSocket feed stale for more than {WS_STALE_SECONDS}s")
+            raise RuntimeError(f"WebSocket feed stale for more than {config.WS_STALE_SECONDS}s")
         await asyncio.sleep(10)
 BYBIT_TF_TOKEN = {"5m": "5"}
 BINANCE_TF_STREAM = {"5m": "5m"}
@@ -449,8 +443,8 @@ def _record_backfill(provider: str, symbols: List[str], rows: int, started: floa
 
 
 def _backfill_hours() -> int:
-    """Fetch recent 5m history for execution only."""
-    return max(int(config.WS_BACKFILL_HOURS), int(config.EXECUTION_BACKFILL_HOURS))
+    """Fetch recent completed 5m history for evaluation warmup."""
+    return int(config.WS_BACKFILL_HOURS)
 
 
 def backfill_via_rest(provider: str, symbols: List[str], hours: int,
@@ -653,7 +647,7 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
     """
     written = 0
     now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
-    window_start = now - timedelta(minutes=RESAMPLE_LOOKBACK_MIN)
+    window_start = now - timedelta(minutes=config.WS_RESAMPLE_LOOKBACK_MIN)
     for asset in bases:
         latest_base = conn.execute(
             """SELECT MAX(source_end) FROM source_observations
@@ -664,7 +658,7 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
             continue
         bars = load_bars_for_interval(
             conn, asset, "5m", now,
-            lookback_days=max(1, RESAMPLE_LOOKBACK_MIN // 1440),
+            lookback_days=max(1, config.WS_RESAMPLE_LOOKBACK_MIN // 1440),
         )
         if bars.height < 3:
             continue
@@ -684,11 +678,11 @@ def resample_and_persist(conn, bases: List[str], now: datetime, ws_source: str) 
             state_key = (asset, every, ws_source)
             previous = _RESAMPLE_STATE.get(state_key)
             start = (
-                now - timedelta(minutes=RESAMPLE_LOOKBACK_MIN)
+                now - timedelta(minutes=config.WS_RESAMPLE_LOOKBACK_MIN)
                 if previous is None else
                 max(
-                    now - timedelta(minutes=RESAMPLE_LOOKBACK_MIN),
-                    previous - timedelta(minutes=RESAMPLE_REPAIR_MIN),
+                    now - timedelta(minutes=config.WS_RESAMPLE_LOOKBACK_MIN),
+                    previous - timedelta(minutes=config.WS_RESAMPLE_REPAIR_MIN),
                 )
             )
             # Include the preceding bucket so the first repaired bucket has a

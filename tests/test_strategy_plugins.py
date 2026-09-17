@@ -38,6 +38,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         self.assertTrue(enabled.isdisjoint(config.STRATEGY_ENABLED_IDS))
         self.assertTrue(config.PORTED_STRATEGY_IDS == set(config.STRATEGY_ENABLED_IDS))
         self.assertIn("ema9-adx-stochrsi-state-v1", config.COMPACT_STRATEGY_IDS)
+        self.assertTrue(retired.isdisjoint(config.LEGACY_PRODUCTION_STRATEGY_IDS))
         self.assertTrue(
             enabled - {"ema9-adx-stochrsi-state-v1"} <= config.FUNDAMO_STRATEGY_IDS
         )
@@ -147,7 +148,6 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         old_registry = strategy_plugins._REGISTRY.copy()
         old_enabled = config.STRATEGY_ENABLED_IDS
         old_active = config.STRATEGY_ACTIVE_IDS
-        old_structural = config.STRUCTURAL_STOP_ADMISSION_ENABLED
         old_context_builder = strategy_plugins.build_structural_contexts
         writes = []
         try:
@@ -196,7 +196,6 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             strategy_plugins._REGISTRY.clear(); strategy_plugins._REGISTRY.update(old_registry)
             config.STRATEGY_ENABLED_IDS = old_enabled
             config.STRATEGY_ACTIVE_IDS = old_active
-            config.STRUCTURAL_STOP_ADMISSION_ENABLED = old_structural
             strategy_plugins.build_structural_contexts = old_context_builder
 
     def test_companion_bars_are_checked_in_market_db(self):

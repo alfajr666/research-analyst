@@ -5,7 +5,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from alpha_outbox import dedupe_key, write_event
-from signal_publisher import validate_event
+from intent_publisher import validate_event
 
 
 def _event():

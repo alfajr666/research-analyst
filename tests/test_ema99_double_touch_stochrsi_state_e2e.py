@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import polars as pl
 
-from intent_outbox import build_executor_intent, validate_geometry
+from intent_outbox import build_trade_intent, validate_geometry
 from strategies.v2.ema99_double_touch_stochrsi_state_v1 import evaluate_symbol
 from trade_admission import admit
 
@@ -78,7 +78,7 @@ class Ema99DoubleTouchE2ETests(unittest.TestCase):
             admit(event, now=observed + timedelta(minutes=1), effective_universe=["BTC"])["hard_gate"],
             "pass",
         )
-        intent = build_executor_intent(event)
+        intent = build_trade_intent(event)
         self.assertAlmostEqual(intent["take_profit"], event["entry_price"] + 2 * (event["entry_price"] - event["invalidation_price"]))
         self.assertNotIn("quantity", intent["metadata"])
         self.assertTrue(validate_geometry(intent)[0])

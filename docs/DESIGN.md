@@ -1,389 +1,47 @@
-# Research Analyst — Central Discovery & Strategy Evaluation (Design)
+# Research Analyst Design
 
-> Target architecture for the re-purposed `research-analyst` repo (formerly "Alpha
-> Producer"). This document is the consolidated design reference. It is grounded in
-> the actual code as scanned; historical migration notes are retained in the
-> relevant specs where they provide audit context.
+`AGENTS.md` is the authoritative runtime and safety contract. This document is
+a compact map of the active implementation.
 
----
+## Runtime boundary
 
-## 1. Mission
+```text
+Bybit public market data
+  -> symbol rotation + WebSocket gateway
+  -> market.sqlite3
 
-A research-grade, venue-neutral **discovery + strategy-evaluation** engine for
-crypto perpetuals. It continuously:
-
-1. Maintains a market-data feed for the **performance-rotated watchlist plus
-    permanent assets**.
-2. Evaluates **strategies as plugins** on **5m / 15m** bars, using **HTF
-    (1h/4h) swing + FVG/OB** context from the regime-owned direct cache.
-3. Emits a **trade intent** per evaluation — a falsifiable directional thesis
-   (entry, invalidation, targets, expiry) — delivered to **Discord as a signal**.
-   A signal is **advisory only**: it is not an order and does not imply a fill on
-   any venue.
-4. Publishes validated trade intents to the executor. Position management is owned
-   by the separate `standalone-llm-pm` service.
-
-The engine **never holds exchange credentials and never places orders**.
-
----
-
-## 2. System at a glance
-
-```
-                 ┌─────────────────────────────────────────────────────────┐
-   public WS      │                 ws_gateway                                │
-   (Bybit on,     │  ConnectionPool → StreamRouter → IngestBuffer → SQLite   │
-      Binance off)  │  ResampleWorker: 5m → 15m                              │
-                 └───────────────────────────┬─────────────────────────────┘
-                                             │ source_observations (ws_bars)
-                                             ▼
-    Bybit ticker snapshot  ──►  rotation feed / effective universe selection
-                                             │
-                                             ▼
-                 ┌─────────────────────────────────────────────────────────┐
-                  │  orchestrator._run_pipeline (completed 5m triggers)       │
-                 │   ingest → prune → regime eval → cutoff run →             │
-                  │   compute HTF zones in memory →                          │
-                 │   invoke_plugins_for_cutoff → outcome eval → health.json  │
-                 └───────────────────────────┬─────────────────────────────┘
-                                             │ alpha_outbox/*.json (trade intent)
-                                             ▼
-                 ┌─────────────────────────────────────────────────────────┐
-                 │  signal_publisher.run_once (every 30s)                    │
-                 │   validate → persist alpha_events → Discord/Telegram      │
-                 │   (format_discord_signal)  ← SIGNAL, not an order         │
-                 └─────────────────────────────────────────────────────────┘
-
+completed 5m cutoff
+  -> regime/session worker -> regime.sqlite3
+  -> orchestrator + strategy runner
+  -> raw candidate ledger
+  -> deterministic admission and clash resolution
+  -> alpha outbox + analyst.sqlite3
+  -> TradeIntent schema v2
+  -> shared SQLite intent bus
+  -> venue executors
 ```
 
----
+Research Analyst stops at shared-bus publication. It has no venue adapter,
+venue inbox writer, exchange credentials, order client, sizing logic, fill
+state, or position-management loop.
 
-## 3. Repository layout (module map)
+## Notifications
 
-| Module | Responsibility |
-| --- | --- |
-| `config.py` | Env-driven config, SQLite schemas (`init_db`), symbol expansion (`expand_perp_symbols`), WS toggles. |
-| `orchestrator.py` | Main loop. `_run_pipeline()` runs ingest → scanner → prune → confluence alerts → regime evaluator → cutoff → feature materialization → plugins → outcome eval → `health.json`. |
-| `symbol_rotation.py` | Publishes the versioned performance-ranked subscription feed with a permanent-only fallback. |
-| `strategy_plugins.py` | Plugin **registry + invocation**. `StrategyPlugin` dataclass, `STRATEGY_ENABLED_IDS`, `invoke_plugins_for_cutoff()` (failure-isolated). |
-| `strategy_v2_context.py` | Shared TA context: direct cutoff-bound 1h/4h loading, auxiliary 15m resampling, `ema_last`, `atr_last`, `structure_bias_4h`, `zone_bias_4h`, `compute_htf_zones`, `compression_ok`, `zone_stack_and_ltf_scores`, `has_active_event`. |
-| `structure_zones.py` | **HTF FVG + Order Block** detection (`detect_fvg`, `detect_order_blocks`, `compute_atr`) on caller-supplied cutoff-bound 1h/4h bars. Advisory zones. |
-| `confluence_scoring.py` | `weighted_confluence`, `proximity_score`, `confidence_from_confluence` → uncalibrated `confidence`. |
-| `analyze.py` | Broad TA profiling (VWAP/VA, EMA, HVN/LVN, RSI) used by confluence alerts. |
-| `accumulation_evaluator.py`, `alpha_evaluator.py`, `regime_signal.py`, `regime_evaluator.py`, `outcome_evaluator.py` | Legacy + v2 evaluators and regime/outcome scoring. |
-| `strategies/v2/*.py`, `strategies/compact/*.py` | Concrete strategy plugins (each exposes `run_plugin`); `strategies/v2/adx.py` holds the shared in-house ADX. The default production set is the 7 self-contained vectorbt engine-handoff ports (`bb_tp_race_locked_v1`, `bb_squeeze_trend_v1`, `kama_trend_following_v1`, `macd_ema_v1`, `mr_vwap_locked_v1`, `trend_pullback_vwap_v1`, `trend_wall_v5` — see `specs/strategy-vectorbt-ports-v1.md`). |
-| `alpha_outbox.py` | Append-only, atomic, deduplicated event writer. Enforces `data_purity` emit gate. |
-| `signal_publisher.py` | Persists outbox → `alpha_events`, delivers to Telegram/Discord, retries (lease), routes research note. |
-| `discord_transport.py`, `discord_format.py` | Discord webhook transport + markdown formatters (`format_discord_signal`). |
-| `execution_adapter.py` | Disabled-by-default bot-inbox writer (bybit/bybit-test/mexc/propr). Never orders. |
-| `ws_gateway.py` | Sole market writer: Bybit public 5m stream, recent execution backfill, and auxiliary 15m resampling. |
-| `llm_client.py` + `research_*.py` | Provider-neutral bounded LLM client + research coordinator (advisory only today). |
-| `specs/` | ADR-style specs, including the direct HTF and event-driven evaluation contracts. |
+The only notification surface is the advisory raw-signal Discord batch. It is
+not an intent handoff and never reports fills, positions, or execution state.
 
----
+## Deliberate exclusions
 
-## 4. Data model (SQLite tables)
+- Analyst-local LLM research and selection.
+- Telegram or per-alpha Discord trade cards.
+- Filesystem delivery to venue-specific inboxes.
+- Direct calls to venue executors.
+- Online database compaction.
 
-Split by ownership to preserve single-writer discipline.
+Historical tables from retired paths may remain in an existing SQLite file,
+but current schema initialization, runtime code, retention, and CLI surfaces do
+not create or use them. Destructive database removal requires a separate
+offline migration.
 
-**Market data (`MARKET_DB_PATH`, gateway-owned):**
-- `source_observations` — the canonical execution bar store: `asset, native_symbol, interval, source, source_end, payload_json`. Holds streamed 5m and auxiliary 15m bars. Native 1h/4h setup bars live in the regime-owned database. Historical 1m/HTF-derived rows may remain but are no longer written or read by the engine.
-- `source_request_log` — ingestion rate-limit/freshness log.
-- `universe_snapshots`, `broad_discovery_snapshots`, `discovery_watchlist_history` — point-in-time discovery and subscription-feed records.
-- `regime_signals`, `confluence_alerts`, `scanner_history`, `brain_outputs`, `option_chains`, `alpha_candidates` — research/regime records.
-
-**Analyst state (`ANALYST_DB_PATH`, orchestrator-owned):**
-- `cutoff_runs` — `cutoff_id, cutoff_at, status (running|finalized)`, gates plugin runs.
-- `feature_snapshots` — lightweight materialized features per cutoff (`fvg_ob_zones`, `coinalyze_candle_distributed_volume_profile_v1`, …).
-- `structure_zones` — legacy compatibility table; no live rows are written or read.
-- `alpha_events` — authoritative persisted events (dedupe_key PK). `status ∈ active|expired|invalidated`.
-- `alpha_event_status_history`, `alpha_confidence_observations`, `signal_deliveries` (per-channel attempt/retry), `execution_deliveries`, `research_requests/artifacts/evidence/run_metrics`, `pipeline_runs`.
-
-**Rotation:** the symbol-rotation worker owns its versioned performance feed;
-it is not part of the market or analyst database.
-
----
-
-## 5. Evaluation pipeline (how a trade intent is born)
-
-Driven by `orchestrator._run_pipeline()` → `strategy_plugins.invoke_plugins_for_intervals()` (per-interval; legacy single-cutoff `invoke_plugins_for_cutoff` retained for tests).
-
-1. **Cutoff.** `completed_cycle_for(now, interval)` → the most recent completed boundary for each `EVAL_INTERVALS` member (5m/15m); `_ensure_cutoff_run_finalized()` marks `cutoff_runs.status='finalized'`. Plugins require a finalized cutoff (bar-safety: only completed bars, `source_end < cutoff`).
-2. **Feature materialization.** For the active universe, `structure_zones` computes FVG/OB on direct regime-owned 1h/4h bars in memory; only a lightweight count is written to `feature_snapshots`.
-3. **Plugin invocation.** `load_enabled_plugins()` returns plugins whose id is in `STRATEGY_ENABLED_IDS`. Each `p.run(cutoff_id, snapshot)` is executed in a try/except — **failures are isolated** and reported per-plugin, never aborting the cycle.
-4. **Event production.** Each plugin emits trade-intent dicts; `alpha_outbox.write_event()` stamps `alpha_id` (uuid5), `dedupe_key` (sha256 of `strategy_id|asset|direction|observed_at`), and enforces the `data_purity` gate (mixed strategies require `pure_ca`).
-5. **Confidence.** `confluence_scoring.weighted_confluence` → `confidence ∈ [0,1]`, `confidence_status='uncalibrated'` (not a calibrated probability).
-
-### Trade-intent event schema (schema_version 1)
-
-Written by `alpha_outbox`, validated by `signal_publisher.validate_event`:
-
-```
-schema_version, alpha_id, strategy_id, asset, direction (long|short),
-setup_class, phase, observed_at, valid_until, horizon_minutes, confidence,
-entry_condition {type, price}, invalidation_price, targets[], feature_snapshot,
-dedupe_key, (data_purity, price_source, plugin_version, input_snapshot_id)
-```
-
-This *is* the "outcome of strategy evals" — a portable, falsifiable directional
-thesis. It is **not** an order and carries no sizing/venue.
-
-### Executor-aligned trade-intent outbox (bybit-executor contract)
-
-The advisory alpha event above feeds Discord/signal_publisher. To deliver to
-`bybit-executor`, `alpha_outbox.write_event` also emits a `schema_version=1`
-TradeIntent envelope via `intent_outbox` when `INTENT_DELIVERY_ENABLED=true`.
-Contract: `bybit-executor/AGENTS.md` "Trade Intent Contract".
-
-Mapping (internal α-event → executor intent):
-
-| Executor field | Source |
-| --- | --- |
-| `delivery_id` | `alpha_id` (stable; executor journal dedupes) |
-| `source` | `INTENT_SOURCE` (default `research-analyst`) |
-| `exchange_id` | `INTENT_EXCHANGE_ID` (default `bybit`) |
-| `account_id` | Executor-owned profile route; RA does not decide account capability or maintain account-specific symbol/strategy policy |
-| `asset` | `asset` |
-| `symbol` | `to_ccxt_perp_symbol(asset)` → `BTC/USDT:USDT` |
-| `direction` | `direction` upper (`long/bullish`→`LONG`, `short/bearish`→`SHORT`) |
-| `entry_price` | `entry_condition.price` as the research reference price |
-| `stop_loss` | `invalidation_price` |
-| `take_profit` | `targets[0]` |
-| `take_profit_mode` | `INTENT_TAKE_PROFIT_MODE` (default `fixed_full_close`) |
-| `observed_at` | `observed_at` (ISO Z) |
-| `entry_valid_until` | `valid_until` else `observed_at + INTENT_VALIDITY_MINUTES` |
-| `metadata` | non-sizing metadata only — **sizing is executor-owned** (bybit-executor `runtime._amount` falls back to the account profile `risk.risk_amount`); the analyst never sends `quantity`/`risk_amount` |
-
-Geometry is validated before delivery (`validate_geometry`): LONG ⇒
-`stop_loss < entry_price < take_profit`, SHORT ⇒ `take_profit < entry_price <
-stop_loss`; limit intents additionally require minimum `INTENT_MIN_RR` (2.0 by
-default) and SL distance must meet `INTENT_MIN_STOP_DISTANCE_PCT` (0.1%);
-structural HTF-zone admission must also pass with a 0.5-3.0 ATR buffer. Invalid events are skipped (the advisory event
-still emits). The intent envelope is published to the shared SQLite intent bus
-by `delivery_id`, idempotent on replay.
-
-The analyst does not emit `order_type`. Entry order policy is selected solely by
-the receiving executor profile (`limit` with IOC by default, or an executor-
-configured market policy). `entry_price` is the research reference price and,
-when the executor selects limit, the submitted limit price.
-
-Enable: `INTENT_DELIVERY_ENABLED=true`, set an absolute `INTENT_BUS_DB`, and
-enable the intended bus target with `INTENT_BUS_BYBIT_ENABLED` or
-`INTENT_BUS_PROPR_ENABLED`.
-
-Position management is handled by the standalone PM and executor repositories.
-This repository only publishes the validated strategy/symbol intent and its
-producer-owned exchange target; account capability and final profile admission
-belong to the venue executor, which remains strategy-dumb but safety-authoritative.
-
----
-
-## 6. Effective universe & rotation
-
-- **Performance pool.** The rotation worker ranks the valid Bybit linear
-  USDT-perpetual ticker snapshot; no repository static symbol list is used.
-- **Effective universe.** `ws_gateway` consumes the rotation feed's unexpired
-  sticky watchlist plus `BTC`, `ETH`, `PAXG`, and `QQQUSDT`. Invalid or expired
-  feeds fail closed to those permanent symbols.
-- **Account capability.** The Bybit executor owns profile admission. `bybit/hyro`
-  accepts only `BTC`, `ETH`, `PAXG`, and `QQQ` for any strategy; `bybit/fundamo`
-  accepts every strategy and every venue-admitted asset. Research Analyst does
-  not encode this policy in strategy plugins or candidate admission.
-- **Capacity.** The default 80-symbol effective-universe cap produces at most
-  160 5m/markPrice streams (see `specs/ws-ingestion.md`).
-
----
-
-## 7. Market-data ingestion — current implementation
-
-`ws_gateway` is the live market-data owner. `specs/ws-ingestion.md` documents the active path:
-- `WS_BYBIT_ENABLED=true` (default), `WS_BINANCE_ENABLED=false`.
-- Stream **5m kline + markPrice**; derive only the auxiliary 15m frame locally.
-- Seed the execution window from REST, then maintain it via WS. Native 1h/4h
-  history is fetched and owned by the regime-session worker.
-- Stamp `source`/`data_purity` so the existing emit gate and `_get_bar_purity`
-  keep working unchanged.
-
----
-
-## 8. Timeframe handling
-
-- **Eval timeframes:** 5m, 15m — 5m is streamed and 15m is locally resampled; plugins run on each
-  via `invoke_plugins_for_intervals` (`config.EVAL_INTERVALS`). Each interval gets its own
-  finalized `cutoff_runs` row and a snapshot carrying `eval_interval`.
-- **HTF context:** 1h and 4h are loaded from the regime-owned direct REST cache,
-  bounded by the exact evaluation cutoff. They feed plugins as setup context,
-  not as standalone eval timeframes.
-- **Admission structure:** candidates use admission-owned 4h then 1h zones. The
-  optional `STRUCTURAL_15M_ZONES_ENABLED` fallback derives 15m zones from
-  cutoff-bound market-owned 5m bars only after 4h/1h selection is unavailable;
-  it never enters strategy snapshots or scoring.
-- Helpers in `strategy_v2_context`:
-  - `resample_ohlcv(bars, every)` — derives the auxiliary 15m frame from 5m.
-  - `structure_bias_4h(bars_4h)` — `close vs EMA48_4h → long|short|missing`.
-  - `zone_bias_4h(zones, ref_close, atr_4h)` — nearest active 4h FVG/OB → bias.
-  - `resolve_bias(structure, zone)` — agree-or-abstain combiner.
-  - `compute_htf_zones(bars_1h, bars_4h)` — runs FVG + OB detection on both.
-
----
-
-## 9. HTF swing detector + FVG/OB
-
-- **FVG/OB:** implemented in `structure_zones` (`detect_fvg`, `detect_order_blocks`,
-  ATR-filtered, with naive mitigation/partial/fill/invalidate state tracking).
-- **Swings are enrichment, not a detector.** Like FVG/OB, swing highs/lows are
-  computed inside `structure_zones` (already derived via the prior `swing_lookback`
-  window in `detect_order_blocks`) and exposed as **advisory swing levels** — scored
-  through the same confluence machinery (`zone_stack_and_ltf_scores`, bias
-  resolution) and surfaced in `feature_snapshot`/in-memory contexts. They never gate
-  emission on their own; they enrich structure bias used by downstream PM context. No
-  standalone swing module is required.
-- Zones (and swing levels) are **advisory** (support/neutral/contradict); they
-  never gate strategy emission alone — only contribute to confluence score.
-  The separate admission-owned structural context can hard-gate an execution
-  candidate after plugin evaluation; see the v3/v4 structural admission specs.
-
----
-
-## 10. Strategy plugins (enable / disable, active / inactive)
-
-- **Registry:** `strategy_plugins._REGISTRY` keyed by `strategy_id`; `StrategyPlugin`
-  = `{id, version, required_datasets, optional_datasets, run}`.
-- **Enable/disable:** `config.STRATEGY_ENABLED_IDS` (allowlist), plus
-  `STRATEGY_ACTIVE_IDS` and `plugin_states`. The default allowlist is the 7
-  vectorbt engine-handoff ports; the legacy production set
-  (`LEGACY_PRODUCTION_STRATEGY_IDS`) is registered but disabled by default and
-  re-enabled by setting `STRATEGY_ENABLED_IDS` explicitly. Active plugins form the
-  live admission set; all ported plugins are Fundamo-routed, while legacy compact
-  strategies retain their Hyro permanent-asset route and fan out to Fundamo for
-  the effective watchlist universe. Other registered plugins remain
-  available for research.
-- **Active/inactive [TARGET nuance]:** currently "enabled" = participates in the
-  cutoff. Add a **runtime `active` flag** (per-plugin, toggleable without restart)
-  distinct from the compiled `enabled` allowlist, so a strategy can be
-  enabled-but-paused. Plumb via `STRATEGY_ACTIVE_IDS` or a `plugin_states` table.
-- **Isolation:** every plugin runs in its own try/except; one plugin failing yields
-  `{"failed": "..."}` for that id while others proceed.
-- **Datasets contract:** `required_datasets` gate emission (`bars_15m` always
-  available; optional `fvg_1h/fvg_4h/vp` skip-if-missing with a reported reason).
-
----
-
-## 11. Trade intent → Discord (the signal)
-
-Delivery is owned by `signal_publisher.SignalPublisher.run_once()` (every 30s):
-
-1. Reads `data/alpha_outbox/*.json`, `validate_event()` (schema + bounds).
-2. Persists to `alpha_events` (`ON CONFLICT dedupe_key DO NOTHING`).
-3. For each active, unexpired event, renders and sends per channel.
-4. **Discord:** if `DISCORD_ALPHA_WEBHOOK_URL` set, `DiscordWebhookTransport` +
-   `discord_format.format_discord_signal(event)` renders:
-
-   ```
-   **ALPHA · LONG · SOL**
-   Continuation · `continuation-breakout-v2`
-   Phase: `armed_flag_breakout` · Confidence: **67%** (uncalibrated)
-
-   **Trigger:** breakout above @ `145.2`
-   **Invalidation:** `142.7`
-   **Targets:** `148.1`, `151.0`
-   **Window:** 2026-08-28 10:15 → 2026-08-28 14:15 UTC
-   Context: 4h FVG:... · 4h OB:... · approx VP:...
-   ```
-
-5. **Critical boundary:** this is a **signal**, not an order. The repo does not
-   place trades, choose venues, or guarantee fills. The executor (downstream,
-   separate) decides whether to act on the signal.
-
-Telegram mirror (`TELEGRAM_*`) and the disabled `execution_adapter` inbox follow
-the same advisory model.
-
----
-
-## 12. Retention / tiered prune
-
-Online retention runs every six hours on each database owner's writer connection.
-Deletes are bounded batches with short commits and passive checkpoints. Full file
-reclamation is a separate weekly offline compaction job, because `VACUUM` must
-not run in a live worker. The installed compaction schedule is Sunday at
-04:30 UTC (`30 4 * * 0`). **WS makes growth continuous**, so use tiered TTLs:
-
-| Data | Keep | Rationale |
-| --- | --- | --- |
-| 5m / 15m (resampled) | 21 / 30 days | covers the 20-day max declared strategy lookback + 1d margin |
-| Legacy 1h / 4h residues | 30 / 45 days | drain-only; HTF context comes from regime direct history |
-| `structure_zones` | no persisted rows | recomputed from bars when needed |
-
-Defaults are locked by `specs/resource-footprint-retention-v1.md`.
-The emit-gate (`data_purity`) and `cutoff_runs` finalization must remain intact
-through pruning.
-
----
-
-## 13. Safety & boundaries (carry-over, non-negotiable)
-
-- Single writer per DB (`MARKET_DB_PATH` gateway, `ANALYST_DB_PATH` orchestrator,
-  `REGIME_DB_PATH` regime worker). Never duplicate writers.
-- Evaluators read **only** local warmed data; they never call external market APIs
-  and never write raw market data.
-- `confidence` is uncalibrated research output, not a trade probability.
-- No exchange credentials, no order submission, anywhere in this repo.
-- Discovery rank, TA confluence, HMM output, LLM commentary, and Discord signals
-  are **not** trade instructions.
-
----
-
-## 14. Config reference (key knobs)
-
-| Env | Default | Purpose |
-| --- | --- | --- |
-| `WS_BYBIT_ENABLED` | `true` | Primary public WS source. |
-| `WS_BINANCE_ENABLED` | `false` | Opt-in WS source. |
-| `WS_STREAM_TIMEFRAMES` | `5m` | Base streamed TF (15m resampled from 5m). |
-| `WS_MARKPRICE_ENABLED` | `true` | Stream markPrice for live state. |
-| `STRATEGY_ENABLED_IDS` | `config.PORTED_STRATEGY_IDS` (the 7 engine-handoff ports) | Compiled plugin allowlist; legacy production set is opt-in. |
-| `STRATEGY_ACTIVE_IDS` | (empty ⇒ all enabled active) | Runtime active/inactive allowlist; `plugin_states` overrides per-id. |
-| `DISCORD_ALPHA_WEBHOOK_URL` | "" | Signal delivery channel. |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | "" | Telegram mirror. |
-| `LLM_RESEARCH_ENABLED` | `false` | Advisory research note (today). |
-| `EXECUTION_BACKFILL_HOURS` | `24` | Completed 5m execution seed window. |
-
----
-
-## 15. Build order (recommended)
-
-1. **Rotation feed** — ✅ done (versioned watchlist plus permanent-only fallback).
-2. **WS ingestion** — `ws_gateway.py` (ConnectionPool/StreamRouter/IngestBuffer) +
-   `ResampleWorker`; Backfill seed; purity stamping. (`specs/ws-ingestion.md`)
-3. **Swing enrichment** — expose swing levels from `structure_zones` as advisory
-   enrichment (scored like FVG/OB via confluence); feed into bias + PM RR. No
-   standalone detector.
-4. **5m/15m eval timeframes** ✅ — `completed_cycle_for` + `load_bars_for_interval` in
-    `strategy_v2_context`; v2 plugins honor `snapshot["eval_interval"]`;
-    `invoke_plugins_for_intervals` runs each `EVAL_INTERVALS` member with its own cutoff.
-     HTF (1h/4h) comes from the regime-owned direct REST cache.
-5. **Trade-intent → Discord** — confirm `format_discord_signal` carries the intent;
-   (already wired; verify fields).
- 6. **Active/inactive flag** ✅ — `STRATEGY_ACTIVE_IDS` (env allowlist; empty = all enabled) +
-    `plugin_states` table (runtime override: `active`/`inactive`/`paused`). `ensure_plugin_states()`
-    seeds defaults; `load_active_plugins()` filters `enabled AND effective_active`. **Legacy v1
-     evaluators** (research-only plugins outside the active set)
-     are **retired** — kept registered but defaulted to `inactive` so they no longer evaluate; they can
-    be re-activated via the flag. Hard-deletion of the legacy code is a separate, optional step.
- 7. **Tiered prune** ✅ — `prune_db` now deletes `source_observations` per interval via
-     `config.PRUNE_INTERVAL_DAYS` (5m=21d, 15m=30d, 1h=30d, 4h=45d; `0` disables a tier).
-    Uncovered intervals fall back to the legacy `futures_retention_days`.
-  9. **Performance rotation** ✅ — the symbol-rotation worker publishes the
-      versioned feed consumed by `ws_gateway`; the gateway retains permanent
-      symbols as the deterministic fallback.
-
----
-
-## 16. Open items
-
-- **Universe:** the effective working set is the rotation watchlist plus four
-  permanent assets, capped at 80 symbols; no static snapshot is maintained.
-- **Swing levels** are enrichment inside `structure_zones` (scored like FVG/OB), not
-  a standalone detector.
-- **Binance WS** off by default; enable only after Bybit path is proven.
-- **Standalone PM** owns position-management decisions in its separate repository.
+See `specs/repository-cleanup-v1.md` for the retirement record and phased
+cleanup decisions.

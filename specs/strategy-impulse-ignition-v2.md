@@ -20,11 +20,10 @@ must not mix eras under one `strategy_id`.
 
 ## Related
 
-- `specs/adr-strategy-confluence-scoring.md` — score, gates, LLM booster
+- `specs/adr-strategy-confluence-scoring.md` — deterministic score and gates
 - `specs/strategy-accumulation-base-v2.md` — sibling tracer (shared ops patterns)
 - `specs/data-platform-strategy-plugins.md` — cutoff, zones, plugins
 - `specs/alpha-outcome-policy.md` — outcomes
-- `specs/llm-research-agent.md` — advisory LLM only
 
 ## Thesis
 
@@ -51,7 +50,7 @@ finalized 15m cutoff
     → S_min + top-N
     → re-arm (one active per asset+direction for this strategy_id)
     → breakout entry event → outbox → channels
-    → optional LLM booster (order only)
+    → deterministic admission → shared intent bus
 ```
 
 ## Hard gates
@@ -146,11 +145,6 @@ Then apply re-arm drops.
 
 No synthetic `close * 1.005` entry. No dual %-targets from v1.
 
-## LLM booster
-
-Same ADR rules as accumulation-base-v2: post-emit `stance` + `boost` for
-**delivery order only**; never mutates deterministic fields; not an emit gate.
-
 ## Lifecycle vs v1
 
 1. Register **`impulse-ignition-v2`** in known/enabled strategy ids.
@@ -173,14 +167,13 @@ S_min+top-N, one active re-arm, phase name, dual direction.
 | `r_max` | max base risk / ATR |
 | `S_min`, `N_top` | emit floor |
 | score weights | soft basket |
-| `llm_boost` cap | delivery priority |
 
 ## Non-goals
 
 - Chasing after lid breach (continuation family)
 - Limit-at-EMA entries (accumulation family)
 - Family mutex with accumulation
-- Calibrated confidence or LLM-set confidence
+- Calibrated or model-set confidence
 - Clamped stops inside a wide base
 - Long-only restriction
 - Sizing / venue / orders
@@ -208,5 +201,4 @@ Both may emit the same asset under different `strategy_id`s for research.
 - [ ] Soft basket includes OI/funding/RS/prior impulse with missing→0
 - [ ] S_min + top-N; one active per asset+direction for this id
 - [ ] No mutex with accumulation-base-v2
-- [ ] LLM booster order-only
 - [ ] v1 parallel then disable; PIT replay only

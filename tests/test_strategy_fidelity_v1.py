@@ -6,7 +6,7 @@ import pytest
 
 import config
 from evaluation_trigger import publish
-from intent_outbox import build_executor_intent
+from intent_outbox import build_trade_intent
 from strategy_v2_context import ema_series, resample_ohlcv, stoch_rsi, wilder_atr, wilder_rsi
 from strategy_plugins import _REGISTRY
 
@@ -157,7 +157,7 @@ def test_new_fundamo_routes_are_account_agnostic_in_candidate_and_fixed_downstre
             "observed_at": "2099-01-01T00:00:00Z", "entry_price": 100.0,
             "invalidation_price": 95.0, "input_snapshot_id": "5m:2099-01-01T00:00:00Z",
         }
-        intent = build_executor_intent(event, account_id="hyro")
+        intent = build_trade_intent(event, account_id="hyro")
         assert intent["account_id"] == "fundamo"
         assert all(key not in event for key in ("account_id", "exchange_id", "quantity", "leverage", "order_type"))
 

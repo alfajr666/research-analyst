@@ -358,9 +358,8 @@ The exit evaluator returns a deterministic policy signal such as:
 It does not place orders, cancel protection, move stops, or create a second
 order writer. The executor-owned stop and external 2R target remain active
 independently. Until a compatible mechanical policy integration is separately
-approved, the standalone PM remains the live position-management
-authority; the TA exit can be recorded and tested without silently changing
-that ownership.
+approved outside this repository, the TA exit can be recorded and tested only;
+it does not change downstream ownership.
 
 ## Data, Freshness, and Warmup
 

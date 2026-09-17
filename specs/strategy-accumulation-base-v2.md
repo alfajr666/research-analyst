@@ -21,10 +21,9 @@ observations, and Telegram history must not mix eras under one `strategy_id`.
 
 ## Related
 
-- `specs/adr-strategy-confluence-scoring.md` — score, gates, LLM booster
+- `specs/adr-strategy-confluence-scoring.md` — deterministic score and gates
 - `specs/data-platform-strategy-plugins.md` — cutoff, zones, plugins
 - `specs/alpha-outcome-policy.md` — trigger/target/invalidation outcomes
-- `specs/llm-research-agent.md` — advisory LLM only
 
 ## Thesis
 
@@ -69,7 +68,7 @@ finalized 15m cutoff snapshot
   alpha outbox ──► publisher ──► Telegram/Discord
         │
         v  (optional, after emit)
-  LLM review booster (stance + delivery priority only)
+  deterministic admission and shared-bus publication
 ```
 
 ## Hard gates
@@ -201,24 +200,6 @@ clears `S_min` and top-N is 3, that one may emit (subject to re-arm).
 
 Setup internals stay in `feature_snapshot` only.
 
-## LLM booster
-
-After deterministic emit, existing research path may attach:
-
-```text
-llm_review.stance    = support | caution | oppose
-llm_review.boost     = non-negative priority delta for delivery order only
-llm_review.rationale = schema-validated, cited
-```
-
-Rules:
-
-- No change to direction, entry, invalidation, targets, snapshot, `confidence`,
-  or `confidence_status`.
-- Delivery may sort by `confluence_score + llm_boost` when review present.
-- LLM off / timeout / budget → event unchanged, boost 0.
-- Not a hard emit/suppress gate.
-
 ## Lifecycle vs v1
 
 1. Register plugin id **`accumulation-base-v2`** in `KNOWN_STRATEGIES` /
@@ -244,11 +225,10 @@ zone proximity bins **0.25 / 0.75 ATR**, structure EMA **48 on 4h**, entry EMA
 | `r_max` | max risk / ATR_1h before geometry fail |
 | score weights | soft basket |
 | `S_min`, `N_top` | emit floor |
-| `llm_boost` cap | max delivery priority delta |
 
 ## Non-goals
 
-- Calibrated probability or LLM-set confidence
+- Calibrated probability or model-set confidence
 - Zone-aware entry type (deferred v2.1)
 - Swing-based 4h structure bias
 - Clamped/fake stops inside a wide base
@@ -272,6 +252,5 @@ zone proximity bins **0.25 / 0.75 ATR**, structure EMA **48 on 4h**, entry EMA
 - [ ] Emit requires `S_min` and top-N absolute among scorers
 - [ ] One active armed event per asset+direction
 - [ ] VP missing → term 0, not fabricated native VP
-- [ ] LLM path cannot mutate deterministic fields; boost order-only
 - [ ] v1 independently enableable until intentionally disabled
 - [ ] Point-in-time replay from finalized cutoff snapshots only

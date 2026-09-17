@@ -36,9 +36,6 @@ completed evaluation trigger
        alpha ledger and publisher
        -> shared SQLite intent bus, when enabled
 
- executor 1m position snapshots
-   -> standalone-llm-pm (separate service)
-        -> executor decision inbox
 ```
 
 The gateway emits triggers only after market observations are committed. The
@@ -280,6 +277,9 @@ requires an explicit absolute `INTENT_BUS_DB` and target switches:
 The executor owns credentials, sizing, leverage, venue precision, orders,
 fills, protective stops, take-profit execution, and receipts. Analyst logs must
 not claim execution state. The shared SQLite bus is the sole intent handoff.
+Research Analyst contains no venue adapter, venue inbox writer, Telegram trade
+signal publisher, or analyst-local LLM workflow. Those are outside this
+repository's scope.
 
 Alpha outbox events persist the admitted target in the top-level `targets`
 field. The publisher can recover that field for legacy events when
@@ -296,12 +296,11 @@ it only after auditing that every file is expired and belongs to a retired
 strategy or invalid legacy schema. Preserve active top-level outbox events;
 never clear the whole `data/alpha_outbox/` directory.
 
-## Position Management
+## Downstream Boundary
 
-LLM position management is owned by the separate `standalone-llm-pm` service.
-Research Analyst publishes validated trade intents only and does not run a PM
-loop or write executor position-decision files. The executor remains
-authoritative for venue state, protection, hard exits, and execution.
+Research Analyst stops at validated shared-bus publication. Position
+management, venue state, protection, hard exits, and execution are downstream
+concerns and are not modeled or configured in this repository.
 
 ## Notification Ownership
 
@@ -317,8 +316,7 @@ by explicit opt-in.
 ## Operations
 
 Production services are managed by `oxmgr`. Do not start gateway, orchestrator,
-strategy runner, regime worker, or rotation worker processes manually. The
-standalone PM is managed from its own repository.
+strategy runner, regime worker, or rotation worker processes manually.
 
 ```bash
 oxmgr list

@@ -1,9 +1,8 @@
-"""Build and deliver bybit-executor TradeIntent envelopes (schema_version 2).
+"""Build shared-bus TradeIntent envelopes (schema_version 2).
 
-The internal alpha event (alpha_outbox) is the advisory record consumed by
-Discord/signal_publisher. This module converts that event into the envelope the
-bybit-executor "Trade Intent Contract" (see bybit-executor/AGENTS.md) expects.
-The shared SQLite intent bus owns delivery and deduplication; the executor never
+The internal alpha event is the analyst ledger record. This module converts it
+into the envelope consumed through the shared SQLite intent bus. The analyst
+never writes a venue inbox or invokes a venue adapter, and the executor never
 trusts intent leverage.
 
 Geometry rules mirrored from the contract:
@@ -33,10 +32,6 @@ from structural_stop import (
     _normalise_closed_bar_timestamp,
 )
 
-# Mirror of config.FUNDAMO_STRATEGY_IDS (legacy set plus the vectorbt
-# engine-handoff ports). A stale hardcoded copy here published port-strategy
-# intents for non-permanent assets to bybit/hyro (2026-09-15).
-FUNDAMO_STRATEGY_IDS = frozenset(getattr(config, "FUNDAMO_STRATEGY_IDS", ()))
 from trade_admission import (
     canonical_asset,
     candidate_admission_fingerprint,
@@ -81,23 +76,22 @@ def _norm_direction(d: str) -> str:
     return d.upper()
 
 
-def build_executor_intent(event: dict, *, source=None, exchange_id=None,
-                          account_id=None, take_profit_mode=None,
-                          validity_minutes=None, admission=None) -> dict:
-    """Convert an internal alpha event into a score-aware executor envelope.
+def build_trade_intent(event: dict, *, source=None, exchange_id=None,
+                       account_id=None, take_profit_mode=None,
+                       validity_minutes=None, admission=None) -> dict:
+    """Convert an internal alpha event into a shared-bus TradeIntent.
 
-    Precedence for routing fields: explicit argument > per-strategy INTENT_ROUTING
-    entry > global INTENT_* default. Compact strategy account fan-out is authorized
-    by the admission proof and remains constrained to bybit.
+    Explicit schema-field arguments override canonical defaults. Account fan-out
+    is authorized by the admission proof and remains constrained to Bybit schema
+    values; this function performs no venue delivery.
     """
-    route = (getattr(config, "INTENT_ROUTING", {}) or {}).get(event.get("strategy_id"), {}) or {}
-    source = source or route.get("source") or getattr(config, "INTENT_SOURCE", "research-analyst")
-    exchange_id = exchange_id or route.get("exchange_id") or getattr(config, "INTENT_EXCHANGE_ID", "bybit")
-    account_id = account_id or route.get("account_id") or getattr(config, "INTENT_ACCOUNT_ID", "hyro")
+    source = source or getattr(config, "INTENT_SOURCE", "research-analyst")
+    exchange_id = exchange_id or getattr(config, "INTENT_EXCHANGE_ID", "bybit")
+    account_id = account_id or getattr(config, "INTENT_ACCOUNT_ID", "hyro")
     # Compact strategies and the Fundamo portfolio must never be diverted by
     # stale routing config or caller-supplied overrides. The admission proof may
     # select the Fundamo leg of a compact strategy's account fan-out.
-    if event.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ()) or event.get("strategy_id") in FUNDAMO_STRATEGY_IDS:
+    if event.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ()) or event.get("strategy_id") in getattr(config, "FUNDAMO_STRATEGY_IDS", ()):
         exchange_id = "bybit"
         account_id = (
             admission.get("resolved_account")
@@ -105,13 +99,12 @@ def build_executor_intent(event: dict, *, source=None, exchange_id=None,
         ) or resolved_account(event.get("strategy_id"))
     take_profit_mode = (
         take_profit_mode
-        or route.get("take_profit_mode")
         or (getattr(config, "STRATEGY_TAKE_PROFIT_MODES", {}) or {}).get(event.get("strategy_id"))
         or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
     )
     validity_minutes = (
         validity_minutes if validity_minutes is not None
-        else route.get("validity_minutes", getattr(config, "INTENT_VALIDITY_MINUTES", 5))
+        else getattr(config, "INTENT_VALIDITY_MINUTES", 5)
     )
 
     asset = event["asset"]

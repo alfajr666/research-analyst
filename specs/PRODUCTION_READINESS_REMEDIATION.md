@@ -16,8 +16,7 @@ advisory semantics.
 - The shared SQLite bus remains authoritative when enabled.
 - Admission, routing, sizing, leverage, protection, and execution remain
   executor-owned.
-- LLM failures default to HOLD and never create an executable exit by
-  themselves.
+- Position management and model-driven decisions are outside this repository.
 - Existing strategy output and dedupe identities remain stable.
 
 ## 3. Required Changes

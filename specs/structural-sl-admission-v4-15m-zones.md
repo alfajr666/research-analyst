@@ -579,7 +579,7 @@ executor change is required.
   source mode, frame IDs, or stop buffer is rejected.
 - Replaying with changed 5m source data cannot pass an old proof.
 - A candidate rejected by 15m structural admission creates no alpha event and
-  no executor intent.
+  no shared-bus intent.
 
 ### 15.6 Regression
 

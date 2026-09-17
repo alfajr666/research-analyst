@@ -1,4 +1,4 @@
-"""Append-only, file-backed delivery seam for venue-neutral alpha events."""
+"""Append-only retry seam for validated trade intents published to the shared bus."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
         if observed.tzinfo is None:
             observed = observed.replace(tzinfo=timezone.utc)
         admission_event["valid_until"] = observed + timedelta(minutes=getattr(config, "INTENT_VALIDITY_MINUTES", 5))
-    # Older advisory alpha envelopes omit expiry; executor construction supplies
+    # Older advisory alpha envelopes omit expiry; TradeIntent construction uses
     # the configured validity. New strategy candidates must provide it explicitly.
     if not event.get("valid_until"):
         admission_event["valid_until"] = datetime.now(timezone.utc) + timedelta(minutes=1)
@@ -165,7 +165,7 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
             record_status(
                 raw_id,
                 executor_intent_status=(
-                    "written" if delivery_status == "written" else
+                    "published" if delivery_status == "published" else
                     "failed" if delivery_status == "failed" else "not_eligible"
                 ),
             )
@@ -182,18 +182,18 @@ def _maybe_deliver_intent(
     *,
     admission: dict | None = None,
     complete_candidate: bool = True,
-) -> None:
-    """Best-effort: emit an executor TradeIntent envelope for a newly written event.
+) -> str:
+    """Best-effort: publish a TradeIntent envelope to the shared intent bus.
 
-    Gated by INTENT_DELIVERY_ENABLED; geometry-invalid events are skipped (the
-    advisory alpha event is still emitted). Failures are logged, never raised.
+    Gated only by the shared-bus path and target switches; geometry-invalid
+    events are skipped while the alpha ledger event is retained.
     """
-    if not getattr(config, "INTENT_DELIVERY_ENABLED", False):
+    if not getattr(config, "INTENT_BUS_DB", None) or not getattr(config, "INTENT_BUS_BYBIT_ENABLED", False):
         return "disabled"
     if not complete_candidate:
         return "not_eligible"
     try:
-        from intent_outbox import build_executor_intent, validate_geometry
+        from intent_outbox import build_trade_intent, validate_geometry
         if admission is None:
             admission = payload.get("_score_result") or payload.get("_admission_result")
         if admission is None:
@@ -205,20 +205,20 @@ def _maybe_deliver_intent(
         if admission.get("score_decision") != "eligible":
             print(f"intent skipped (trade quality): {admission.get('score_reasons') or admission.get('status')}")
             return "rejected"
-        intent = build_executor_intent(payload, admission=admission)
+        intent = build_trade_intent(payload, admission=admission)
         ok, reason = validate_geometry(intent)
         if not ok:
             print(f"intent skipped (geometry): {reason} for {payload.get('strategy_id')}/{payload.get('asset')}")
             return "rejected"
         # Shared SQLite intent bus fan-out (spec 3.2, 7).
-        return "written" if _maybe_publish_to_bus(intent) else "not_delivered"
-    except Exception as exc:  # never break the advisory emit path
+        return "published" if _maybe_publish_to_bus(intent) else "not_delivered"
+    except Exception as exc:  # never break alpha-ledger persistence
         print(f"intent delivery error: {exc}")
         return "failed"
 
 
 def _maybe_publish_to_bus(intent: dict) -> bool:
-    """Best-effort fan-out of a built schema-v1 envelope to the shared bus."""
+    """Best-effort fan-out of a validated TradeIntent to the shared bus."""
     published = False
     try:
         from intent_bus_publisher import publish_research_intent

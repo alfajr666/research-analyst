@@ -5,7 +5,7 @@ from unittest.mock import patch
 import polars as pl
 
 import config
-from intent_outbox import build_executor_intent, validate_geometry
+from intent_outbox import build_trade_intent, validate_geometry
 from strategy_plugins import _REGISTRY
 from strategies.v2.ema9_adx_stochrsi_state_v1 import STRATEGY_ID, evaluate_symbol
 from trade_admission import admit
@@ -76,7 +76,7 @@ class Ema9AdxStochRsiStateE2ETests(unittest.TestCase):
         self.assertEqual(result["hard_gate"], "pass")
         self.assertAlmostEqual(event["invalidation_price"], 97.5)
 
-        intent = build_executor_intent(event)
+        intent = build_trade_intent(event)
         self.assertEqual(intent["take_profit"], event["entry_price"] + 2 * (event["entry_price"] - event["invalidation_price"]))
         self.assertNotIn("quantity", intent["metadata"])
         self.assertNotIn("risk_amount", intent["metadata"])

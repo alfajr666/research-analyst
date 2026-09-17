@@ -28,7 +28,7 @@ def max_health_age_seconds() -> int:
     try:
         cadence_minutes = max(5.0, float(os.environ.get(
             "ORCHESTRATOR_CADENCE_MINUTES",
-            os.environ.get("INGEST_INTERVAL_MINS", "5"),
+            "5",
         )))
     except ValueError:
         cadence_minutes = 5

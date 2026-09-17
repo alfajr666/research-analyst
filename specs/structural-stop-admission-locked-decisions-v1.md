@@ -25,7 +25,7 @@ candidate
   -> selection and delivery
 ```
 
-Both gates must pass before a candidate can become an executor intent.
+Both gates must pass before a candidate can become a shared-bus TradeIntent.
 
 Structural-stop admission answers:
 
@@ -75,7 +75,7 @@ The structural gate may pass or reject it. No analyst component may:
 - widen or tighten it;
 - clamp it to a maximum;
 - recompute it from a different structure;
-- replace it during PM reasoning.
+- replace it after publication.
 
 If a downstream executor performs favorable stop maintenance, that remains an
 executor-owned behavior outside this analyst admission decision.
@@ -212,12 +212,12 @@ The provenance must identify:
 Under-warmed ATR is unavailable. The structural-zone fallback value `1.0` is
 not valid evidence for a hard gate.
 
-### LSA-011: PM consumes the immutable plan
+### LSA-011: The published plan is immutable
 
-**Decision:** PM uses the originating intent's direction, entry, stop, target,
-structural reference, and provenance.
+**Decision:** the shared-bus intent carries the originating direction, entry,
+stop, target, structural reference, and provenance without mutation.
 
-PM may issue only its defined management advice. It cannot:
+No analyst-local downstream compatibility step may:
 
 - move or replace the entry stop;
 - select a different structural reference;
@@ -331,7 +331,7 @@ and execution receipts. Structural-stop admission does not cross that boundary.
 6. Add the structural-reference event contract.
 7. Implement the independent structural-stop admission result.
 8. Revalidate at alpha-outbox and compatibility handoff boundaries.
-9. Update PM to consume the immutable originating plan.
+9. Verify the shared-bus payload preserves the immutable originating plan.
 10. Run audit-only, then enable per strategy.
 
 No step may enable live structural rejection before the preceding data and
@@ -346,7 +346,6 @@ Normative current runtime sources:
 - `CONTEXT.md`
 - `specs/trade-admission-and-clash-resolution.md`
 - `specs/strategy-fidelity-repair-and-expansion-v1.md`
-- standalone-llm-pm repository for position-management decisions
 
 Historical or superseded documents remain useful for background but cannot
 override this register where they conflict:

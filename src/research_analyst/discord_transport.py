@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import httpx
 
-from discord_format import DISCORD_CONTENT_LIMIT
+
+DISCORD_CONTENT_LIMIT = 1900
 
 
 class DiscordWebhookTransport:

@@ -1,7 +1,7 @@
 # Research Analyst Local CLI
 
 **Status:** LOCKED
-**Version:** 1
+**Version:** 2
 **Date:** 2026-09-10
 
 ## 1. Purpose
@@ -112,49 +112,42 @@ Supported filters: `--asset`, `--strategy`, `--direction`, `--status`,
 
 ### 4.4 `research signals`
 
-Reads `raw_signals`, status history, and delivery status. The result separates
-raw candidate state, admission state, alpha event state, and executor delivery
-state. A published intent is reported as `published`; it is never reported as
-filled or open here.
+Reads `raw_signals`, status history, and shared-bus publication status. The
+result separates raw candidate state, admission state, alpha event state, and
+intent-bus state. Venue execution state is never inferred here.
 
 ### 4.5 `research signal <id>`
 
 Returns one complete bounded signal record, including its admission proof,
-cutoff, strategy identity, source evidence references, and target delivery
-references. Sensitive or unbounded provider payloads are omitted.
+cutoff, strategy identity, source evidence references, and shared-bus delivery
+reference. Sensitive or unbounded provider payloads are omitted.
 
-### 4.6 `research reports` and `research report <id>`
-
-Reads validated research reports and their evidence references from the
-Research Analyst store. Reports remain research artifacts. The CLI must reject
-wording or output that upgrades `support` into an execution instruction.
-
-### 4.7 `research regime`
+### 4.6 `research regime`
 
 Reads the latest regime scores and gate decisions from the regime-owned
 database. It returns readiness, active families, blocked assets, exact cutoff,
 and provenance. It must show `shadow` blocks as hypothetical rather than
 operational blocks.
 
-### 4.8 `research watchlist`
+### 4.7 `research watchlist`
 
 Reads the persisted rotation feed and effective universe. It returns feed
 identity, universe version, freshness, permanent assets, rotating assets,
 expiry, and source status. It never edits the watchlist.
 
-### 4.9 `bus deliveries`, `bus delivery <id>`, `bus receipts <id>`
+### 4.8 `bus deliveries`, `bus delivery <id>`, `bus receipts <id>`
 
 These are read-only views of the shared intent bus. They may inspect both
 targets but never claim, retry, complete, expire, or write receipts. Payloads
 are redacted and bounded.
 
-### 4.10 `service start|stop|restart|logs <name>`
+### 4.9 `service start|stop|restart|logs <name>`
 
 Controls only the five registered Research Analyst oxmgr targets. `stop` and
 `restart` require `--confirm` because they interrupt data collection. The CLI
 must call `oxmgr`, not spawn worker Python modules directly.
 
-### 4.11 `research publish <alpha-id>`
+### 4.10 `research publish <alpha-id>`
 
 This action is intentionally excluded from version 1. Existing worker-owned
 publishing remains authoritative. A future command may request publication only
@@ -186,7 +179,7 @@ open a writer connection for an observational command.
 ## 7. Verification
 
 Add hermetic tests for envelope serialization, redaction, stale health,
-read-only database access, candidate/report queries, bus inspection, service
+read-only database access, candidate queries, bus inspection, service
 allowlisting, and refusal of mutation commands. Required repository checks:
 
 ```bash

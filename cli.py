@@ -35,7 +35,6 @@ SECRET_KEYS = {
 }
 SECRET_VALUE_NAMES = re.compile(r"(?:api[_-]?key|api[_-]?secret|password|private[_-]?key|token|webhook|credential|authorization)", re.I)
 WEBHOOK_VALUE = re.compile(r"https?://(?:discord(?:app)?\.com/api/webhooks|hooks\.slack\.com)/", re.I)
-REPORT_POLICY_WORDS = re.compile(r"\b(?:guaranteed|certain|leverage|position sizing|execute|execution|buy|sell)\b", re.I)
 
 
 class CliError(Exception):
@@ -582,27 +581,6 @@ def command_candidates(args: argparse.Namespace) -> tuple[Any, dict[str, Any], l
     return data, _source(path, observed or utc_now(), fresh), warnings
 
 
-def _delivery_rows(connection: sqlite3.Connection, alpha_id: str) -> list[dict[str, Any]]:
-    if "execution_deliveries" not in _tables(connection):
-        return []
-    rows = connection.execute(
-        "SELECT target, status, reason, inbox_path, written_at, acknowledged_at FROM execution_deliveries WHERE alpha_id=? ORDER BY target",
-        (alpha_id,),
-    ).fetchall()
-    result = []
-    for row in rows:
-        item = _row_dict(row) or {}
-        state = str(item.get("status") or "unknown").lower()
-        if state in {"filled", "open", "position_open"}:
-            state = "unknown"
-        item["status"] = state
-        item["written_at"] = timestamp(item.get("written_at"))
-        item["acknowledged_at"] = timestamp(item.get("acknowledged_at"))
-        item.pop("inbox_path", None)
-        result.append(item)
-    return result
-
-
 def _signal_record(connection: sqlite3.Connection, row: sqlite3.Row, *, detail: bool = False) -> dict[str, Any]:
     raw = _row_dict(row) or {}
     payload = _json(raw.get("payload_json"), {})
@@ -610,11 +588,8 @@ def _signal_record(connection: sqlite3.Connection, row: sqlite3.Row, *, detail: 
     status = _latest_status(connection, str(raw.get("raw_signal_id")))
     event = _event_for(connection, str(raw.get("candidate_id")))
     proof = _proof(event, payload)
-    alpha_id = event.get("alpha_id") or raw.get("candidate_id")
-    deliveries = _delivery_rows(connection, str(alpha_id)) if alpha_id else []
-    delivery_published = any(item.get("status") in {"written", "acknowledged"} for item in deliveries)
     persisted_status = str(event.get("_persisted_status") or "unknown").lower()
-    alpha_state = "published" if delivery_published else persisted_status
+    intent_bus_state = status.get("executor_intent_status") or "unknown"
     result: dict[str, Any] = {
         "raw_signal_id": raw.get("raw_signal_id"),
         "candidate_id": raw.get("candidate_id"),
@@ -628,15 +603,18 @@ def _signal_record(connection: sqlite3.Connection, row: sqlite3.Row, *, detail: 
             "score": status.get("score_status") or "unknown",
             "clash": status.get("clash_status") or "unknown",
         },
-        "alpha_event_state": alpha_state if event else "not_published",
-        "executor_delivery_state": deliveries,
+        "alpha_event_state": persisted_status if event else "not_published",
+        "intent_bus_state": intent_bus_state,
         "observed_at": timestamp(raw.get("observed_at")),
         "valid_until": timestamp(raw.get("valid_until")),
     }
     if detail:
         result["admission_proof"] = proof or None
         result["source_evidence_references"] = _evidence_references(payload, proof)
-        result["target_delivery_references"] = result["executor_delivery_state"]
+        result["target_delivery_references"] = {
+            "source": "shared_intent_bus",
+            "status": intent_bus_state,
+        }
         result["record"] = {
             key: payload.get(key) for key in
             ("entry_condition", "invalidation_price", "targets", "setup_class", "phase", "source_symbol")
@@ -708,127 +686,6 @@ def command_signal(args: argparse.Namespace) -> tuple[Any, dict[str, Any], list[
         connection.close()
     fresh = data.get("observed_at") is None or _fresh(data.get("observed_at"))
     return data, _source(path, data.get("observed_at"), fresh), ([] if fresh else ["raw signal observation is stale"])
-
-
-def _report_rows(connection: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
-    tables = _tables(connection)
-    if "research_artifacts" in tables and "research_requests" in tables:
-        rows = connection.execute(
-            """SELECT a.artifact_id, a.request_id, a.generated_at, a.verdict,
-                      r.subject_type, r.subject_id
-                 FROM research_artifacts a LEFT JOIN research_requests r ON r.request_id=a.request_id
-                ORDER BY a.generated_at DESC LIMIT ?""", (limit,)
-        ).fetchall()
-        result = []
-        for row in rows:
-            item = _row_dict(row) or {}
-            item["generated_at"] = timestamp(item.get("generated_at"))
-            item["research_only"] = True
-            result.append(item)
-        return result
-    if "research_reports" in tables:
-        rows = connection.execute("SELECT * FROM research_reports ORDER BY 1 DESC LIMIT ?", (limit,)).fetchall()
-        result = []
-        for row in rows:
-            item = _row_dict(row) or {}
-            report = _json(item.get("report_json") or item.get("report"), {})
-            if report and _report_is_unsafe(report):
-                raise CliError("report contains prohibited execution language", 4)
-            item.pop("report_json", None)
-            item["report"] = report if isinstance(report, dict) else None
-            item["generated_at"] = timestamp(item.get("generated_at") or item.get("created_at") or item.get("persisted_at"))
-            item["research_only"] = True
-            item["evidence"] = []
-            result.append(item)
-        return result
-    raise CliError("required schema is unavailable: research reports", 3)
-
-
-def _report_detail(connection: sqlite3.Connection, report_id: str) -> dict[str, Any] | None:
-    tables = _tables(connection)
-    if "research_artifacts" in tables:
-        if "research_requests" in tables:
-            row = connection.execute(
-                """SELECT a.*, r.subject_type, r.subject_id FROM research_artifacts a
-                    LEFT JOIN research_requests r ON r.request_id=a.request_id
-                    WHERE a.artifact_id=?""", (report_id,),
-            ).fetchone()
-        else:
-            row = connection.execute("SELECT * FROM research_artifacts WHERE artifact_id=?", (report_id,)).fetchone()
-        if row is None:
-            return None
-        item = _row_dict(row) or {}
-        report = _json(item.pop("report_json", None), {})
-        if not isinstance(report, dict) or _report_is_unsafe(report):
-            raise CliError("report contains prohibited execution language", 4)
-        item.pop("input_json", None)
-        item.pop("provider_usage_json", None)
-        item["report"] = report
-        item["evidence"] = []
-        if "research_evidence" in tables:
-            evidence = connection.execute(
-                "SELECT source_type, source_ref, observed_at, retrieved_at, excerpt FROM research_evidence WHERE artifact_id=? ORDER BY evidence_id LIMIT ?",
-                (report_id, MAX_LIMIT),
-            ).fetchall()
-            item["evidence"] = [{**(_row_dict(row) or {}), "observed_at": timestamp(row["observed_at"]),
-                                  "retrieved_at": timestamp(row["retrieved_at"])} for row in evidence]
-        item["generated_at"] = timestamp(item.get("generated_at"))
-        item["research_only"] = True
-        return item
-    if "research_reports" in tables:
-        row = connection.execute("SELECT * FROM research_reports WHERE report_id=?", (report_id,)).fetchone()
-        item = _row_dict(row) if row else None
-        if item is not None:
-            report = _json(item.get("report_json") or item.get("report"), {})
-            if report and _report_is_unsafe(report):
-                raise CliError("report contains prohibited execution language", 4)
-            item.pop("report_json", None)
-            item["report"] = report if isinstance(report, dict) else None
-            item["generated_at"] = timestamp(item.get("generated_at") or item.get("created_at") or item.get("persisted_at"))
-            item["research_only"] = True
-            item["evidence"] = []
-        return item
-    raise CliError("required schema is unavailable: research reports", 3)
-
-
-def _report_is_unsafe(value: Any) -> bool:
-    if isinstance(value, dict):
-        return any(_report_is_unsafe(key) or _report_is_unsafe(child) for key, child in value.items())
-    if isinstance(value, list):
-        return any(_report_is_unsafe(child) for child in value)
-    return isinstance(value, str) and bool(REPORT_POLICY_WORDS.search(value))
-
-
-def command_reports(args: argparse.Namespace) -> tuple[Any, dict[str, Any], list[str]]:
-    path = _path("ANALYST_DB_PATH", "data/analyst.sqlite3")
-    connection = _read_only(path)
-    try:
-        records = _report_rows(connection, _limit(args.limit))
-    finally:
-        connection.close()
-    observed = max((item.get("generated_at") for item in records if item.get("generated_at")), default=None)
-    fresh = bool(records) and all(_fresh(item.get("generated_at")) for item in records)
-    warnings = [] if fresh else ["research report artifacts are stale or have unknown timestamps"]
-    data = {"reports": records, "count": len(records), "research_only": True}
-    if not fresh:
-        raise CliError("research report artifacts are stale or unavailable", 3, data=data, warnings=warnings)
-    return data, _source(path, observed, True), warnings
-
-
-def command_report(args: argparse.Namespace) -> tuple[Any, dict[str, Any], list[str]]:
-    path = _path("ANALYST_DB_PATH", "data/analyst.sqlite3")
-    connection = _read_only(path)
-    try:
-        data = _report_detail(connection, args.report_id)
-    finally:
-        connection.close()
-    if data is None:
-        raise CliError(f"report not found: {args.report_id}", 2)
-    fresh = _fresh(data.get("generated_at"))
-    warnings = [] if fresh else ["research report artifact is stale or has an unknown timestamp"]
-    if not fresh:
-        raise CliError("research report artifact is stale or unavailable", 3, data=data, warnings=warnings)
-    return data, _source(path, data.get("generated_at"), True), warnings
 
 
 def command_regime(args: argparse.Namespace) -> tuple[Any, dict[str, Any], list[str]]:
@@ -1094,12 +951,6 @@ def build_parser() -> argparse.ArgumentParser:
     signal = research_commands.add_parser("signal")
     signal.add_argument("signal_id")
     _add_output_options(signal)
-    reports = research_commands.add_parser("reports")
-    reports.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
-    _add_output_options(reports)
-    report = research_commands.add_parser("report")
-    report.add_argument("report_id")
-    _add_output_options(report)
     regime = research_commands.add_parser("regime")
     regime.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     _add_output_options(regime)
@@ -1151,8 +1002,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, dict[str, Any], list[str]]
     if args.command == "research":
         handlers = {
             "candidates": command_candidates, "signals": command_signals,
-            "signal": command_signal, "reports": command_reports,
-            "report": command_report, "regime": command_regime,
+            "signal": command_signal, "regime": command_regime,
             "watchlist": command_watchlist, "publish": command_refused_publish,
         }
         return handlers[args.research_command](args)

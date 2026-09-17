@@ -171,7 +171,7 @@ The function must:
 3. Materialize features for that cutoff.
 4. Invoke plugins with `eval_interval="5m"` and the explicit cutoff.
 5. Run admission and clash resolution once for the candidate set.
-6. Write selected alpha events and executor intents synchronously.
+6. Persist selected alpha events and publish TradeIntents synchronously.
 7. Persist observability and trigger completion only after all writes finish.
 
 The daemon becomes a trigger consumer:

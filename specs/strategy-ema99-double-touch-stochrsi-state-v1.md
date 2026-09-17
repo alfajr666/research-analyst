@@ -207,7 +207,7 @@ Open position
 
 The deterministic exit evaluator returns a policy signal only. It does not
 place orders, move protection, or create a second order writer. Position
-management is owned by the standalone-llm-pm and executor services.
+management is downstream and outside this repository.
 
 ## Candidate Contract
 

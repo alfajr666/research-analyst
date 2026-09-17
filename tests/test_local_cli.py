@@ -66,6 +66,12 @@ def test_publish_and_service_safety(monkeypatch):
     assert "--confirm" in envelope["warnings"][0]
 
 
+def test_llm_report_commands_are_out_of_scope(monkeypatch):
+    code, envelope = invoke(monkeypatch, "research", "reports")
+    assert code == 1
+    assert envelope["ok"] is False
+
+
 def test_service_name_allowlist(monkeypatch):
     code, envelope = invoke(monkeypatch, "service", "logs", "not-research-analyst")
     assert code == 4

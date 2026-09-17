@@ -4,15 +4,14 @@
 
 Accepted (superseded in part). The detailed admission and clash policy is locked
 in `specs/trade-admission-and-clash-resolution.md`. This ADR remains the source
-for bounded confluence scoring and LLM boundaries, but its earlier hard-gate list
-is superseded by that specification.
+for bounded deterministic confluence scoring; its earlier hard-gate list is
+superseded by that specification.
 
 ## Context
 
 Strategies need a clear path from market context to a bot-facing trigger, plus a
 way to rank setups when multiple factors (VP, FVG/OB, TA, multi-TF structure)
-agree. Operators also want optional LLM judgment without confusing it with
-statistical calibration.
+agree. Narrative or model-based judgment is outside the live scoring path.
 
 ## Decision
 
@@ -23,9 +22,9 @@ Each strategy plugin defines:
 1. **Setup** — point-in-time context (structure, zones, VP/flow, TA family).
 2. **Trigger** — concrete `entry_condition`, invalidation, targets, `valid_until`.
 
-Only the trigger surface is the final plugin output consumed by the outbox,
-publisher, Telegram/Discord delivery, and optional execution adapter. Setup
-detail lives in the immutable `feature_snapshot`.
+Only the trigger surface is the final plugin output consumed by the alpha
+outbox, raw-signal ledger, and shared-bus TradeIntent publisher. Setup detail
+lives in the immutable `feature_snapshot`.
 
 ```text
 finalized cutoff snapshot
@@ -94,57 +93,32 @@ Map `confluence_score` → event `confidence` in `[0, 1]` as today. Always set:
 confidence_status = "uncalibrated"
 ```
 
-until an offline calibrator (outcomes ledger, walk-forward, no LLM) promotes a
+until an offline calibrator (outcomes ledger and walk-forward analysis) promotes a
 versioned map (`calibrated_vN`). Confluence counts are never treated as win
 probability.
 
-### 5. LLM judgment is a booster, not calibration
+### 5. Deterministic scoring boundary
 
-| Owner | May set | Must not set |
-|-------|---------|----------------|
-| Strategy plugin | setup, trigger, `confluence_score`, `confidence`, `confidence_status=uncalibrated` | narrative stance |
-| Offline calibrator | `confidence_status=calibrated_vN`, optional score→prob remap | live LLM calls |
-| LLM research (post-emit) | advisory booster fields only | any deterministic event field |
+Only strategy inputs, admission context, and versioned deterministic scoring
+may affect ranking. Analyst-local LLM calls, narrative boosters, and model-set
+confidence are out of scope. Trade intents are published only through the
+shared bus after deterministic admission.
 
-**Allowed booster (additive, after emit):**
-
-```text
-llm_review.stance     = support | caution | oppose
-llm_review.boost      = small non-negative priority weight for alert ranking only
-llm_review.rationale  = cited, schema-validated prose
-llm_review.counter_evidence / data_gaps
-```
-
-Rules:
-
-- LLM runs **downstream** of deterministic event generation; never on the 15m
-  critical path for emission identity.
-- Booster may reorder or annotate delivery priority; it must **not** change
-  direction, entry, invalidation, targets, snapshot, `confidence`, or
-  `confidence_status`.
-- Booster must **not** flip `confidence_status` to calibrated or claim P(win).
-- If LLM is disabled, timed out, or over budget, the event stands unchanged
-  (`boost = 0`, no stance).
-- Telegram/Discord may show the booster as advisory copy; execution adapters
-  ignore it unless a future human-reviewed policy explicitly allowlists a
-  priority-only use.
-
-**Rejected:** LLM-assigned calibration, LLM-written `confidence`, or LLM as a
-hard emit/suppress gate.
+**Rejected:** model-assigned calibration, narrative confidence, or any
+non-deterministic emit/suppress gate.
 
 ## Consequences
 
 - Plugins stay auditable and replayable from cutoff snapshots.
-- Operators get richer ranking (geometry score + optional LLM stance) without
-  fake probabilities.
+- Operators get richer deterministic geometry ranking without fake probabilities.
 - Calibration remains a batch research problem outside the live analyst process.
 - Phase-one advisory confluence labels remain valid; this ADR adds an explicit
-  relative score path and a bounded LLM booster seam.
+  relative score path.
 
 ## Non-goals
 
-- Sizing, leverage, venue selection, or order placement from score or LLM boost.
-- Treating discovery rank, HMM regime, or LLM stance as trade instructions.
+- Sizing, leverage, venue selection, or order placement from score.
+- Treating discovery rank or HMM regime as trade instructions.
 - Replacing existing strategy families with a single confluence detector.
 
 ## Tracer families
@@ -168,6 +142,5 @@ Design-locked implementations of this ADR (code deferred until chosen):
 - `specs/strategy-impulse-ignition-v2.md`
 - `specs/strategy-continuation-breakout-v2.md`
 - `specs/data-platform-strategy-plugins.md` — cutoff, zones, plugin isolation
-- `specs/llm-research-agent.md` — advisory LLM boundaries
 - `specs/alpha-outcome-policy.md` — descriptive outcomes for future calibration
 - `agent.md` — producer contract and research discipline

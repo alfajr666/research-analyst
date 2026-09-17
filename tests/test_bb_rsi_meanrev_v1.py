@@ -5,7 +5,7 @@ import polars as pl
 
 import config
 from strategies.compact.bb_rsi_meanrev_v1 import BBRsiMeanRevConfig, evaluate_symbol
-from intent_outbox import build_executor_intent, validate_geometry
+from intent_outbox import build_trade_intent, validate_geometry
 
 
 class BBRsiMeanRevTests(unittest.TestCase):
@@ -15,7 +15,7 @@ class BBRsiMeanRevTests(unittest.TestCase):
 
     def test_middle_band_below_two_r_keeps_directional_envelope(self):
         event = {"strategy_id": "bb-rsi-meanrev-v1", "asset": "BTC", "direction": "long", "observed_at": "2026-08-29T00:00:00Z", "entry_condition": {"price": 100}, "invalidation_price": 99, "targets": [101]}
-        intent = build_executor_intent(event)
+        intent = build_trade_intent(event)
         ok, reason = validate_geometry(intent)
         self.assertTrue(ok, reason)
 

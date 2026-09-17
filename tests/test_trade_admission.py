@@ -42,7 +42,6 @@ def test_admission_fingerprint_normalises_closed_bar_aliases():
 
 
 def test_stop_below_atr_floor_fails(monkeypatch):
-    monkeypatch.setattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", False)
     result = admit(_candidate(99.5), now=datetime(2026, 1, 1, tzinfo=timezone.utc))
     assert result["hard_gate"] == "fail"
     assert "stop distance below ATR-based minimum" in result["hard_gate_reasons"]
@@ -89,8 +88,6 @@ def test_structural_stop_is_an_independent_hard_gate(monkeypatch):
             "atr_source_bar_ids": {"4h": ["bar-1"]},
         },
     })
-    monkeypatch.setattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", True)
-
     result = admit(event, now=datetime(2026, 1, 1, tzinfo=timezone.utc))
 
     assert result["hard_gate"] == "pass"
@@ -100,7 +97,6 @@ def test_structural_stop_is_an_independent_hard_gate(monkeypatch):
 def test_structural_stop_failure_does_not_get_scored(monkeypatch):
     event = _candidate(96.0, atr=10)
     event.update({"strategy_id": "failed-break-v3"})
-    monkeypatch.setattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", True)
     event.pop("structural_context")
 
     from trade_admission import resolve
@@ -130,8 +126,6 @@ def test_stop_too_far_from_htf_zone_is_rejected_before_scoring(monkeypatch):
             "atr_source_bar_ids": {"4h": ["bar-1"]},
         },
     })
-    monkeypatch.setattr(config, "STRUCTURAL_STOP_ADMISSION_ENABLED", True)
-
     def score_must_not_run(_candidate):
         raise AssertionError("structural rejection must happen before scoring")
 

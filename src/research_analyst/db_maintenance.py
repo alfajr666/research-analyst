@@ -112,7 +112,6 @@ def prune_market_db(
 
     for table, (column, setting) in {
         "brain_outputs": ("timestamp", "MARKET_AUXILIARY_RETENTION_DAYS"),
-        "confluence_alerts": ("alert_time", "MARKET_AUXILIARY_RETENTION_DAYS"),
         "scanner_history": ("timestamp", "MARKET_AUXILIARY_RETENTION_DAYS"),
         "universe_snapshots": ("observed_at", "MARKET_AUXILIARY_RETENTION_DAYS"),
         "source_request_log": ("requested_at", "MARKET_AUXILIARY_RETENTION_DAYS"),
@@ -196,9 +195,6 @@ def prune_analyst_db(
         "alpha_candidates": ("observed_at", "ANALYST_CANDIDATE_RETENTION_DAYS"),
         "alpha_confidence_observations": ("observed_at", "ANALYST_EVENT_RETENTION_DAYS"),
         "alpha_event_status_history": ("recorded_at", "ANALYST_EVENT_RETENTION_DAYS"),
-        "research_run_metrics": ("recorded_at", "ANALYST_METRICS_RETENTION_DAYS"),
-        "research_evidence": ("retrieved_at", "ANALYST_RESEARCH_RETENTION_DAYS"),
-        "research_artifacts": ("generated_at", "ANALYST_RESEARCH_RETENTION_DAYS"),
         "entry_policy_observations": ("observed_at", "ANALYST_EVENT_RETENTION_DAYS"),
     }
     for table, (column, setting) in direct_retention.items():
@@ -240,37 +236,11 @@ def prune_analyst_db(
         max_batches=max_batches,
     )
 
-    # Keep active/pending work and only remove completed research requests.
-    deleted["research_requests"] = _delete(
-        conn,
-        "research_requests",
-        "created_at < ? AND status NOT IN ('pending', 'running', 'in_progress', 'retry')",
-        (_limit(now, getattr(config, "ANALYST_RESEARCH_RETENTION_DAYS", 30)),),
-        max_batches=max_batches,
-    )
     deleted["alpha_events"] = _delete(
         conn,
         "alpha_events",
         "observed_at < ? AND status NOT IN ('active', 'pending', 'running', 'retry')",
         (_limit(now, getattr(config, "ANALYST_EVENT_RETENTION_DAYS", 365)),),
-        max_batches=max_batches,
-    )
-    deleted["signal_deliveries"] = _delete(
-        conn,
-        "signal_deliveries",
-        "attempted_at < ? AND status NOT IN ('pending', 'running', 'retry', 'retrying')",
-        (_limit(now, getattr(config, "ANALYST_DELIVERY_RETENTION_DAYS", 365)),),
-        max_batches=max_batches,
-    )
-    deleted["execution_deliveries"] = _delete(
-        conn,
-        "execution_deliveries",
-        "(written_at < ? OR (written_at IS NULL AND acknowledged_at < ?)) "
-        "AND status NOT IN ('pending', 'running', 'retry', 'retrying')",
-        (
-            _limit(now, getattr(config, "ANALYST_DELIVERY_RETENTION_DAYS", 365)),
-            _limit(now, getattr(config, "ANALYST_DELIVERY_RETENTION_DAYS", 365)),
-        ),
         max_batches=max_batches,
     )
     conn.execute("PRAGMA wal_checkpoint(PASSIVE)")

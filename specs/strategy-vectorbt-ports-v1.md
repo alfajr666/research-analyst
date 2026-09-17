@@ -68,8 +68,8 @@ repository policy (handoff cross-family note 5).
 | `trend-wall-v5` | `trend_wall.py` | trend | 30m grouped; completed 1h structure | next 30m open |
 
 All seven are in `ADMISSION_STRATEGY_IDS` (hard admission, scorer, clash
-resolution apply), in `config.PORTED_STRATEGY_IDS`, fanned out to Fundamo via
-`PORTED_FUNDAMO_STRATEGY_IDS`, and enabled in the default
+resolution apply), in `config.PORTED_STRATEGY_IDS`, included directly in the
+canonical Fundamo strategy set, and enabled in the default
 `STRATEGY_ENABLED_IDS`. New config constants are env-overridable with the
 `BB_TP_RACE_*`, `BB_SQUEEZE_*`, `KAMA_TREND_*`, `MACD_EMA_*`, `MR_VWAP_*`,
 `TREND_PULLBACK_*`, `TREND_WALL_V5_*` prefixes; defaults equal the frozen

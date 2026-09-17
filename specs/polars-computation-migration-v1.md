@@ -184,7 +184,7 @@ row-level results.
 
 - Move only numerical structural ATR/bar-validity columns into Polars.
 - Keep admission proofs, selected-zone policy, and fingerprints in Python.
-- Keep standalone-PM TA implementation and validation in its own repository.
+- Keep all downstream position-management implementation out of this repository.
 
 ### Phase 7: Rollout and removal
 

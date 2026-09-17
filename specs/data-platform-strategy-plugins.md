@@ -38,7 +38,7 @@ Build a source-aware platform with four ownership layers:
 Discovery and ingestion
   -> database: append-only source observations and derived snapshots
   -> strategy plugins: read-only point-in-time decisions
-  -> signal publisher: validated event persistence and delivery
+  -> intent publisher: validated event persistence and shared-bus publication
 ```
 
 CoinAnalyze remains the durable broad-universe backbone. OpenMarket Free is an
@@ -49,9 +49,8 @@ strategy emission, or delivery.
 
 Strategies are locally registered plugins. Existing accumulation-base,
 impulse-ignition, and continuation-breakout logic migrates into enabled plugins
-and becomes the sole event producer at a direct cutover. Downstream publisher
-behavior, including Telegram and the existing execution adapter path, is left
-unchanged by this work.
+and becomes the sole event producer at a direct cutover. The terminal delivery
+boundary is the shared TradeIntent bus.
 
 ## Locked Product Decisions
 
@@ -227,19 +226,12 @@ confidence_status = "uncalibrated"
 
 Enrichment evidence is stored separately and never folded into confidence.
 
-### Publisher and downstream delivery
+### Publisher and terminal delivery
 
-This work does not redesign downstream signal-producer behavior:
-
-- Telegram delivery remains
-- existing execution adapter / bot-inbox path remains as currently implemented
-- publisher continues to own the alpha ledger and delivery attempts
-- Telegram delivery must gain a pre-send claim (`claimed` -> `sent`/`failed`)
-  with lease recovery so concurrent publishers cannot double-send
-- publisher rendering may add a compact Context section from already-persisted
-  available evidence and must omit unavailable items rather than inventing
-  neutral readings
-- research-analyst remains a signal producer; bots execute under their own
+The publisher owns the alpha ledger and shared-bus delivery attempts. Advisory
+raw-signal Discord batching is independent of TradeIntent publication.
+Research Analyst remains an intent producer; downstream consumers operate under
+their own contracts.
   protocols outside this redesign's scope
 
 ## Locked Internal Decisions

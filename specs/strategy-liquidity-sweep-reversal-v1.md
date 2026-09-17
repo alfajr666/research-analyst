@@ -32,7 +32,7 @@ Outcomes and delivery history must not mix under another `strategy_id`.
 
 ## Related
 
-- `specs/adr-strategy-confluence-scoring.md` — score, gates, LLM booster
+- `specs/adr-strategy-confluence-scoring.md` — deterministic score and gates
 - `specs/strategy-v2-shared-library.md` — shared context + scoring
 - `specs/data-platform-strategy-plugins.md` — cutoff, FVG/OB hierarchy, plugins
 - `specs/alpha-outcome-policy.md` — outcomes
@@ -119,7 +119,7 @@ Do **not** open raw SQL for OHLCV in the plugin. Do **not** require a durable
 `write_event` adds `alpha_id` + `dedupe_key` from
 `strategy_id|asset|direction|observed_at`.
 
-Plugin must supply all of `signal_publisher.REQUIRED_FIELDS` except those two:
+Plugin must supply all of `intent_publisher.REQUIRED_FIELDS` except those two:
 
 ```text
 schema_version: 1
@@ -141,24 +141,12 @@ plugin_version: "v1"
 | Path | Behavior |
 |------|----------|
 | `outcome_evaluator` | Non-`breakout_*` types already use **limit fill** semantics (`low<=entry` long / `high>=entry` short). **No change required** for v1. |
-| `execution_adapter` | Only `limit_at_ema_context` today. LSR stays Telegram/Discord until separate adapter ticket. |
+| Trade-intent handoff | Validated schema-v2 intent through the shared SQLite bus only. |
 
-### Delivery labels (required touch)
+### Advisory batch label
 
-Today `discord_format._family` / `signal_publisher` family ternary fall through to
-**"Impulse ignition"** for unknown `setup_class` (also mislabels
-`continuation_pullback`).
-
-Must add:
-
-```text
-liquidity_reversal     → "Liquidity reversal"
-continuation_pullback  → "Continuation"   # already true via startswith in discord;
-                         # signal_publisher must match (startswith continuation)
-```
-
-Snapshot context strings should surface PDH/PDL, sweep depth ATR, FVG magnet when
-present in `feature_snapshot`.
+The raw-signal Discord table displays the canonical strategy ID. There is no
+per-alpha trade-card formatter.
 
 ## Thesis
 
@@ -247,10 +235,9 @@ Platform zone hierarchy (unchanged):
 | `weighted_confluence` + `confidence_from_confluence` | `confluence_scoring` | Soft rank → uncalibrated confidence |
 | `has_active_event` re-arm | shared | Anti-spam per asset+direction |
 | `S_min` + top-N emit floor | plugin pattern | Traffic control |
-| Alpha outbox + publisher | `alpha_outbox`, `signal_publisher` | Delivery |
+| Alpha outbox + publisher | `alpha_outbox`, `intent_publisher` | Shared-bus delivery |
 | Optional approx/native VP | feature snapshots | Soft `vp_proximity` only |
 | OI / funding on bars | CA payload | Soft pressure terms only |
-| Optional LLM booster | research path | Post-emit stance only |
 | Strategy-quality measurement | External research job | Post-expiry descriptive outcomes |
 
 ### Must build (shared modules — not optional)
@@ -491,10 +478,7 @@ finalized 15m cutoff snapshot
   re-arm: no other active liquidity-sweep-reversal-v1 for asset+direction
         │  (+ UTC-day side cap: max 1 BOS emit per side per day)
         v
-  write alpha event (armed limit) → outbox → publisher
-        │
-        v (optional)
-  LLM booster (stance / delivery priority only)
+  write alpha event (armed limit) → outbox → intent publisher → shared bus
 ```
 
 ---
@@ -1203,9 +1187,9 @@ FVG-magnet vs pure-midpoint cohort comparison
 | 4 | **`config.py` + `.env.example`** | `LSR_V1_*` + id in `PRICE_STRUCTURE_STRATEGY_IDS` |
 | 5 | **`liquidity_sweep_reversal_v1.py` + `test_liquidity_sweep_reversal_v1.py`** | rsi-shaped plugin; imports M1–M3 for geometry |
 | 6 | **`strategy_plugins.py`** | `KNOWN_STRATEGIES` + `register(...)` |
-| 7 | **`discord_format.py` + `signal_publisher.py` + tests** | family label + snapshot context |
+| 7 | **`intent_publisher.py` + tests** | ledger persistence + shared-bus retry |
 | 8 | **`test_strategy_plugins.py`** | known-set includes rsi + lsr |
-| 9 | Optional: `execution_adapter` `limit_at_impulse_mid` | **separate ticket** |
+| 9 | **`intent_outbox.py`** | schema-v2 TradeIntent for shared bus |
 | 10 | Flip shared-lib module map rows to “shipped” | docs match code |
 | 11 | Optional: `agent.md` / README family bullet | operator discoverability |
 
@@ -1216,9 +1200,7 @@ FVG-magnet vs pure-midpoint cohort comparison
 | `strategy_plugins.py` | known id + register |
 | `config.py` | `LSR_V1_*`, `PRICE_STRUCTURE_STRATEGY_IDS` |
 | `.env.example` | knobs + opt-in enable comment |
-| `discord_format.py` | `_family("liquidity_reversal")` + context keys |
-| `signal_publisher.py` | same family label (keep in sync with discord) |
-| `test_discord_format.py` | label coverage |
+| `intent_publisher.py` | ledger persistence and shared-bus retry |
 | `test_strategy_plugins.py` | known set |
 | `test_session_levels.py` | new |
 | `test_market_structure.py` | new |
@@ -1226,8 +1208,7 @@ FVG-magnet vs pure-midpoint cohort comparison
 | `test_liquidity_sweep_reversal_v1.py` | new |
 
 **No change required for research v1 ship:** `outcome_evaluator.py`,
-`structure_zones.py`, `confluence_scoring.py`, `strategy_v2_context.py` (reuse),
-`execution_adapter.py` (deferred).
+`structure_zones.py`, `confluence_scoring.py`, `strategy_v2_context.py` (reuse).
 
 **Non-negotiable:** steps 1–3 are required build scope. Inlining PDH/pivot/sweep
 only inside the plugin file **fails acceptance**.
@@ -1254,7 +1235,7 @@ Plugin tests (step 5) must cover:
 - Inverse FVG / breaker blocks as first-class types  
 - Partial exits, BE move, trailing, DCA, pyramiding  
 - 15m zones written to `structure_zones` table  
-- Calibrated probability or LLM-set confidence  
+- Calibrated probability or model-set confidence
 - Merging strategy_ids with ignition / rsi-reclaim / accumulation  
 - Machine learning  
 
@@ -1281,8 +1262,7 @@ These may be evaluated only after baseline hypothesis testing.
 - [ ] Id in `config.PRICE_STRUCTURE_STRATEGY_IDS`
 - [ ] `LSR_V1_*` in `config.py` + `.env.example`
 - [ ] **Not** in default `STRATEGY_ENABLED_IDS` (opt-in)
-- [ ] Discord + Telegram family label `"Liquidity reversal"` for `liquidity_reversal`
-- [ ] `signal_publisher` family label stays consistent with `discord_format`
+- [ ] Raw-signal Discord table preserves the canonical strategy ID
 
 ### Plugin
 
@@ -1302,7 +1282,7 @@ These may be evaluated only after baseline hypothesis testing.
 - [ ] Point-in-time replay from finalized cutoff snapshots only
 - [ ] Unit tests for identity, hard fails, FVG refine, re-arm, day-cap, no lookahead
 - [ ] No 15m structural zone materialization
-- [ ] Exec adapter support **not** required for v1 acceptance
+- [ ] Shared-bus TradeIntent validation is required; venue adapters are out of scope
 
 ---
 
@@ -1368,9 +1348,9 @@ Emit armed limit; valid 2h; score boosted by fvg_entry_magnet + zone stack
 | `has_active_event` alone ≠ day-cap | `emitted_today` algorithm |
 | Soft weight key mismatch vs `weighted_confluence` | Component keys aligned; `contradiction_penalty` |
 | `select_top_n` / `build_1_5r_target` not shipped | Documented backlog; plugin inlines |
-| Family label falls through to "Impulse ignition" | Discord + signal_publisher touch required |
+| Advisory display identity | Raw-signal table uses canonical strategy ID |
 | Strategy-quality measurement is external | No live outcome-evaluation path |
-| Exec adapter only `limit_at_ema_context` | Deferred; not v1 acceptance |
+| Venue adapter support | Out of scope; shared bus is the only handoff |
 | OB 20-bar swing ≠ BOS 2/2 | Explicit non-reuse |
 | Defaults differ (2R / 2h / r_max 3.0) | Called out vs other families |
 

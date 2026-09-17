@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import config
 from intent_outbox import (
-    build_executor_intent,
+    build_trade_intent,
     to_ccxt_perp_symbol,
     validate_geometry,
     verify_intent_admission,
@@ -34,8 +34,8 @@ class IntentBuildTests(unittest.TestCase):
         self.assertEqual(config.INTENT_EXCHANGE_ID, "bybit")
         self.assertEqual(config.INTENT_ACCOUNT_ID, "hyro")
 
-    def test_maps_internal_event_to_executor_envelope(self):
-        intent = build_executor_intent(_alpha_event())
+    def test_maps_internal_event_to_trade_intent(self):
+        intent = build_trade_intent(_alpha_event())
         self.assertEqual(intent["schema_version"], 1)
         self.assertEqual(intent["delivery_id"], "deliv-1")
         self.assertEqual(intent["source"], "research-analyst")
@@ -55,17 +55,17 @@ class IntentBuildTests(unittest.TestCase):
         self.assertEqual(intent["metadata"]["target_source"], "strategy_target")
 
     def test_derives_two_r_target_when_strategy_target_is_missing(self):
-        intent = build_executor_intent(_alpha_event(targets=[]))
+        intent = build_trade_intent(_alpha_event(targets=[]))
         self.assertEqual(intent["take_profit"], 110)
         self.assertEqual(intent["metadata"]["target_source"], "producer_derived_2r")
 
     def test_derives_two_r_target_for_short(self):
-        intent = build_executor_intent(_alpha_event(
+        intent = build_trade_intent(_alpha_event(
             direction="short", invalidation_price=105, targets=[]))
         self.assertEqual(intent["take_profit"], 90)
 
     def test_order_type_is_executor_owned(self):
-        intent = build_executor_intent(_alpha_event(direction="SHORT", order_type="market"))
+        intent = build_trade_intent(_alpha_event(direction="SHORT", order_type="market"))
         self.assertEqual(intent["direction"], "SHORT")
         self.assertEqual(intent["entry_price"], 100)
         self.assertNotIn("order_type", intent)
@@ -73,7 +73,7 @@ class IntentBuildTests(unittest.TestCase):
     def test_never_carries_risk_or_sizing(self):
         # Even if a strategy attaches sizing hints, the executor-owned sizing must
         # not leak into the intent.
-        intent = build_executor_intent(_alpha_event(
+        intent = build_trade_intent(_alpha_event(
             metadata={"quantity": 3, "amount": 3, "risk_amount": 50, "strategy_id": "impulse-ignition-v1"}
         ))
         self.assertNotIn("quantity", intent["metadata"])
@@ -82,24 +82,17 @@ class IntentBuildTests(unittest.TestCase):
         # non-sizing metadata still passes through
         self.assertEqual(intent["metadata"].get("strategy_id"), "impulse-ignition-v1")
 
-    def test_compact_strategies_are_forced_to_hyro(self):
-        config.INTENT_ROUTING = {
-            strategy: {"exchange_id": "binance", "account_id": "stale-account"}
-            for strategy in config.COMPACT_STRATEGY_IDS
-        }
-        try:
-            for strategy in config.COMPACT_STRATEGY_IDS:
-                intent = build_executor_intent(_alpha_event(strategy_id=strategy, alpha_id=None))
-                self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "hyro"))
-        finally:
-            config.INTENT_ROUTING = {}
+    def test_compact_strategies_use_the_canonical_hyro_schema_account(self):
+        for strategy in config.COMPACT_STRATEGY_IDS:
+            intent = build_trade_intent(_alpha_event(strategy_id=strategy, alpha_id=None))
+            self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "hyro"))
 
     def test_compact_fundamo_leg_uses_admission_route(self):
         event = _alpha_event(
             strategy_id="bb-rsi-meanrev-v1",
             asset="SOL",
         )
-        intent = build_executor_intent(
+        intent = build_trade_intent(
             event,
             admission={"resolved_account": "fundamo"},
         )
@@ -107,7 +100,7 @@ class IntentBuildTests(unittest.TestCase):
 
     def test_new_portfolio_strategies_route_to_the_agreed_accounts(self):
         for strategy in ("ema9-adx-stochrsi-state-v1",):
-            intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="fundamo")
+            intent = build_trade_intent(_alpha_event(strategy_id=strategy), account_id="fundamo")
             self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "hyro"))
         for strategy in (
             "dual-zone-follower-v3",
@@ -115,60 +108,60 @@ class IntentBuildTests(unittest.TestCase):
             "ema99-double-touch-stochrsi-state-v1",
             "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
         ):
-            intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="hyro")
+            intent = build_trade_intent(_alpha_event(strategy_id=strategy), account_id="hyro")
             self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "fundamo"))
 
     def test_swapped_strategy_families_are_routed_to_their_accounts(self):
         for strategy in ("ema9-adx-stochrsi-state-v1",):
-            intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="fundamo")
+            intent = build_trade_intent(_alpha_event(strategy_id=strategy), account_id="fundamo")
             self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "hyro"))
         for strategy in (
             "ema99-double-touch-stochrsi-state-v1",
             "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
         ):
-            intent = build_executor_intent(_alpha_event(strategy_id=strategy), account_id="hyro")
+            intent = build_trade_intent(_alpha_event(strategy_id=strategy), account_id="hyro")
             self.assertEqual((intent["exchange_id"], intent["account_id"]), ("bybit", "fundamo"))
 
     def test_symbol_helper(self):
         self.assertEqual(to_ccxt_perp_symbol("eth"), "ETH/USDT:USDT")
 
     def test_validity_falls_back_to_window(self):
-        intent = build_executor_intent(_alpha_event())
+        intent = build_trade_intent(_alpha_event())
         # 2026-08-28T12:05:00Z given INTENT_VALIDITY_MINUTES=5 default
         self.assertEqual(intent["entry_valid_until"], "2026-08-28T12:05:00Z")
 
 
 class IntentGeometryTests(unittest.TestCase):
     def test_accepts_valid_long(self):
-        ok, reason = validate_geometry(build_executor_intent(_alpha_event()))
+        ok, reason = validate_geometry(build_trade_intent(_alpha_event()))
         self.assertTrue(ok, reason)
 
     def test_rejects_bad_long_geometry(self):
         ok, reason = validate_geometry(
-            build_executor_intent(_alpha_event(invalidation_price=110))
+            build_trade_intent(_alpha_event(invalidation_price=110))
         )
         self.assertFalse(ok)
         self.assertIn("LONG", reason)
 
     def test_accepts_producer_derived_target(self):
-        ok, _ = validate_geometry(build_executor_intent(_alpha_event(targets=[])))
+        ok, _ = validate_geometry(build_trade_intent(_alpha_event(targets=[])))
         self.assertTrue(ok)
 
     def test_accepts_below_minimum_rr_when_directional_geometry_is_valid(self):
         ok, reason = validate_geometry(
-            build_executor_intent(_alpha_event(targets=[105]))
+            build_trade_intent(_alpha_event(targets=[105]))
         )
         self.assertTrue(ok, reason)
 
     def test_accepts_tight_stop_when_directional_geometry_is_valid(self):
         ok, reason = validate_geometry(
-            build_executor_intent(_alpha_event(invalidation_price=99.95))
+            build_trade_intent(_alpha_event(invalidation_price=99.95))
         )
         self.assertTrue(ok, reason)
 
     def test_market_entry_skips_relative_geometry(self):
         ok, reason = validate_geometry(
-            build_executor_intent(_alpha_event(order_type="market"))
+            build_trade_intent(_alpha_event(order_type="market"))
         )
         self.assertTrue(ok, reason)
 
@@ -207,7 +200,7 @@ def test_15m_proof_is_accepted_only_while_the_feature_is_enabled(monkeypatch):
     admission = admit(event, now=datetime(2026, 9, 1, 12, 5, tzinfo=timezone.utc),
                       structural_context=event["structural_context"])
     assert admission["hard_gate"] == "pass"
-    intent = build_executor_intent(event, admission=admission)
+    intent = build_trade_intent(event, admission=admission)
     monkeypatch.setattr("structural_stop.build_structural_contexts", lambda *_args, **_kwargs: {"BTC": event["structural_context"]})
 
     ok, reason = verify_intent_admission(intent)
@@ -234,7 +227,7 @@ def test_score_eligible_schema_v2_handoff_does_not_require_structural_admission(
     assert admission["hard_gate"] == "not_applicable"
     assert admission["score_decision"] == "eligible"
 
-    intent = build_executor_intent(event, admission=admission)
+    intent = build_trade_intent(event, admission=admission)
     ok, reason = verify_intent_admission(intent)
     assert ok, reason
 
@@ -254,7 +247,7 @@ def test_score_eligible_compact_fundamo_handoff_preserves_account_fingerprint():
     assert admission["score_decision"] == "eligible"
     assert admission["resolved_account"] == "fundamo"
 
-    intent = build_executor_intent(event, admission=admission)
+    intent = build_trade_intent(event, admission=admission)
     ok, reason = verify_intent_admission(intent)
     assert ok, reason
 
@@ -268,7 +261,7 @@ def test_vectorbt_port_strategies_route_to_fundamo():
         "macd-ema-v1", "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5",
     ):
         assert resolved_account(strategy) == "fundamo", strategy
-        intent = build_executor_intent(_alpha_event(strategy_id=strategy, asset="BTC"))
+        intent = build_trade_intent(_alpha_event(strategy_id=strategy, asset="BTC"))
         assert (intent["exchange_id"], intent["account_id"]) == ("bybit", "fundamo"), strategy
 
 
@@ -289,7 +282,7 @@ def test_schema_v2_handoff_rejects_non_permanent_asset_on_hyro():
     assert admission["score_decision"] == "eligible"
     # Reproduce the incident envelope: proof and envelope both route to hyro.
     admission["resolved_account"] = "hyro"
-    intent = build_executor_intent(event, admission=admission)
+    intent = build_trade_intent(event, admission=admission)
     assert intent["account_id"] == "hyro"
     ok, reason = verify_intent_admission(intent)
     assert not ok
@@ -298,7 +291,7 @@ def test_schema_v2_handoff_rejects_non_permanent_asset_on_hyro():
 
 def test_envelope_carries_full_native_array_and_venue_tp():
     event = _alpha_event(strategy_id="bb-tp-race-locked-v1", targets=[110.0, 120.0])
-    intent = build_executor_intent(event)
+    intent = build_trade_intent(event)
     assert intent["take_profit"] == 120.0
     assert intent["targets"] == [
         {"price": 110.0, "fraction": 0.5},
@@ -309,14 +302,14 @@ def test_envelope_carries_full_native_array_and_venue_tp():
 
 
 def test_envelope_mode_defaults_to_fixed_full_close():
-    intent = build_executor_intent(_alpha_event())
+    intent = build_trade_intent(_alpha_event())
     assert intent["take_profit_mode"] == "fixed_full_close"
     assert intent["take_profit"] == 110
     assert intent["targets"] == [{"price": 110.0, "fraction": None}]
 
 
 def test_malformed_native_array_fails_closed_without_fallback():
-    intent = build_executor_intent(_alpha_event(targets=["oops"]))
+    intent = build_trade_intent(_alpha_event(targets=["oops"]))
     assert intent["take_profit"] is None
     assert intent["targets"] == []
 

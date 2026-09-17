@@ -96,7 +96,7 @@ The computation layer is read-only with respect to all databases. It must not
 open external market APIs, write market observations, write regime history, or
 write analyst ledgers.
 
-Position management is owned by the separate standalone-llm-pm repository. It
+Position management is downstream and outside this repository. It
 does not share this computation module or the analyst databases.
 
 ## 6. Cutoff Model
@@ -509,7 +509,7 @@ The four managed analyst processes are:
 - WS gateway;
 - regime session;
 - orchestrator;
-- The standalone-llm-pm process is managed from its own repository.
+- Downstream position-management processes are managed outside this repository.
 
 ## 15. Retention And Compaction
 
@@ -557,7 +557,7 @@ The implementation must make it possible to distinguish:
 - Polars computation;
 - Python policy/state work;
 - SQLite commit contention;
-- external REST or LLM latency.
+- external REST or other network latency.
 
 ## 17. Parity And Safety Gates
 
@@ -584,7 +584,7 @@ Required test layers:
 - strategy replay tests;
 - structural admission E2E tests;
 - regime-session E2E tests;
-- PM context parity tests;
+- TradeIntent provenance parity tests;
 - full repository tests and compile checks.
 
 Every cache optimization must have a cache-disabled reference path for tests.

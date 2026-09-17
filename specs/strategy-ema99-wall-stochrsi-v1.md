@@ -173,11 +173,8 @@ Universal entry/stop geometry and stop-distance gates still apply. A fabricated
 
 ## Historical Mechanical Exit Policy
 
-This policy is retained as strategy research context. It is not an independent
-sidecar or a competing decision authority in the locked PM design. The LLM PM
-sidecar receives the strategy parameters and current indicator context and may
-return `hold`, `reduce`, `exit`, or `near_tp` under the locked confidence and
-executor-protection rules.
+This policy is retained as historical strategy research context only. Research
+Analyst does not evaluate positions or emit management decisions.
 
 The policy evaluates every completed 5m cutoff while the position is open.
 
@@ -193,11 +190,9 @@ Short mechanical exit:
 rsi5 < 30 and k <= 20
 ```
 
-The conditions above are historical strategy context only in the locked design.
-They are not emitted by an independent mechanical sidecar or used as a competing
-decision stream. The LLM may use the indicator context when deciding `hold`,
-`reduce`, `exit`, or `near_tp`, but the executor's SL/TP and protection behavior
-remain independent of the LLM.
+The conditions above are not emitted by an independent sidecar or used as a
+competing decision stream. Position management is executor-owned and outside
+this repository.
 
 ## Event Metadata
 
@@ -216,12 +211,8 @@ stoch_k
 stoch_d
 structure_low/high
 htf_atr
-management_mode: analyst_managed
-mechanical_exit_policy: ema99-wall-stochrsi-v1
+intent_handoff: shared_sqlite_bus
 ```
-
-Position-management events include the mechanical policy inputs, trigger ID,
-LLM request ID when applicable, decision ID, veto status, and executor receipt.
 
 ## Routing
 
@@ -245,30 +236,11 @@ strategy_id, asset, cutoff, wall_status, htf_rsi, stoch_k, stoch_d,
 direction, entry, stop, route, admission_status, rejection_reason
 ```
 
-Mechanical-exit logs must show:
-
-```text
-policy_id, policy_version, asset, side, position_id, cutoff,
-rsi5, stoch_k, trigger_result, trigger_event_id, veto_allowed
-```
-
-LLM decision logs must show:
-
-```text
-request_id, trigger_event_id, model, latency_ms, action,
-decision_scope, veto_applied, reduced_size_mode, reason, delivery_status
-```
-
 Required strategy metrics:
 
 ```text
 entries_evaluated{direction,result}
 entries_emitted{direction}
-mechanical_exit_evaluations{direction,result}
-mechanical_exit_triggers{direction}
-llm_vetoes{direction}
-llm_early_exits{direction}
-llm_reductions{direction}
 ```
 
 ## Required Tests
@@ -283,8 +255,4 @@ llm_reductions{direction}
 8. Every asset in the cutoff-bound effective watchlist plus permanent assets is
    evaluated.
 9. Events route only to `bybit/fundamo` and contain no `order_type`.
-10. Fixed TP is absent for analyst-managed mode.
-11. Mechanical long/short exits produce trigger events with full TA inputs.
-12. LLM veto produces a bounded reduced-size decision.
-13. Mechanical trigger, LLM decision, and executor receipt are observable.
-14. Hard stop behavior cannot be vetoed.
+10. The emitted intent is handed off only through the shared bus.

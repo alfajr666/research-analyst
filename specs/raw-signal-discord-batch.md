@@ -5,9 +5,9 @@
 Proposed implementation specification, agreed in design on 2026-08-29.
 
 This specification adds a 30-minute Discord batch for raw strategy candidates.
-It does not change hard admission, scoring, clash resolution, or executor intent
-delivery. The batch is observational and must never delay, suppress, or mutate a
-true trade intent.
+It does not change hard admission, scoring, clash resolution, or shared-bus
+intent publication. The batch is observational and must never delay, suppress,
+or mutate a true trade intent.
 
 ## Goal
 
@@ -19,9 +19,9 @@ creating one Discord message per candidate.
 ## Non-Goals
 
 - Do not treat a raw signal as an admitted alpha event.
-- Do not send raw signals to the executor.
+- Do not publish raw signals to the shared bus.
 - Do not make Discord availability part of the trading path.
-- Do not delay executor intent delivery until the 30-minute boundary.
+- Do not delay shared-bus intent publication until the 30-minute boundary.
 - Do not let raw-signal volume influence strategy scores or clash resolution.
 - Do not run an additional strategy evaluation pass solely for Discord.
 
@@ -41,8 +41,8 @@ hard SL/RR admission
       v
 score and clash resolution
       |
-      +--> alpha ledger / advisory channels
-      +--> immediate bybit / hyro intent, when selected
+      +--> alpha ledger
+      +--> immediate shared-bus TradeIntent, when selected
 ```
 
 The raw capture and Discord batch are side effects of the same deterministic
@@ -121,7 +121,7 @@ hard_gate_status       pending | pass | fail
 hard_gate_reasons
 score_status           pending | scored
 clash_status           pending | selected | suppressed | conflict
-executor_intent_status not_eligible | not_selected | written | failed
+executor_intent_status not_eligible | not_selected | selected | published | failed
 ```
 
 Raw records are append-only. Downstream status changes are recorded either in a
@@ -154,7 +154,7 @@ raw_signal_status_history(
   hard_gate_status,
   score_status,
   clash_status,
-  executor_intent_status,
+  executor_intent_status, -- legacy name; shared-bus publication state only
   reason,
   recorded_at NOT NULL
 )
@@ -239,17 +239,17 @@ feature snapshots. Truncate reasons and serialize values consistently.
 
 ## Delivery Independence
 
-The two delivery paths have separate failure domains:
+The two publication paths have separate failure domains:
 
 ```text
 raw ledger -> Discord batch
 
-eligible selected candidate -> intent outbox -> bybit / hyro executor
+eligible selected candidate -> intent outbox -> shared intent bus
 ```
 
 Rules:
 
-1. Discord webhook timeout cannot delay intent writing.
+1. Discord webhook timeout cannot delay shared-bus publication.
 2. Discord rate limiting cannot cause intent retry or suppression.
 3. Intent write failure cannot prevent raw batch publication.
 4. A batch retry cannot duplicate an intent.
@@ -285,15 +285,14 @@ Recommended configuration:
 ```dotenv
 RAW_SIGNAL_DISCORD_BATCH_ENABLED=true
 RAW_SIGNAL_DISCORD_BATCH_MINUTES=30
-RAW_SIGNAL_DISCORD_WEBHOOK_URL=${DISCORD_ALPHA_WEBHOOK_URL}
+RAW_SIGNAL_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 RAW_BATCH_CLAIM_LEASE_SECONDS=120
 RAW_BATCH_MAX_ATTEMPTS=5
 ```
 
 The 30-minute interval must be validated as a positive divisor of 60 in the
-first rollout. The raw batch and admitted alpha message may use different
-webhooks or channels, but a shared webhook is acceptable when message labels
-make the distinction unambiguous.
+first rollout. `RAW_SIGNAL_DISCORD_WEBHOOK_URL` is independent; it never falls
+back to a legacy alpha-message webhook setting.
 
 ## Operational Metrics
 
@@ -306,7 +305,7 @@ Expose at least:
 - oldest unbatched candidate age
 - hard-gate pass/fail totals
 - selected/suppressed/conflict totals
-- executor intents written independently of batch status
+- shared-bus intents published independently of batch status
 
 Health must report raw-batch lag separately from market freshness and evaluator
 freshness. A stale Discord batch must not mark market ingestion or evaluation
@@ -323,7 +322,7 @@ Tests must prove:
 5. Candidates on opposite sides of a UTC half-hour boundary are separated.
 6. Late candidates do not mutate a claimed batch.
 7. Duplicate publisher runs cannot send the same batch twice.
-8. Discord timeout does not prevent a selected Hyro intent from being written.
+8. Discord timeout does not prevent a selected intent from reaching the shared bus.
 9. Intent write failure does not prevent raw batch persistence.
 10. A batch retry never re-runs strategies or creates another intent.
 11. Empty windows are either skipped deterministically or recorded explicitly.
@@ -335,17 +334,14 @@ Tests must prove:
 1. Add schema and raw capture with Discord delivery disabled.
 2. Verify raw candidate counts against plugin results for several cycles.
 3. Enable batch rendering to a test webhook or private channel.
-4. Verify executor intent timestamps and counts are unchanged with Discord
+4. Verify shared-bus intent timestamps and counts are unchanged with Discord
    unavailable.
-5. Enable the production webhook.
-6. Keep individual admitted Discord signal delivery separately configurable;
-   enabling raw batching must not implicitly disable or duplicate it.
+5. Enable the production raw-signal webhook.
+6. Verify no per-intent notification path is configured or emitted.
 
 ## Related Documents
 
 - `specs/trade-admission-and-clash-resolution.md`
 - `specs/adr-strategy-confluence-scoring.md`
-- `specs/research-to-bot-execution-adapter.md`
-- standalone-llm-pm repository
 - `README.md`
 - `agent.md`

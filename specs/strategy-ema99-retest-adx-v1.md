@@ -259,7 +259,7 @@ be omitted because the alpha event schema requires the field. Admission may
 derive a target in its private admission proof, and the alpha outbox may persist
 that admitted target for delivery auditability. The derived value is never a
 strategy target and is never used in the strategy's entry or exit rules. The
-executor intent builder remains the owner of the final 2R delivery target.
+TradeIntent builder remains the owner of the final 2R publication target.
 
 The executor continues to own:
 
@@ -304,10 +304,9 @@ short_exit = RSI14[t] < 28.0
 Both conditions are strict. Equality does not trigger an exit. RSI and spread
 must be true on the same completed 5m bar.
 
-No live exit decision is emitted by this repository. The standalone PM and
-executor remain governed by their own contracts; this strategy metadata cannot
-override them. Any future strategy-specific exit handoff requires a separate
-cross-repository specification and executor implementation.
+No live exit decision is emitted by this repository. Position management and
+execution are downstream; this strategy metadata cannot override them. Any
+future exit handoff requires a separate contract outside this repository.
 
 ## Admission and Routing
 
@@ -320,8 +319,8 @@ completed 5m cutoff
     -> symbol/account policy
     -> hard admission and clash resolution
     -> alpha outbox
-    -> executor intent construction
-    -> shared SQLite intent bus -> downstream executor route
+    -> TradeIntent construction
+    -> shared SQLite intent bus
 ```
 
 Existing global admission remains in force, including freshness, directional
@@ -388,13 +387,13 @@ of this strategy cutover.
 - RSI/spread exit requires both conditions on the same closed 5m bar.
 - RSI and spread equality boundaries do not exit.
 - No analyst-side mechanical exit or stop-revision decision is delivered.
-- Executor and standalone-PM contracts remain unaffected by this plugin.
+- Downstream execution and position-management contracts are unaffected.
 
 ### Contract and operations
 
 - Strategy output events contain `targets=[]`; any admitted target persisted by
   the outbox is delivery metadata, not strategy output.
-- Executor intent construction derives the configured 2R target downstream.
+- TradeIntent construction derives the configured 2R publication target.
 - Entry order type is absent from the strategy event and selected by executor
   profile policy.
 - Strategy candidates contain no account or venue routing fields.

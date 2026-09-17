@@ -40,9 +40,6 @@ completed trigger
        alpha ledger + publisher
        -> shared SQLite intent bus
 
- executor 1m position snapshots
-   -> standalone-llm-pm (separate service)
-        -> executor decision inbox
 ```
 
 The gateway writes market observations before publishing a trigger. The
@@ -61,8 +58,8 @@ turn a successful evaluation into a failed market pipeline.
 | `research-analyst-orchestrator` | Cutoffs, candidate persistence, scorer/admission, publishing | `data/analyst.sqlite3` |
 
 All production services are managed by `oxmgr`. Never start a second gateway,
-regime worker, strategy runner, or orchestrator manually. Position management is
-owned by the separate `standalone-llm-pm` service.
+regime worker, strategy runner, or orchestrator manually. Position management
+is downstream and outside this repository.
 
 ## Discord Signal Batch Format
 
@@ -128,8 +125,8 @@ Strategies remain source-blind: they do not read watchlist configuration,
 rotation state, regime state, or account policy. In `REGIME_SESSION_MODE=enforce`,
  the router additionally restricts each plugin to its active market family. The
  account-symbol policy remains a downstream admission gate. The strategy engine
-uses a 5m-only market-data contract; executor PM snapshots remain 1m and
-Binance OI rotation remains separate. See
+uses a 5m-only market-data contract; downstream position data is outside this
+repository and Binance OI rotation remains separate. See
 `specs/no-1m-engine-and-strategy-rewrite-v1.md`.
 
 Canonical asset names are preserved throughout the pipeline. For example,
@@ -387,11 +384,10 @@ Files under `data/alpha_outbox/quarantine/` are unused archival artifacts and
 may be deleted only after verifying that every file is expired and belongs to a
 retired strategy or invalid legacy schema. Preserve active top-level events.
 
-## Position Management
+## Downstream Boundary
 
-LLM position management is outside this repository and is owned by the
-`standalone-llm-pm` service. Research Analyst publishes validated trade intents;
-the executor and standalone PM own position lifecycle decisions.
+Research Analyst stops at validated shared-bus publication. It contains no
+position-management or venue-adapter path.
 
 ## Operations
 

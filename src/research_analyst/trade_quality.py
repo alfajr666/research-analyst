@@ -252,7 +252,7 @@ def resolve(
     for candidate, result in eligible:
         candidate_id = candidate.get("candidate_id")
         if candidate_id in selected_set:
-            result["status"] = "selected_for_executor"
+            result["status"] = "selected_for_publication"
         elif result.get("status") == "selected_for_scoring":
             result["status"] = "eligible_suppressed_by_same_direction_rank"
     for result in results:

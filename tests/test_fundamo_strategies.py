@@ -5,7 +5,7 @@ import polars as pl
 import config
 from strategies.v2.ema20_pullback_h4_trend_v1 import evaluate_symbol as evaluate_ema20
 from strategy_plugins import _REGISTRY
-from intent_outbox import build_executor_intent
+from intent_outbox import build_trade_intent
 
 
 def bars(closes, *, opens=None, highs=None, lows=None, start="2026-08-31T00:00:00+00:00", minutes=5):
@@ -38,7 +38,7 @@ class FundamoStrategyTests(unittest.TestCase):
         self.assertAlmostEqual(event["targets"][0], event["entry_price"] + 2 * risk)
 
     def test_fundamo_routes_cannot_be_overridden(self):
-        intent = build_executor_intent({"strategy_id": "ema20-pullback-h4-trend-v1",
+        intent = build_trade_intent({"strategy_id": "ema20-pullback-h4-trend-v1",
                                         "asset": "BTC", "direction": "long",
                                         "observed_at": "2026-08-31T00:00:00+00:00",
                                         "entry_price": 100, "invalidation_price": 95,

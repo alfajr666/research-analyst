@@ -54,13 +54,13 @@ Out of scope:
 
 ### Research Analyst
 
-- `intent_outbox.py` builds the executor-facing schema-v1 envelope.
-- `intent_bus_publisher.py` currently publishes one `target=bybit` delivery.
+- `intent_outbox.py` builds the executor-facing schema-v2 envelope.
+- `intent_bus_publisher.py` publishes enabled `bybit` and `propr` target legs.
 - The authoritative bus is `/home/ubuntu/shared/intent-bus/intent_bus.sqlite3`.
 - `INTENT_BUS_DB` must remain an explicit absolute path.
 - Intent publication is gated by `INTENT_BUS_BYBIT_ENABLED`.
-- `execution_adapter.py` is not part of this delivery path; publication uses the
-  shared bus exclusively.
+- No filesystem or venue adapter is part of this delivery path; publication
+  uses the shared bus exclusively.
 
 ### Propr Executor
 

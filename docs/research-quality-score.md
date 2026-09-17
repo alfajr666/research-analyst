@@ -53,14 +53,10 @@ selection, strategy mix, repeated assets, or time dependence.
   v2 rows for each raw signal had the same score.
 - The active delivery path is `src/research_analyst/alpha_outbox.py:180-234`
   to `src/research_analyst/intent_bus_publisher.py:62-105`, then the shared
-  SQLite bus. `src/research_analyst/execution_adapter.py` defines a legacy
-  filesystem adapter, but no current source caller invokes
-  `ExecutionAdapter.deliver()`.
-- Bybit consumes `target=bybit` in
-  `/home/ubuntu/bybit-executor/executor/intent_bus_consumer.py:63-180` and
-  reaches the CCXT venue adapter in
-  `/home/ubuntu/bybit-executor/executor/exchange.py:22-36`. Propr consumes
-  `target=propr` in `/home/ubuntu/propr-executor/src/propr_executor/intent_bus_consumer.py:156-215`.
+  SQLite bus. Research Analyst has no filesystem or venue-adapter delivery
+  path.
+- Downstream consumption, routing, and venue execution are outside this
+  repository and are not used as quality-score evidence.
 - `specs/alpha-signal-contract-and-confidence-calibration-v1.md:249-280`
   defines the intended descriptive outcomes: `win` is target-before-
   invalidation, `loss` is invalidation-before-target, `timeout` is neither

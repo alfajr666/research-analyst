@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import polars as pl
 
-from intent_outbox import build_executor_intent, validate_geometry
+from intent_outbox import build_trade_intent, validate_geometry
 from strategies.v2.ema7_26_cross_hammer_shooting_star_v1 import evaluate_symbol
 from trade_admission import admit
 
@@ -69,7 +69,7 @@ class Ema7CrossHammerE2ETests(unittest.TestCase):
             admit(event, now=observed + timedelta(minutes=1), effective_universe=["BTC"])["hard_gate"],
             "pass",
         )
-        intent = build_executor_intent(event)
+        intent = build_trade_intent(event)
         self.assertAlmostEqual(intent["take_profit"], 109.0)
         self.assertEqual(intent["stop_loss"], 97.0)
         self.assertTrue(validate_geometry(intent)[0])

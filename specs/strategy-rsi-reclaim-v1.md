@@ -22,7 +22,7 @@ not mix under another `strategy_id`.
 
 ## Related
 
-- `specs/adr-strategy-confluence-scoring.md` — score, gates, LLM booster
+- `specs/adr-strategy-confluence-scoring.md` — deterministic score and gates
 - `specs/strategy-v2-shared-library.md` — shared context + scoring
 - `specs/data-platform-strategy-plugins.md` — cutoff, zones, plugins
 - `specs/alpha-outcome-policy.md` — outcomes
@@ -84,7 +84,7 @@ finalized 15m cutoff snapshot
   alpha outbox ──► publisher ──► Telegram/Discord
         │
         v  (optional, after emit)
-  LLM review booster (stance + delivery priority only)
+  deterministic admission → shared intent bus
 ```
 
 ## Hard gates
@@ -212,9 +212,8 @@ research (`stretch_atr`, `core_atr` distances) without multi-target outcomes.
 
 ### Execution adapter
 
-Current adapter only forwards `limit_at_ema_context`. This family emits
-**breakout_*** confirmed reclaim → **Telegram/Discord research path** first.
-Do not force-fit exec adapter without a separate adapter change.
+This family emits a confirmed `breakout_*` reclaim. Any admitted trade intent
+uses the shared SQLite bus; there is no venue-adapter fallback.
 
 ## Feature snapshot (minimum)
 
@@ -224,11 +223,6 @@ close_15m, close_1h, ema_fast_15m, ema_mid_15m, ema200_1h, ema48_4h,
 atr_15m, atr_1h, rsi_15m, rsi_prev_15m, sep_1h, body_atr,
 structure_bias, zone_bias, nearest_zone, risk, completed_bar_at
 ```
-
-## LLM booster
-
-Same rules as other v2 families: post-emit stance/boost only; no mutation of
-deterministic fields.
 
 ## Config knobs
 
@@ -257,9 +251,9 @@ Env prefix: `RSI_RECLAIM_*`.
 
 - 5m bar ingestion or 5m cutoff
 - Position ladder, trailing, or live 1h bias-exit in the producer
-- Calibrated probability or LLM-set confidence
+- Calibrated probability or model-set confidence
 - Merging with accumulation / ignition / continuation IDs
-- Exec-adapter support in v1 (breakout confirmed reclaim)
+- Venue-adapter support in this repository
 - Sizing, venue, or order placement
 - Equity-TradFi parameter transfer without crypto walk-forward
 
