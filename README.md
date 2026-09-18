@@ -202,10 +202,24 @@ admission, sizing, or executor protections.
 
 See `specs/regime-history-bootstrap-v2.md`,
 `specs/reversal-regime-gate-v1.md`, and
-`specs/regime-session-module-v1.md` for the normative contracts.The default rollout remains `REGIME_SESSION_MODE=shadow` until replay, lookahead,
+`specs/regime-session-module-v1.md` for the normative contracts. The default rollout remains `REGIME_SESSION_MODE=shadow` until replay, lookahead,
 coexistence, and candidate-admission validation are complete. The managed env
 maps in `ops/oxfile.toml` pin `REGIME_SESSION_MODE=shadow` explicitly on all
 five core targets so every process agrees on the mode.
+
+### Reaction scorer rollout
+
+`REACTION_SCORER_MODE` is the single rollout switch for the reaction-oriented
+value-profile, participation, OI, and funding scorer:
+
+- `off` keeps the legacy trade-quality scorer only;
+- `shadow` computes and persists reaction evidence while the legacy scorer
+  remains operational;
+- `enforce` makes the reaction scorer's result operational.
+
+The reaction scorer never publishes directly to a venue. Validated intents still
+cross only the shared SQLite intent bus, and bus target switches remain
+independent.
 
 ## Live Strategy Set
 
@@ -399,6 +413,13 @@ oxmgr logs research-analyst-regime-session --lines 40
 oxmgr logs research-analyst-strategy-runner --lines 40
 oxmgr logs research-analyst-orchestrator --lines 40
 ```
+
+For a local observation-only smoke run when `oxmgr` is unavailable, a
+task-local PM2 home may supervise the same entrypoints, but this is not the
+production supervisor. Set both `INTENT_BUS_BYBIT_ENABLED=false` and
+`INTENT_BUS_PROPR_ENABLED=false` explicitly; verify cycle health and logs before
+enabling any delivery target. A stale `data/ws_health.json` or absent fresh
+market bars means the pipeline is not live even if the process is online.
 
 `research-analyst-regime-session` is health-checked by
 `scripts/regime_session_healthcheck.py`, which verifies the worker process and
