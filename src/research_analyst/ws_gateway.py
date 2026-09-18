@@ -87,6 +87,30 @@ async def health_monitor() -> None:
         if stale and _HEALTH["active_connections"] > 0:
             raise RuntimeError(f"WebSocket feed stale for more than {config.WS_STALE_SECONDS}s")
         await asyncio.sleep(10)
+
+
+def _ensure_stream_task_alive(stream_task: asyncio.Task, provider: str) -> None:
+    """Fail the gateway loudly when a provider task exits unexpectedly.
+
+    Provider connection loops are intentionally long-lived.  A task that has
+    completed is therefore always a supervision failure, even when it returned
+    without an exception.  Propagating the failure lets the process manager
+    restart the gateway instead of leaving a PM2-online but data-dead process.
+    """
+    if not stream_task.done():
+        return
+    if stream_task.cancelled():
+        detail = "cancelled"
+    else:
+        try:
+            error = stream_task.exception()
+        except Exception as exc:  # pragma: no cover - defensive task API guard
+            error = exc
+        detail = str(error) if error else "returned unexpectedly"
+    message = f"{provider} stream task exited: {detail}"
+    _HEALTH["last_error"] = message[:500]
+    _write_health("failed")
+    raise RuntimeError(message)
 BYBIT_TF_TOKEN = {"5m": "5"}
 BINANCE_TF_STREAM = {"5m": "5m"}
 
@@ -891,6 +915,7 @@ async def _supervise_provider(provider: str, supervisor: SubscriptionSupervisor,
     try:
         while True:
             await asyncio.sleep(5)
+            _ensure_stream_task_alive(stream_task, provider)
             desired, feed = subscription_state()
             current_identity = feed.get("effective_universe_version") or feed.get("feed_id")
             if desired == supervisor.bases and current_identity == observed_feed_id:

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import asyncio
 import os
 import tempfile
 from pathlib import Path
+
+import pytest
 
 import config
 import ws_gateway as wsg
@@ -25,6 +28,22 @@ def test_successful_connection_clears_transient_error():
     wsg._HEALTH["last_error"] = "timed out during opening handshake"
     wsg._mark_connection_healthy()
     assert wsg._HEALTH["last_error"] is None
+
+
+def test_stream_task_failure_is_supervised(monkeypatch):
+    async def fail():
+        raise ImportError("No module named websockets")
+
+    async def run():
+        task = asyncio.create_task(fail())
+        await asyncio.sleep(0)
+        statuses = []
+        monkeypatch.setattr(wsg, "_write_health", statuses.append)
+        with pytest.raises(RuntimeError, match="bybit stream task exited"):
+            wsg._ensure_stream_task_alive(task, "bybit")
+        assert statuses == ["failed"]
+
+    asyncio.run(run())
 
 
 def test_gateway_disabled_rotation_mode_is_permanent_only(monkeypatch):
