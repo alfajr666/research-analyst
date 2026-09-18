@@ -4,7 +4,8 @@
 
 ## Decision
 
-Implement cutoff-bound open-interest observations and score them in shadow.
+Implement cutoff-bound open-interest observations as an operationally weighted
+part of the reaction scorer's shadow/enforce path.
 Do not implement CVD or a trade-level aggressive-flow collector for the current
 completed-bar architecture.
 
@@ -13,9 +14,9 @@ completed-bar architecture.
 | Open-interest participation | Medium-high | Low-medium | Implement for candidate assets |
 | CVD / aggressive-flow imbalance | Low-confidence incremental value | High | Rejected for this architecture |
 
-Research Analyst remains an intent producer. OI may annotate and eventually
-rank an admitted candidate, but never place orders, size positions, bypass
-admission, or publish anywhere except the shared intent bus.
+Research Analyst remains an intent producer. OI may rank an admitted candidate
+when the reaction scorer is enforced, but never place orders, size positions,
+bypass admission, or publish anywhere except the shared intent bus.
 
 ## Why CVD is out of scope
 
@@ -95,9 +96,8 @@ network or database I/O.
 
 ## `oi_participation` (`oi-participation-v1`)
 
-Inputs are candidate direction and family, 15m and 60m price returns,
-same-window OI changes, rolling within-asset OI-change percentiles, and funding
-overheating.
+Inputs are candidate direction, 15m and 60m price returns, same-window OI
+changes, and rolling within-asset absolute OI-change percentiles.
 
 | Price | OI | Interpretation |
 | --- | --- | --- |
@@ -106,24 +106,41 @@ overheating.
 | Up | Down | position closing / short covering |
 | Down | Down | position closing / long liquidation |
 
-The first two states may support a same-direction trend candidate. Closing-led
-moves receive weaker trend support. Mean-reversion and reversal mappings may
-treat extreme same-direction OI expansion plus overheated funding as crowding.
+Convert price return into candidate-aligned sign before interpreting the table.
+For each horizon, aligned price plus rising OI scales from `0.50` toward `1.00`
+by OI-change percentile; aligned price plus falling OI is closing-led and scores
+`0.55`; opposing price plus rising OI scales from `0.50` toward `0.00`; and
+opposing price plus falling OI scores `0.35`. Flat price is neutral.
+
+Combine the horizons without candidate-specific renormalization:
+
+```text
+oi_confirmation = 0.60 * oi_15m + 0.40 * oi_60m
+```
+
+Funding does not enter this calculation. The reaction scorer's separate
+crowding leg owns funding so the same evidence is not counted twice.
 
 Normalize magnitude within each asset. Fixed cross-asset OI thresholds are
 forbidden. Fewer than 32 observations, stale data, gaps, or cutoff mismatch
 returns `value=0.5`, `status=unavailable`.
 
-## Weighting and acceptance
+## Weighting and rollout
 
-OI initially persists with weight `0.0` and `OI_SHADOW_ENABLED=false` by default;
-operational scores and verdicts remain
-unchanged. Its presence bumps score policy/profile versions for provenance.
+`REACTION_SCORER_MODE=off|shadow|enforce` is the sole rollout control.
+`OI_SHADOW_ENABLED` is removed rather than retained as an alias.
 
-If promoted, OI weight must not exceed `0.08`. Take weight primarily from RVOL
-and funding, never from identity, geometry, structural stop, or freshness.
-Missing data remains neutral `0.5`; it does not change normalization per
-candidate and never hard-gates admission.
+| Mode | OI collection and v3 calculation | Operational result |
+| --- | --- | --- |
+| `off` | no candidate-scoped OI fetch; no v3 | legacy v2 |
+| `shadow` | collect OI and compute v3 with OI weight `0.15` | legacy v2 |
+| `enforce` | identical collection and v3 computation | weighted v3 |
+
+Reaction-scorer v3 fixes OI at weight `0.15`, funded by reducing RVOL and
+funding/crowding weights rather than by weakening admission. Missing data is
+neutral `0.5`, retains the fixed 0.15 denominator, and never hard-gates
+admission. Shadow therefore measures the exact score that enforce will select;
+there is no zero-weight OI mode and no silent normalization.
 
 Promotion requires:
 
@@ -137,7 +154,8 @@ Promotion requires:
 7. demonstrated incremental value after RVOL and funding; and
 8. transforms and weight locked before the final holdout.
 
-Insufficient sample size or redundant value leaves OI at zero weight.
+Insufficient sample size or redundant value keeps the whole reaction scorer in
+`shadow`; it does not create a nominal enforce mode in which OI has no effect.
 
 ## Cost, rollout, and tests
 
@@ -147,13 +165,15 @@ latency, errors, cache hits, observation age, and rows written.
 Rollout order:
 
 1. add the OI schema, retention, loader, and deterministic fixtures;
-2. emit shadow observations and collect at least eight weeks;
+2. compute the fully weighted v3 in `shadow` and collect at least eight weeks;
 3. run the locked ablation; and
-4. promote only if every acceptance gate passes.
+4. switch `REACTION_SCORER_MODE=enforce` only if every acceptance gate passes.
 
-Tests cover exact cutoffs, replay without network calls, family-aware mapping,
-within-asset normalization, neutral missing data, unchanged shadow scores, and
-the inability of OI to bypass admission or publish directly to the bus.
+Tests cover exact cutoffs, replay without network calls, mirrored directional
+mapping, within-asset normalization, neutral missing data, unchanged shadow
+operational scores, a weighted shadow-v3 OI contribution, enforce selection of
+that exact v3 result, and the inability of OI to bypass admission or publish
+directly to the bus.
 
 ## Non-goals
 

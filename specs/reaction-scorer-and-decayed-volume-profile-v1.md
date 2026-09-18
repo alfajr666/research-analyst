@@ -46,11 +46,11 @@ REACTION_SCORER_MODE=off|shadow|enforce
 
 Default: `shadow` after implementation is deployed and replay tests pass.
 
-| Mode | Legacy v2 score | Reaction v3 score | Operational score and verdict |
+| Mode | Legacy v2 score | Reaction v3, including OI | Operational score and verdict |
 | --- | --- | --- | --- |
-| `off` | computed | not computed | v2 |
-| `shadow` | computed | computed and persisted | v2 |
-| `enforce` | computed and persisted for comparison | computed | v3 |
+| `off` | computed | not computed; no candidate-scoped OI fetch | v2 |
+| `shadow` | computed | fully weighted, computed, and persisted | v2 |
+| `enforce` | computed and persisted for comparison | same fully weighted result | v3 |
 
 Shadow and enforce must call the same v3 implementation. The only allowed
 difference is this selector:
@@ -67,11 +67,13 @@ Changing `REACTION_SCORER_MODE` requires only a managed orchestrator restart.
 It must not require a schema migration, database rewrite, or code edit. Startup
 must reject any other value.
 
-`REACTION_SCORER_MODE` is the sole rollout setting. Do not add boolean aliases,
-per-module mode flags, or direct `os.environ` reads. The settings loader parses
-it once into a typed enum and passes that value to the operational selector.
-Startup and cycle health must expose both the configured mode and selected
-operational scorer version so an operator can verify that `enforce` took effect.
+`REACTION_SCORER_MODE` is the sole rollout setting. Remove
+`OI_SHADOW_ENABLED`; do not retain it as an alias or add per-module mode flags,
+secondary booleans, or direct `os.environ` reads. The settings loader parses
+the mode once into a typed enum and passes that value to the collection plan and
+operational selector. Startup and cycle health must expose both the configured
+mode and selected operational scorer version so an operator can verify that
+`enforce` took effect.
 
 Emergency rollback is `REACTION_SCORER_MODE=shadow`; existing anchor/profile
 state remains available and collection continues.
@@ -309,16 +311,18 @@ Any failing admission proof emits no intent regardless of v2 or v3 score.
 
 ### 10.2 Weighted observations
 
-The v3 score has three operational observations:
+The v3 score has four operational observations:
 
 | Observation | Weight | Meaning |
 | --- | ---: | --- |
 | `value_reaction-v1` | 0.50 | confirmed direction-aware POC/HVN reaction |
-| `participation-v1` | 0.30 | normalized RVOL participation |
-| `crowding-v1` | 0.20 | direction/family-aware funding crowding |
+| `participation-v1` | 0.20 | normalized RVOL participation |
+| `oi-participation-v1` | 0.15 | price-confirmed derivatives participation |
+| `crowding-v1` | 0.15 | direction/family-aware funding crowding |
 
-`oi_participation-v1` remains persisted at weight `0.0` under its separate
-specification. It cannot silently enter `participation-v1`.
+Weights are fixed by scorer version and sum to `1.00`. They are not independent
+runtime settings. `shadow` computes this exact weighted v3 score, while
+`enforce` selects the already-tested result. There is no zero-weight OI mode.
 
 Remove from the weighted score:
 
@@ -333,7 +337,35 @@ Regime-session continues controlling family activation and plugin scope. It is
 not also a score multiplier. Family-aware interpretation remains internal to
 the reaction and crowding observations.
 
-### 10.3 Threshold
+### 10.3 OI confirmation
+
+OI is directional only after comparison with candidate-aligned price movement.
+For 15m and 60m horizons, calculate cutoff-bound price return, OI change, and
+the absolute OI-change percentile within that asset's trailing history. Fixed
+cross-asset OI thresholds are forbidden.
+
+For each horizon:
+
+| Candidate-aligned price | OI change | Observation |
+| --- | --- | --- |
+| positive | positive | support scaled from `0.50` toward `1.00` by OI-change percentile |
+| positive | negative | closing-led move, `0.55` |
+| negative | positive | opposing position expansion scaled from `0.50` toward `0.00` |
+| negative | negative | adverse liquidation/covering, `0.35` |
+| flat or unavailable | any | neutral `0.50` |
+
+Combine horizons with fixed weights:
+
+```text
+oi_confirmation = 0.60 * oi_15m + 0.40 * oi_60m
+```
+
+An unavailable horizon contributes neutral `0.50`; weights are never
+renormalized per candidate. Funding is not re-scored inside this observation:
+same-side crowding remains the separate `crowding-v1` leg. OI cannot create a
+direction, rescue failed admission, or alter TradeIntent geometry.
+
+### 10.4 Threshold
 
 Add:
 
@@ -412,6 +444,7 @@ Per cutoff record:
 - anchors retained/replaced/reseeded and anchor ages;
 - profile build p50/p95 latency and cache hits;
 - POC/HVN reaction status counts;
+- OI ready/unavailable status, 15m/60m states, and weighted contribution;
 - v2/v3 score delta distribution;
 - v2/v3 decision disagreement counts;
 - selected/suppressed candidates under each version;
@@ -437,12 +470,17 @@ Required seam-level tests:
 11. Missing profile produces neutral evidence and never fabricated support.
 12. Admission failure blocks publication at every rollout mode.
 13. Shadow mode preserves byte-equivalent v2 operational score/decision and
-    intent quality score.
+    intent quality score while computing the fully weighted OI-bearing v3.
 14. Enforce mode uses v3 for threshold, clash resolution, alpha event, and bus
     source payload.
 15. Switching shadow to enforce requires no state rewrite.
 16. Replay performs no network I/O and reproduces the same profile and score.
 17. One asset/cutoff profile is reused across multiple candidates.
+18. The four price/OI states mirror correctly for long and short candidates.
+19. With other observations fixed, OI support versus contradiction changes v3
+    by exactly `0.15 * (support - contradiction)` and can change the verdict.
+20. `off` performs no candidate-scoped OI fetch; `shadow` and `enforce` compute
+    byte-equivalent v3 results from identical inputs.
 
 ## 15. Promotion gate
 
