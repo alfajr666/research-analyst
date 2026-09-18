@@ -46,8 +46,8 @@ but this specification intentionally does not consume that stream.
 
 OI adds a distinct question: whether a price move is accompanied by expanding
 or contracting derivatives exposure. It remains contextual rather than
-directional by itself and must be combined with price change, candidate
-direction, strategy family, and funding.
+directional by itself and must be combined with price change and candidate
+direction. Funding remains a separate crowding observation.
 
 Bybit exposes timestamped 5-minute OI history through
 [`/v5/market/open-interest`](https://bybit-exchange.github.io/docs/v5/market/open-interest).
@@ -119,7 +119,9 @@ oi_confirmation = 0.60 * oi_15m + 0.40 * oi_60m
 ```
 
 Funding does not enter this calculation. The reaction scorer's separate
-crowding leg owns funding so the same evidence is not counted twice.
+crowding leg owns raw funding so the same evidence is not counted twice. That
+leg may consume the final OI status only to cap or unlock an opposite-crowding
+boost; it never changes the OI score itself.
 
 Normalize magnitude within each asset. Fixed cross-asset OI thresholds are
 forbidden. Fewer than 32 observations, stale data, gaps, or cutoff mismatch

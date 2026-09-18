@@ -318,7 +318,7 @@ The v3 score has four operational observations:
 | `value_reaction-v1` | 0.50 | confirmed direction-aware POC/HVN reaction |
 | `participation-v1` | 0.20 | normalized RVOL participation |
 | `oi-participation-v1` | 0.15 | price-confirmed derivatives participation |
-| `crowding-v1` | 0.15 | direction/family-aware funding crowding |
+| `crowding-v1` | 0.15 | mirrored, confirmation-gated funding crowding |
 
 Weights are fixed by scorer version and sum to `1.00`. They are not independent
 runtime settings. `shadow` computes this exact weighted v3 score, while
@@ -334,8 +334,8 @@ Remove from the weighted score:
 - regime family weight interpolation.
 
 Regime-session continues controlling family activation and plugin scope. It is
-not also a score multiplier. Family-aware interpretation remains internal to
-the reaction and crowding observations.
+not also a score multiplier. Reaction, OI, and crowding interpretation is
+directional and identical across strategy families.
 
 ### 10.3 OI confirmation
 
@@ -365,7 +365,79 @@ renormalized per candidate. Funding is not re-scored inside this observation:
 same-side crowding remains the separate `crowding-v1` leg. OI cannot create a
 direction, rescue failed admission, or alter TradeIntent geometry.
 
-### 10.4 Threshold
+### 10.4 Funding crowding
+
+Funding is a symmetric positioning observation, not merely a long-overheating
+penalty. Positive funding means longs pay shorts; negative funding means shorts
+pay longs. Therefore deeply negative funding may boost a long and deeply
+positive funding may boost a short, but funding never supplies direction by
+itself.
+
+The module interface receives the candidate direction, cutoff-bound funding
+history, confirmed reaction result, and OI result. Callers do not implement
+normalization or confirmation rules:
+
+```text
+score_funding_crowding(direction, cutoff, funding_history, reaction, oi)
+  -> CrowdingObservation
+```
+
+Use only unique funding observations at or before the evaluation cutoff from
+the preceding 14 calendar days. Carried-forward duplicates do not count as new
+observations; uniqueness is by native source/event timestamp, not rate value.
+Require at least 32 valid observations and require the newest
+observation to be no older than three times the median observed interval.
+Otherwise return neutral `0.50`, `status=unavailable`.
+
+Calculate extremeness within the asset from history excluding the current
+observation:
+
+```text
+candidate_sign = +1 for long, -1 for short
+signed_crowding = candidate_sign * current_funding
+percentile = count(abs(historical_funding) <= abs(current_funding))
+             / count(historical_funding)
+heat = clamp((percentile - 0.75) / 0.25, 0, 1)
+```
+
+`signed_crowding > 0` means the candidate side is crowded. It always applies a
+penalty:
+
+```text
+same_side_score = 0.50 - 0.50 * heat
+```
+
+`signed_crowding < 0` means the opposing side is crowded. Its potential boost
+is gated asymmetrically:
+
+| Reaction evidence | OI evidence | Opposite-side funding score |
+| --- | --- | ---: |
+| confirmed support | support | `0.50 + 0.50 * heat` |
+| confirmed support | neutral or unavailable | `0.50 + 0.25 * heat` |
+| confirmed support | contradict | `0.50` |
+| neutral, unavailable, or contradict | any | `0.50` |
+
+Only reaction `status=support` qualifies; node proximity without confirmation
+does not. The maximum boost without supportive OI is `0.75`, while a full boost
+requires both a confirmed price reaction and supportive position expansion. A
+same-side penalty is never neutralized by reaction or OI evidence. Zero funding
+and funding at or below the 75th absolute-magnitude percentile remain neutral
+`0.50`.
+
+The implementation must persist current funding, unique observation count,
+newest age, native interval, percentile, heat, signed-crowding side,
+reaction status, OI status, applied cap, final score, and algorithm version.
+Fixed absolute rate thresholds and cross-asset comparisons are forbidden.
+
+V3 introduces no funding-specific environment settings. The 14-day window,
+32-observation minimum, 75th-percentile activation, and boost caps are constants
+of `crowding-v1`; changing one requires a new observation/scorer version.
+Existing `TRADE_QUALITY_FUNDING_LOOKBACK_BARS` and
+`TRADE_QUALITY_FUNDING_MIN_BARS` remain legacy-v2-only until the rollback path
+is retired and must be labeled `legacy_only` in configuration provenance. They
+never alter v3. Do not add aliases or a separate funding mode.
+
+### 10.5 Threshold
 
 Add:
 
@@ -445,6 +517,8 @@ Per cutoff record:
 - profile build p50/p95 latency and cache hits;
 - POC/HVN reaction status counts;
 - OI ready/unavailable status, 15m/60m states, and weighted contribution;
+- funding same-side penalties, opposite-side full/capped/blocked boosts,
+  unavailable counts, and weighted contribution;
 - v2/v3 score delta distribution;
 - v2/v3 decision disagreement counts;
 - selected/suppressed candidates under each version;
@@ -481,6 +555,16 @@ Required seam-level tests:
     by exactly `0.15 * (support - contradiction)` and can change the verdict.
 20. `off` performs no candidate-scoped OI fetch; `shadow` and `enforce` compute
     byte-equivalent v3 results from identical inputs.
+21. Negative extreme funding mirrors as a potential long boost; positive
+    extreme funding mirrors as a potential short boost.
+22. Same-side extreme funding penalizes monotonically for both directions.
+23. Opposite-side funding is neutral without confirmed reaction, receives a
+    capped boost with neutral/unavailable OI, receives the full boost with
+    supportive OI, and is neutral with `contradict` OI.
+24. Carried-forward duplicates, future observations, stale history, and fewer
+    than 32 unique observations return neutral unavailable funding.
+25. Funding cannot change admission or TradeIntent geometry and cannot produce
+    a passing v3 candidate without the operational total meeting its threshold.
 
 ## 15. Promotion gate
 
@@ -495,6 +579,8 @@ Promotion to `enforce` requires:
 - positive lower confidence bound on the locked rank-discrimination metric;
 - no material degradation by strategy, family, direction, or liquidity tier;
 - improved score calibration or a demonstrably monotonic outcome relationship;
+- enough extreme-funding examples on both sides to validate the mirrored
+  penalty, capped boost, and full boost separately;
 - no material orchestrator-latency or shared-bus regression; and
 - a recorded operator decision naming the tested profile/scorer versions.
 
