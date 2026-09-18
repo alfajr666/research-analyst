@@ -51,6 +51,17 @@ ADMISSION_STRATEGY_IDS = {"failed-break-v3", "bb-rsi-meanrev-v1",
                               "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5"}
 
 
+def _context_rows(frame: Any) -> list[dict[str, Any]]:
+    """Convert a cutoff frame to rows without truth-testing Polars objects."""
+    if frame is None:
+        return []
+    if hasattr(frame, "to_dicts"):
+        return [dict(row) for row in frame.to_dicts()]
+    if isinstance(frame, dict):
+        return [dict(frame)]
+    return [dict(row) for row in frame if isinstance(row, dict)]
+
+
 def _get_bar_purity(conn, asset: str, observed_at: Any, interval: str = "15m") -> Dict[str, Any]:
     try:
         ts = observed_at
@@ -908,10 +919,11 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                 for asset in {canonical_asset(candidate.get("asset")) for candidate in candidates}:
                     native = f"{asset}USDT"
                     observations = load_observations(conn_oi, "bybit", native, "5m", cutoff)
-                    closes = [float(row.get("close")) for row in (market_bars_by_asset.get(asset) or []) if row.get("close") is not None]
+                    context_rows = _context_rows(market_bars_by_asset.get(asset))
+                    closes = [float(row.get("close")) for row in context_rows if row.get("close") is not None]
                     funding_history = [
                         {"source_at": row.get("source_end"), "rate": row.get("funding_rate")}
-                        for row in (market_bars_by_asset.get(asset) or [])
+                        for row in context_rows
                         if row.get("funding_rate") is not None
                     ]
                     derivatives_contexts[asset] = {

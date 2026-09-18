@@ -17,6 +17,15 @@ from trade_quality_profiles import (
 )
 
 
+def _market_rows(value: Any) -> list[dict[str, Any]]:
+    """Normalize Polars or row-list market context without truth-testing frames."""
+    if value is None:
+        return []
+    if hasattr(value, "to_dicts"):
+        return [dict(row) for row in value.to_dicts()]
+    return [dict(row) for row in value if isinstance(row, Mapping)]
+
+
 def _asset(value: Any) -> str:
     from trade_admission import canonical_asset
 
@@ -104,7 +113,7 @@ def score_candidate(
         derivatives = derivatives_context or {}
         reaction_result = reaction_scorer.score_candidate_v3(
             candidate,
-            list(market_bars or []),
+            _market_rows(market_bars),
             derivatives.get("observations") if isinstance(derivatives, Mapping) else None,
             derivatives.get("funding_history") if isinstance(derivatives, Mapping) else None,
             mode=reaction_mode,

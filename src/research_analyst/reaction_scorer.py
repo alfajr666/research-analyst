@@ -47,7 +47,12 @@ def _rows(frame: Any) -> list[dict[str, Any]]:
 
 def _bar_start(row: Mapping[str, Any]) -> int | None:
     try:
-        value = int(row.get("source_start"))
+        raw = row.get("source_start", row.get("timestamp"))
+        if isinstance(raw, datetime):
+            if raw.tzinfo is None:
+                raw = raw.replace(tzinfo=timezone.utc)
+            return int(raw.timestamp() * 1000)
+        value = int(raw)
     except (TypeError, ValueError):
         return None
     return value
@@ -55,7 +60,12 @@ def _bar_start(row: Mapping[str, Any]) -> int | None:
 
 def _bar_end(row: Mapping[str, Any]) -> int | None:
     try:
-        value = int(row.get("source_end"))
+        raw = row.get("source_end", row.get("timestamp"))
+        if isinstance(raw, datetime):
+            if raw.tzinfo is None:
+                raw = raw.replace(tzinfo=timezone.utc)
+            return int(raw.timestamp() * 1000)
+        value = int(raw)
     except (TypeError, ValueError):
         return None
     return value
@@ -78,6 +88,10 @@ def _looks_like_15m(bars: Sequence[Mapping[str, Any]]) -> bool:
 
 
 def _timestamp_ms(value: Any) -> int | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return int(value.timestamp() * 1000)
     if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
         numeric = int(value)
         return numeric * 1000 if abs(numeric) < 100_000_000_000 else numeric
