@@ -236,6 +236,17 @@ anchor decays. The v3 weights are value reaction 0.50, participation 0.20, OI
 participation 0.15, and direction-aware funding crowding 0.15. OI and funding
 therefore affect enforce mode; they are not zero-weight evidence.
 
+### Locked future thesis review (not implemented)
+
+`specs/llm-thesis-review-v1.md` locks a future optional LLM thesis reviewer after
+deterministic admission, scoring, and clash resolution and immediately before
+shared-bus publication. It is not part of the current runtime. When implemented,
+it will be scorer-blind, binary pass/veto at a versioned thesis-score threshold,
+fail open when unavailable, retain only compact review records for 120 days, and
+carry passing review provenance in `metadata.thesis_review`. Research Analyst
+will not send LLM-review Discord messages; an executor may show the review only
+on a venue-confirmed entry message.
+
 ## Live Strategy Set
 
 The default production allowlist contains the 7 vectorbt engine-handoff ports

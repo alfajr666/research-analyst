@@ -254,6 +254,18 @@ must affect enforce mode; neither is a diagnostic-only zero-weight field.
 The scorer is pure research evidence. It never writes a venue adapter or
 executor inbox; validated intents cross only the shared SQLite intent bus.
 
+### Locked future thesis review
+
+`specs/llm-thesis-review-v1.md` is a locked design and is not implemented. The
+future reviewer belongs after deterministic admission/scoring/clash and outside
+the publisher. It is blind to scorer and clash conclusions, derives binary
+pass/veto in application code at thesis score 70, fails open when unavailable,
+and never rescues a rejected candidate or mutates intent geometry. Compact local
+review records use 120-day bounded retention; passing provenance travels only as
+versioned `metadata.thesis_review`. Research Analyst sends no LLM-review Discord
+messages. Until that specification is implemented and promoted through shadow,
+the current no-LLM runtime contract remains authoritative.
+
 Every plugin candidate is first captured in `raw_signals`. Deterministic hard
 admission then checks finite prices, freshness, expiry, trade geometry, reward
 to risk, ATR-bounded stop distance, required data, symbol-account policy, and
