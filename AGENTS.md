@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-10
+**Last reviewed:** 2026-09-18
 
 This repository is a read-and-decide market research service. It produces
 auditable candidates and validated trade intents. It does not hold exchange
@@ -42,6 +42,14 @@ The gateway emits triggers only after market observations are committed. The
 orchestrator claims triggers in cutoff order, uses a lease for crash recovery,
 and marks a trigger processed only after the pipeline succeeds. Publisher
 failures are separate from pipeline failures.
+
+The gateway runtime must use the repository `venv/bin/python` with the declared
+`requirements.txt` installed, including `websockets`. `data/ws_health.json` is
+the liveness contract: `healthy`/`ready`, a positive `active_connections`, and a
+fresh `last_bar_at` are all required. A PM2-online process with `status=stale`
+is not live. Provider task exceptions are surfaced as failed health and exit the
+gateway for process-manager restart; transient reconnects are allowed only when
+fresh bars continue to arrive.
 
 ## Database Ownership
 
@@ -232,6 +240,20 @@ IDs remain unchanged.
 
 ## Admission And Delivery
 
+### Reaction scorer rollout
+
+`REACTION_SCORER_MODE` is the single `off`/`shadow`/`enforce` switch. Enforce
+uses the reaction scorer operationally; shadow persists evidence while the
+legacy scorer remains operational. The profile is cutoff-bound and uses a
+minimum of 72 completed 15m bars, a 288-bar cap, and a 72-hour exponential
+half-life. The highest complete hourly-volume anchor remains eligible while its
+strength decays. Weights are value reaction 0.50, participation 0.20, OI
+participation 0.15, and direction-aware funding crowding 0.15. OI and funding
+must affect enforce mode; neither is a diagnostic-only zero-weight field.
+
+The scorer is pure research evidence. It never writes a venue adapter or
+executor inbox; validated intents cross only the shared SQLite intent bus.
+
 Every plugin candidate is first captured in `raw_signals`. Deterministic hard
 admission then checks finite prices, freshness, expiry, trade geometry, reward
 to risk, ATR-bounded stop distance, required data, symbol-account policy, and
@@ -355,6 +377,11 @@ managed processes that import the changed code, then verify fresh cutoff logs,
 restart counts, data freshness, regime persistence, pipeline completion, and
 publisher state. Never alter `.env`, databases, executor files, or production
 settings without an explicit command.
+
+For a local observation-only PM2 run, set both intent-bus target switches to
+`false`, verify `data/ws_health.json` and the cycle health files, and stop the
+task-local PM2 home after the observation window. `pm2` is not the production
+supervisor; production uses `oxmgr`.
 
 ## Verification
 

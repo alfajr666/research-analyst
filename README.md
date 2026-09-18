@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-09-14
+**Last reviewed:** 2026-09-18
 
 Research Analyst is a read-and-decide market research service. It consumes
 public market data, evaluates versioned strategy plugins, records auditable
@@ -112,6 +112,14 @@ non-permanent entries remain, the effective universe contains permanents only.
 Fresh open-position assets may be carried into gateway subscriptions for lifecycle
 context, but are not silently added to evaluator scopes.
 
+The websocket gateway is live only when `data/ws_health.json` is `healthy` or
+`ready`, `active_connections` is positive, and `last_bar_at` is within the
+health freshness budget. A PM2-online process with `status=stale` is not a live
+market feed. Provider task exits are surfaced as failed health and terminate the
+gateway so the process manager can restart it; transient provider reconnects are
+expected, but a sustained freshness gap or increasing reconnect churn is an
+operational incident.
+
 ## Watchlist And Scope Routing
 
 The gateway and evaluator consume the same cutoff-bound effective-universe
@@ -220,6 +228,13 @@ value-profile, participation, OI, and funding scorer:
 The reaction scorer never publishes directly to a venue. Validated intents still
 cross only the shared SQLite intent bus, and bus target switches remain
 independent.
+
+The reaction profile uses completed 15m bars with a minimum of 72 bars, a normal
+lookback cap of 288 bars, and a 72-hour exponential half-life. Its anchor is the
+highest complete hourly-volume anchor and remains eligible while the prior
+anchor decays. The v3 weights are value reaction 0.50, participation 0.20, OI
+participation 0.15, and direction-aware funding crowding 0.15. OI and funding
+therefore affect enforce mode; they are not zero-weight evidence.
 
 ## Live Strategy Set
 
@@ -420,6 +435,19 @@ production supervisor. Set both `INTENT_BUS_BYBIT_ENABLED=false` and
 `INTENT_BUS_PROPR_ENABLED=false` explicitly; verify cycle health and logs before
 enabling any delivery target. A stale `data/ws_health.json` or absent fresh
 market bars means the pipeline is not live even if the process is online.
+
+The safe local PM2 pattern is:
+
+```bash
+PM2_HOME=/tmp/research-analyst-pm2 pm2 status
+PM2_HOME=/tmp/research-analyst-pm2 pm2 restart research-analyst-ws research-analyst-hl-producer
+PM2_HOME=/tmp/research-analyst-pm2 pm2 stop all
+```
+
+Use the repository virtualenv (`venv/bin/python`); it must satisfy
+`venv/bin/python -m pip check` and import `websockets`. Stop the task-local PM2
+processes after an observation window; do not leave a dry-run supervisor
+running as a production service.
 
 `research-analyst-regime-session` is health-checked by
 `scripts/regime_session_healthcheck.py`, which verifies the worker process and
