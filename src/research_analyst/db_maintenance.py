@@ -244,6 +244,23 @@ def prune_analyst_db(
         (_limit(now, getattr(config, "ANALYST_EVENT_RETENTION_DAYS", 365)),),
         max_batches=max_batches,
     )
+
+    # Compact thesis-review rows: bounded 120-day retention (spec
+    # llm-thesis-review-v1.md §11.1). Reviews still referenced by an active or
+    # retryable outbox item are preserved; deletion is batched.
+    if _exists(conn, "thesis_reviews"):
+        review_limit = _limit(now, getattr(config, "THESIS_REVIEW_RETENTION_DAYS", 120)).isoformat()
+        review_predicate = (
+            "created_at < ? AND (candidate_id NOT IN (SELECT candidate_id FROM alpha_events "
+            "WHERE status IN ('active', 'pending', 'running', 'retry')))"
+        )
+        deleted["thesis_reviews"] = _delete(
+            conn,
+            "thesis_reviews",
+            review_predicate,
+            (review_limit,),
+            max_batches=max_batches,
+        )
     conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
     return deleted
 

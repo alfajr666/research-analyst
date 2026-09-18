@@ -175,6 +175,13 @@ def build_trade_intent(event: dict, *, source=None, exchange_id=None,
         meta["admission_result"] = admission
     if isinstance(quality_score, (int, float)):
         meta["score_result"] = admission
+    # Nested thesis-review provenance (specs/llm-thesis-review-v1.md §12). The
+    # payload is validated at the bus seam by validate_review_metadata.
+    if isinstance(event.get("_thesis_review"), dict):
+        from thesis_review import review_metadata as _review_metadata
+        nested = _review_metadata(event["_thesis_review"])
+        if nested is not None:
+            meta["thesis_review"] = nested
 
     delivery_id = (
         event.get("alpha_id") or event.get("dedupe_key")
@@ -525,6 +532,19 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
 def validate_intent_handoff(intent: dict, admission: dict | None = None, *, now: datetime | None = None) -> tuple[bool, str]:
     """Validate generic and structural admission at the final handoff seam."""
     ok, reason = verify_intent_admission(intent, admission, now=now)
+    if not ok:
+        return False, reason
+    # Thesis-review metadata must resolve to the persisted review for this
+    # candidate before any bus handoff (spec llm-thesis-review-v1.md §12).
+    from thesis_review import validate_review_metadata
+    ok, reason = validate_review_metadata(
+        (intent.get("metadata") or {}).get("thesis_review"),
+        candidate_id=str(
+            (intent.get("metadata") or {}).get("candidate_id")
+            or intent.get("delivery_id")
+            or ""
+        ),
+    )
     if not ok:
         return False, reason
     ok, reason = validate_geometry(intent)

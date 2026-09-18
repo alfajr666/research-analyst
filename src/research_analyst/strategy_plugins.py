@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,95 @@ from strategy_v2_context import (
 )
 from scope_router import build_strategy_scope
 from symbol_rotation import subscription_assets
+
+# Repository-owned, versioned strategy theses (spec llm-thesis-review-v1.md 6).
+# Text is not model-generated and participates in evidence provenance.
+STRATEGY_THESSES: dict[str, str] = {
+    "bb-tp-race-locked-v1": (
+        "Bollinger-band stall races a stochastic trigger against an ATR48 "
+        "target band inside an EMA7/EMA200 trend frame; mean-reversion snap "
+        "back toward the mean within the trend, invalidated when the band "
+        "expansion continues against the position."
+    ),
+    "bb-squeeze-trend-v1": (
+        "A completed Bollinger/Keltner squeeze resolves in the direction of "
+        "the EMA slope with ADX confirmation; continuation follows the "
+        "expansion and is invalidated when the squeeze re-forms without "
+        "follow-through."
+    ),
+    "kama-trend-following-v1": (
+        "KAMA adaptation confirms an established trend after a efficiency "
+        "re-acceleration out of chop; the position follows the adaptive mean "
+        "and is invalidated when efficiency degrades back into chop."
+    ),
+    "macd-ema-v1": (
+        "A MACD signal cross in the direction of a long-horizon EMA100 "
+        "regime marks trend continuation; momentum exhaustion against the "
+        "regime invalidates the continuation thesis."
+    ),
+    "mr-vwap-locked-v1": (
+        "In a flat VWAP regime, price stretching beyond two VWAP sigmas "
+        "snaps back toward the session VWAP anchor; a persistent regime "
+        "slope invalidates reversion and favors continuation."
+    ),
+    "trend-pullback-vwap-v1": (
+        "A trend regime pulls back into the rolling-VWAP value zone and "
+        "reclaims momentum in the trend direction; failure of the reclaim "
+        "or a break of the pullback extreme invalidates continuation."
+    ),
+    "trend-wall-v5": (
+        "Price retests a persistent EMA99 wall in an ADX-confirmed trend and "
+        "rejects in the trend direction; acceptance through the wall "
+        "invalidates the trend-continuation thesis."
+    ),
+}
+
+
+def _review_evidence(event: dict, admission_result: dict) -> dict:
+    """Compact cutoff-bound evidence bundle for the thesis reviewer.
+
+    Only normalized point-in-time facts already materialized for the selected
+    candidate are included; scorer/clash conclusions never enter this bundle.
+    """
+    context = event.get("structural_context") or {}
+    zones = [dict(zone) for zone in (context.get("zones") or [])[:5]]
+    selected_zone_id = admission_result.get("selected_zone_id")
+    derivatives = event.get("_derivatives_context") or {}
+    observations = derivatives.get("observations") or []
+    funding = derivatives.get("funding_history") or []
+    price_closes = derivatives.get("price_closes") or []
+    evidence: dict = {
+        "structure": {
+            "zones": zones,
+            "selected_zone": selected_zone_id,
+            "selected_zone_timeframe": admission_result.get("selected_zone_timeframe"),
+            "atr": context.get("atr_by_timeframe") or {},
+            "coverage_status": context.get("coverage_status") or {},
+        },
+        "derivatives": {
+            "oi_observations": list(observations)[-12:],
+            "funding_history": list(funding)[-24:],
+        },
+        "price": {
+            "recent_closes": list(price_closes)[-12:],
+        },
+        "availability": {
+            "structure": bool(context),
+            "derivatives": bool(observations or funding),
+            "price": bool(price_closes),
+        },
+    }
+    fingerprint_source = event.get("_admission_result") or {}
+    if fingerprint_source.get("candidate_fingerprint"):
+        evidence["provenance"] = {
+            "structural_admission_contract_version": fingerprint_source.get(
+                "structural_admission_contract_version"
+            ),
+            "structural_context_cutoff": fingerprint_source.get(
+                "structural_context_cutoff"
+            ),
+        }
+    return evidence
 
 # Per spec: re-export from config for modules that imported here before
 PRICE_STRUCTURE_STRATEGY_IDS = getattr(config, "PRICE_STRUCTURE_STRATEGY_IDS", set())
@@ -1020,6 +1110,33 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         )
         if selected_zone is not None:
             event["structural_reference"] = dict(selected_zone)
+        # Independent LLM thesis review (specs/llm-thesis-review-v1.md): one
+        # optional fail-open review of the already-clash-selected candidate,
+        # immediately before publication. A veto suppresses only in enforce
+        # mode; shadow records counterfactual evidence and off skips entirely.
+        try:
+            from thesis_review import review_selected_candidate, review_metadata
+            review_result = review_selected_candidate(
+                event,
+                strategy_thesis=STRATEGY_THESSES.get(event.get("strategy_id"), ""),
+                evidence=_review_evidence(event, admission_result),
+                db_path=db_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - one review must not fail the cutoff
+            print(f"thesis review error for {cid}: {exc}", file=sys.stderr)
+            review_result = None
+        if review_result is not None:
+            if (
+                config.LLM_THESIS_REVIEW_MODE == "enforce"
+                and review_result.get("decision") == "veto"
+            ):
+                print(
+                    f"thesis review veto suppressed candidate {cid} "
+                    f"(enforce mode); no TradeIntent published"
+                )
+                continue
+            event["_thesis_review"] = review_result
+            event.setdefault("metadata", {})["thesis_review"] = review_metadata(review_result)
         write_event(event)
     results["_computation_stats"] = shared_computation_stats()
     return results

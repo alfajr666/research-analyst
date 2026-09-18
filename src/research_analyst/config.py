@@ -54,6 +54,26 @@ OI_RETENTION_DAYS = int(os.getenv("OI_RETENTION_DAYS", "30"))
 REACTION_SCORER_MODE = os.getenv("REACTION_SCORER_MODE", "shadow").strip().lower()
 if REACTION_SCORER_MODE not in {"off", "shadow", "enforce"}:
     raise ValueError("REACTION_SCORER_MODE must be off, shadow, or enforce")
+# Independent LLM thesis review (specs/llm-thesis-review-v1.md, locked design).
+# One mode owns the entire feature; no aliases or sub-switches are allowed.
+LLM_THESIS_REVIEW_MODE = os.getenv("LLM_THESIS_REVIEW_MODE", "off").strip().lower()
+if LLM_THESIS_REVIEW_MODE not in {"off", "shadow", "enforce"}:
+    raise ValueError("LLM_THESIS_REVIEW_MODE must be off, shadow, or enforce")
+# Versioned policy constants (spec 3, 9). Not runtime tuning settings.
+THESIS_REVIEW_PASS_THRESHOLD = 70
+THESIS_REVIEW_TIMEOUT_SECONDS = 3.0
+THESIS_REVIEW_CIRCUIT_FAILURES = 3
+THESIS_REVIEW_CIRCUIT_OPEN_SECONDS = 15 * 60
+THESIS_REVIEW_PROMPT_VERSION = "thesis-review-v1"
+THESIS_REVIEW_POLICY_VERSION = "thesis-review-policy-v1"
+THESIS_REVIEW_RETENTION_DAYS = 120
+THESIS_REVIEW_MAX_EXPLANATION_CHARS = 180
+# Provider adapter configuration. The adapter is caller-injected at the seam;
+# these env values only configure the concrete HTTP provider.
+THESIS_REVIEW_PROVIDER = os.getenv("THESIS_REVIEW_PROVIDER", "zai").strip().lower()
+THESIS_REVIEW_MODEL = os.getenv("THESIS_REVIEW_MODEL", "")
+THESIS_REVIEW_API_KEY = os.getenv("THESIS_REVIEW_API_KEY", "")
+THESIS_REVIEW_BASE_URL = os.getenv("THESIS_REVIEW_BASE_URL", "").strip().rstrip("/")
 ENTRY_POLICY_MODE = os.getenv("ENTRY_POLICY_MODE", "shadow").strip().lower()
 if ENTRY_POLICY_MODE not in {"off", "shadow", "enforce"}:
     raise ValueError("ENTRY_POLICY_MODE must be off, shadow, or enforce")
@@ -1162,6 +1182,39 @@ def init_db(db_path: str | Path | None = None, *, force_market: bool = False, fo
                     created_at TIMESTAMP WITH TIME ZONE
                 );
             """)
+        # Compact LLM thesis-review ledger (specs/llm-thesis-review-v1.md §11).
+        # Analyst-owned; stores only the validated result, never the prompt or
+        # raw completion.
+        if is_alpha:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS thesis_reviews (
+                    review_id TEXT PRIMARY KEY,
+                    candidate_id TEXT NOT NULL,
+                    candidate_fingerprint TEXT NOT NULL,
+                    evaluation_cutoff TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    decision TEXT NOT NULL CHECK (decision IN ('pass', 'veto')),
+                    thesis_score INTEGER,
+                    score_status TEXT NOT NULL CHECK (score_status IN ('uncalibrated', 'unavailable')),
+                    explanation TEXT NOT NULL,
+                    reviewed BOOLEAN NOT NULL,
+                    fallback_reason TEXT,
+                    model_version TEXT,
+                    prompt_version TEXT NOT NULL,
+                    review_policy_version TEXT NOT NULL,
+                    evidence_hash TEXT NOT NULL,
+                    latency_ms INTEGER,
+                    created_at TEXT NOT NULL
+                );
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_thesis_reviews_created_at "
+                "ON thesis_reviews (created_at);"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_thesis_reviews_candidate "
+                "ON thesis_reviews (candidate_id, created_at);"
+            )
         # Keep the two service stores physically independent even though the
         # schema declarations above share this compact initialization routine.
         owned = ANALYST_SCHEMA_TABLES if is_alpha else MARKET_SCHEMA_TABLES
