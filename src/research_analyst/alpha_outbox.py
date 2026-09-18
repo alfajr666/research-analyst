@@ -129,6 +129,7 @@ def write_event(event: dict, outbox_dir: Path = OUTBOX_DIR) -> tuple[bool, Path]
     outbox_dir.mkdir(parents=True, exist_ok=True)
     destination = outbox_dir / f"{key}.json"
     payload = dict(event)
+    payload.pop("_market_bars", None)
     if not payload.get("targets") and admission_event.get("targets"):
         payload["targets"] = admission_event["targets"]
     if not payload.get("valid_until") and admission_event.get("valid_until"):

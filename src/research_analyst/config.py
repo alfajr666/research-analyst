@@ -51,7 +51,9 @@ if RAW_SIGNAL_DISCORD_BATCH_MINUTES <= 0 or 60 % RAW_SIGNAL_DISCORD_BATCH_MINUTE
 MARKET_DB_PATH = os.getenv("MARKET_DB_PATH", str(DEFAULT_DB_DIR / "market.sqlite3"))
 ANALYST_DB_PATH = os.getenv("ANALYST_DB_PATH", str(DEFAULT_DB_DIR / "analyst.sqlite3"))
 OI_RETENTION_DAYS = int(os.getenv("OI_RETENTION_DAYS", "30"))
-OI_SHADOW_ENABLED = os.getenv("OI_SHADOW_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+REACTION_SCORER_MODE = os.getenv("REACTION_SCORER_MODE", "shadow").strip().lower()
+if REACTION_SCORER_MODE not in {"off", "shadow", "enforce"}:
+    raise ValueError("REACTION_SCORER_MODE must be off, shadow, or enforce")
 ENTRY_POLICY_MODE = os.getenv("ENTRY_POLICY_MODE", "shadow").strip().lower()
 if ENTRY_POLICY_MODE not in {"off", "shadow", "enforce"}:
     raise ValueError("ENTRY_POLICY_MODE must be off, shadow, or enforce")

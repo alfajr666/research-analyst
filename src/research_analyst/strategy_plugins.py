@@ -883,6 +883,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
     market_lookback_days = max(
         2,
         int(getattr(config, "TRADE_QUALITY_RVOL_LOOKBACK_BARS", 96) / 288) + 2,
+        5,
         int(getattr(config, "TRADE_QUALITY_FUNDING_LOOKBACK_BARS", 288) / 288) + 2,
     )
     for asset in {canonical_asset(candidate.get("asset")) for candidate in candidates}:
@@ -893,7 +894,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         except Exception as exc:
             print(f"trade-quality market context unavailable for {asset}: {exc}")
     derivatives_contexts = {}
-    if getattr(config, "OI_SHADOW_ENABLED", False) and candidates:
+    if getattr(config, "REACTION_SCORER_MODE", "shadow") in {"shadow", "enforce"} and candidates:
         try:
             from open_interest import collect_candidate_oi, load_observations
             conn_oi = config.get_db_connection(db_path=db_path)
@@ -908,7 +909,15 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
                     native = f"{asset}USDT"
                     observations = load_observations(conn_oi, "bybit", native, "5m", cutoff)
                     closes = [float(row.get("close")) for row in (market_bars_by_asset.get(asset) or []) if row.get("close") is not None]
-                    derivatives_contexts[asset] = {"observations": observations, "price_closes": closes[-13:]}
+                    funding_history = [
+                        {"source_at": row.get("source_end"), "rate": row.get("funding_rate")}
+                        for row in (market_bars_by_asset.get(asset) or [])
+                        if row.get("funding_rate") is not None
+                    ]
+                    derivatives_contexts[asset] = {
+                        "observations": observations, "price_closes": closes[-13:],
+                        "funding_history": funding_history,
+                    }
             finally:
                 conn_oi.close()
         except Exception as exc:
@@ -990,6 +999,7 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         event["_regime_decision"] = (regime_scope.get("decisions") or {}).get(asset_key)
         event["structural_context"] = structural_contexts.get(canonical_asset(event.get("asset")))
         event["_derivatives_context"] = derivatives_contexts.get(canonical_asset(event.get("asset")))
+        event["_market_bars"] = market_bars_by_asset.get(canonical_asset(event.get("asset")))
         context = event["structural_context"] or {}
         selected_zone = next(
             (zone for zone in context.get("zones", [])

@@ -211,6 +211,9 @@ def _run_pipeline(cutoff_at: datetime | None = None, eval_intervals: list[str] |
             "effective_universe_version": feed_metadata.get("effective_universe_version"),
             "fallback_reason": feed_metadata.get("fallback_reason"),
             "regime_session": regime_scope,
+            "reaction_scorer_mode": getattr(config, "REACTION_SCORER_MODE", "shadow"),
+            "reaction_scorer_version": "reaction-scorer-v3",
+            "operational_scorer_version": "reaction-scorer-v3" if getattr(config, "REACTION_SCORER_MODE", "shadow") == "enforce" else "trade-quality-v2",
             "signals_emitted": sum(v.get("emitted", 0) for interval in per_interval.values() for v in interval["strategies"].values()),
             "by_interval": per_interval,
         })

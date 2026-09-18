@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 import config
+import reaction_scorer
 from entry_policy import evaluate_entry_policy
 from trade_quality_components import COMPONENTS, ScoreContext
 from trade_quality_profiles import (
@@ -94,9 +95,31 @@ def score_candidate(
     baseline_weights = profile_weights("neutral")
     baseline_score = _aggregate(observations, baseline_weights)
     regime_score = _aggregate(observations, regime_weights)
-    operational_score = baseline_score if mode in {"off", "shadow"} else regime_score
-    threshold = float(getattr(config, "TRADE_QUALITY_MIN_SCORE", 0.30))
-    selected = readiness is None and operational_score >= threshold
+    legacy_operational_score = baseline_score if mode in {"off", "shadow"} else regime_score
+    legacy_threshold = float(getattr(config, "TRADE_QUALITY_MIN_SCORE", 0.30))
+    legacy_selected = readiness is None and legacy_operational_score >= legacy_threshold
+    reaction_result = None
+    reaction_mode = str(getattr(config, "REACTION_SCORER_MODE", "shadow")).lower()
+    if reaction_mode in {"shadow", "enforce"}:
+        derivatives = derivatives_context or {}
+        reaction_result = reaction_scorer.score_candidate_v3(
+            candidate,
+            list(market_bars or []),
+            derivatives.get("observations") if isinstance(derivatives, Mapping) else None,
+            derivatives.get("funding_history") if isinstance(derivatives, Mapping) else None,
+            mode=reaction_mode,
+            evaluation_cutoff=int(candidate.get("cutoff_ms") or 0) or None,
+        )
+    if reaction_result is not None and reaction_mode == "enforce":
+        operational_score = float(reaction_result["reaction_score"])
+        threshold = 0.50
+        selected = readiness is None and not validation_failures and operational_score >= threshold
+        operational_version = reaction_scorer.SCORER_VERSION
+    else:
+        operational_score = legacy_operational_score
+        threshold = legacy_threshold
+        selected = legacy_selected
+        operational_version = QUALITY_SCORE_POLICY_VERSION
     status = "selected_for_scoring" if selected else "score_below_threshold"
     reasons = [str(item.get("reason")) for item in validation_failures if item.get("reason")]
     if readiness is not None:
@@ -126,7 +149,15 @@ def score_candidate(
         "family_activation_version": ((regime_decision or {}).get("family_activation") or {}).get("version"),
         "candidate_id": candidate.get("candidate_id") or candidate.get("dedupe_key"),
         "data_freshness_seconds": candidate.get("data_freshness_seconds"),
+        "reaction_scorer_mode": reaction_mode,
+        "operational_scorer_version": operational_version,
     }
+    if reaction_result is not None:
+        result["reaction_score"] = reaction_result["reaction_score"]
+        result["reaction_verdict"] = reaction_result["verdict"]
+        result["reaction_observations"] = reaction_result["observations"]
+        result["reaction_profile"] = reaction_result["profile"]
+        result["reaction_scorer_version"] = reaction_result["scorer_version"]
     from trade_admission import candidate_admission_fingerprint
     result["candidate_fingerprint"] = candidate_admission_fingerprint(candidate)
     # Keep the immutable structural proof at the result top level for the
