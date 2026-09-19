@@ -104,6 +104,26 @@ def test_input_requires_thesis_and_cutoff():
         )
 
 
+def test_targetless_candidate_recovers_admission_target():
+    """macd-ema-v1 emits targets:[] with no take_profit; the review must use
+    the admission-reconstructed venue target (same recovery as the publisher)
+    instead of raising TypeError."""
+    cand = _candidate(targets=[], take_profit=None)
+    cand["_admission_result"] = {"selected_take_profit": 106.0}
+    result = build_review_input(cand, strategy_thesis="thesis", evidence={})
+    assert result["target"] == 106.0
+
+
+def test_targetless_candidate_without_recovery_raises_input_error():
+    """With no recoverable target the builder must raise ReviewInputError
+    (fail-closed/recorded), never leak a raw TypeError."""
+    with pytest.raises(thesis_review.ReviewInputError):
+        build_review_input(
+            _candidate(targets=[], take_profit=None),
+            strategy_thesis="thesis", evidence={},
+        )
+
+
 # --- Output and threshold (5-8) ---
 
 def test_scores_derive_decisions_exactly_70_passes():

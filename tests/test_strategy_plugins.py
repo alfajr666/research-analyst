@@ -149,8 +149,13 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         old_enabled = config.STRATEGY_ENABLED_IDS
         old_active = config.STRATEGY_ACTIVE_IDS
         old_context_builder = strategy_plugins.build_structural_contexts
+        old_review_mode = strategy_plugins.config.LLM_THESIS_REVIEW_MODE
         writes = []
         try:
+            # Account-fanout test, not a review test: pin review to shadow so a
+            # review-input error can never suppress writes via the enforce
+            # fail-closed gate (live .env runs enforce).
+            strategy_plugins.config.LLM_THESIS_REVIEW_MODE = "shadow"
             strategy_plugins._REGISTRY.update({sid: strategy_plugins.StrategyPlugin(
                 sid, "test", ("bars_5m",), (), lambda _cutoff, _snapshot, sid=sid:
                     [event(sid)]) for sid in ids})
@@ -197,6 +202,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
             config.STRATEGY_ENABLED_IDS = old_enabled
             config.STRATEGY_ACTIVE_IDS = old_active
             strategy_plugins.build_structural_contexts = old_context_builder
+            strategy_plugins.config.LLM_THESIS_REVIEW_MODE = old_review_mode
 
     def test_companion_bars_are_checked_in_market_db(self):
         import strategy_plugins

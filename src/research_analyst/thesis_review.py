@@ -147,7 +147,18 @@ def build_review_input(
     if target is None and targets:
         first = targets[0]
         target = first.get("price") if isinstance(first, Mapping) else first
-    entry, stop, target = float(entry), float(stop), float(target)
+    if target is None:
+        # Target-less strategies (e.g. macd-ema-v1, dataframe-exit-only) carry
+        # the admission-reconstructed venue target; the publisher recovers the
+        # same field (intent_publisher/intent_outbox). Mirror that recovery so
+        # review and publication evaluate identical geometry.
+        admission = candidate.get("_admission_result") or {}
+        if isinstance(admission, Mapping):
+            target = admission.get("selected_take_profit")
+    try:
+        entry, stop, target = float(entry), float(stop), float(target)
+    except (TypeError, ValueError):
+        raise ReviewInputError("geometry values must be numeric")
     if not all(math.isfinite(value) and value > 0 for value in (entry, stop, target)):
         raise ReviewInputError("geometry values must be finite and positive")
     risk = abs(entry - stop)

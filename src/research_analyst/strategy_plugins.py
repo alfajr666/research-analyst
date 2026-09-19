@@ -1125,6 +1125,14 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         except Exception as exc:  # noqa: BLE001 - one review must not fail the cutoff
             print(f"thesis review error for {cid}: {exc}", file=sys.stderr)
             review_result = None
+            if config.LLM_THESIS_REVIEW_MODE == "enforce":
+                # Enforce mode requires a recorded review before publication;
+                # an unreviewed candidate must not publish (fail-closed).
+                print(
+                    f"thesis review error suppressed candidate {cid} "
+                    f"(enforce mode); no TradeIntent published"
+                )
+                continue
         if review_result is not None:
             if (
                 config.LLM_THESIS_REVIEW_MODE == "enforce"
