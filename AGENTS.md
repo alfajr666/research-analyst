@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-18
+**Last reviewed:** 2026-09-19
 
 This repository is a read-and-decide market research service. It produces
 auditable candidates and validated trade intents. It does not hold exchange
@@ -33,6 +33,7 @@ completed evaluation trigger
        raw candidate ledger
        admission-owned HTF zone context and per-symbol ATR
        deterministic admission and clash resolution
+       optional LLM thesis review (veto-only, off/shadow/enforce)
        alpha ledger and publisher
        -> shared SQLite intent bus, when enabled
 
@@ -254,17 +255,24 @@ must affect enforce mode; neither is a diagnostic-only zero-weight field.
 The scorer is pure research evidence. It never writes a venue adapter or
 executor inbox; validated intents cross only the shared SQLite intent bus.
 
-### Locked future thesis review
+### LLM thesis review (implemented)
 
-`specs/llm-thesis-review-v1.md` is a locked design and is not implemented. The
-future reviewer belongs after deterministic admission/scoring/clash and outside
-the publisher. It is blind to scorer and clash conclusions, derives binary
-pass/veto in application code at thesis score 70, fails open when unavailable,
-and never rescues a rejected candidate or mutates intent geometry. Compact local
-review records use 120-day bounded retention; passing provenance travels only as
-versioned `metadata.thesis_review`. Research Analyst sends no LLM-review Discord
-messages. Until that specification is implemented and promoted through shadow,
-the current no-LLM runtime contract remains authoritative.
+`specs/llm-thesis-review-v1.md` is implemented. The reviewer is one optional,
+veto-only LLM call per selected candidate, after deterministic
+admission/scoring/clash and outside the publisher, gated by
+`LLM_THESIS_REVIEW_MODE=off|shadow|enforce` (default `off`). It is blind to
+scorer and clash conclusions: its input is the blinding-contract
+`ThesisReviewInputV1` (point-in-time evidence plus repository-owned strategy
+thesis only). Application code derives binary pass/veto at thesis score 70.
+Unavailable review fails open to publication (`unavailable`, never a veto); a
+veto can never be rescued; one review attempt per candidate with a 3s deadline;
+repeated failures open a 15-minute circuit breaker. Every attempt is persisted
+as a compact `thesis_reviews` row (120-day bounded retention in
+`db_maintenance`). Passing provenance crosses the bus only as versioned
+`metadata.thesis_review`, re-validated at the intent handoff. The reviewer
+never mutates intent geometry, never sizes, never executes, and RA sends no
+LLM-review Discord messages. Promote off -> shadow -> enforce; enforce requires
+a soak in shadow first.
 
 Every plugin candidate is first captured in `raw_signals`. Deterministic hard
 admission then checks finite prices, freshness, expiry, trade geometry, reward

@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-09-18
+**Last reviewed:** 2026-09-19
 
 Research Analyst is a read-and-decide market research service. It consumes
 public market data, evaluates versioned strategy plugins, records auditable
@@ -37,6 +37,7 @@ completed trigger
        raw_signals
        scorer/admission
        deterministic clash resolution
+       optional LLM thesis review (veto-only, off/shadow/enforce)
        alpha ledger + publisher
        -> shared SQLite intent bus
 
@@ -236,16 +237,34 @@ anchor decays. The v3 weights are value reaction 0.50, participation 0.20, OI
 participation 0.15, and direction-aware funding crowding 0.15. OI and funding
 therefore affect enforce mode; they are not zero-weight evidence.
 
-### Locked future thesis review (not implemented)
+### LLM thesis review (implemented)
 
-`specs/llm-thesis-review-v1.md` locks a future optional LLM thesis reviewer after
-deterministic admission, scoring, and clash resolution and immediately before
-shared-bus publication. It is not part of the current runtime. When implemented,
-it will be scorer-blind, binary pass/veto at a versioned thesis-score threshold,
-fail open when unavailable, retain only compact review records for 120 days, and
-carry passing review provenance in `metadata.thesis_review`. Research Analyst
-will not send LLM-review Discord messages; an executor may show the review only
-on a venue-confirmed entry message.
+`specs/llm-thesis-review-v1.md` is implemented as an optional, veto-only LLM
+reviewer after deterministic admission, scoring, and clash resolution and
+immediately before shared-bus publication. `LLM_THESIS_REVIEW_MODE` controls it:
+
+- `off` (default) keeps the no-LLM runtime;
+- `shadow` runs the review and records the result without changing publication;
+- `enforce` blocks publication when the review vetoes (`thesis_score < 70`).
+
+The reviewer is blinded: its input carries point-in-time evidence and the
+repository-owned strategy thesis, never the deterministic verdict, score, clash
+conclusion, or publisher state. Application code — never the model — derives
+pass/veto at thesis score 70. Any provider failure (timeout past the 3s
+deadline, invalid output, provider outage) fails open to publication and is
+recorded as `unavailable`; a veto can never be rescued and unavailable never
+becomes a veto. Repeated failures open a 15-minute circuit breaker that
+fast-fails subsequent reviews until the cooldown expires. Every attempt is
+persisted as a compact `thesis_reviews` row with a 120-day bounded retention;
+passing provenance travels on the intent as versioned `metadata.thesis_review`
+and is re-validated at the shared-bus handoff. The reviewer never mutates
+intent geometry, never sizes, and never executes. Research Analyst sends no
+LLM-review Discord messages; an executor may show the review only on a
+venue-confirmed entry message.
+
+The HTTP provider is configured by `THESIS_REVIEW_PROVIDER` (default `zai`),
+`THESIS_REVIEW_MODEL`, `THESIS_REVIEW_API_KEY`, and optional
+`THESIS_REVIEW_BASE_URL`; see `.env.example`.
 
 ## Live Strategy Set
 
