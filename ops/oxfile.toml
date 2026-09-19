@@ -4,7 +4,7 @@ version = 1
 name = "research-analyst-symbol-rotation"
 command = "/home/ubuntu/research-analyst/venv/bin/python src/research_analyst/symbol_rotation.py"
 cwd = "/home/ubuntu/research-analyst"
-env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", REGIME_SESSION_MODE = "shadow" }
+env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", REGIME_SESSION_MODE = "enforce" }
 restart_policy = "always"
 max_restarts = 20
 crash_restart_limit = 3
@@ -18,7 +18,7 @@ health_max_failures = 3
 name = "research-analyst-ws"
 command = "/home/ubuntu/research-analyst/venv/bin/python src/research_analyst/ws_gateway.py"
 cwd = "/home/ubuntu/research-analyst"
-env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", REGIME_SESSION_MODE = "shadow" }
+env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", REGIME_SESSION_MODE = "enforce" }
 restart_policy = "always"
 max_restarts = 20
 crash_restart_limit = 3
@@ -32,7 +32,7 @@ health_max_failures = 3
 name = "research-analyst-strategy-runner"
 command = "/home/ubuntu/research-analyst/venv/bin/python src/research_analyst/strategy_runner.py"
 cwd = "/home/ubuntu/research-analyst"
-env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", STRATEGY_RUNNER_ENABLED = "true", REGIME_SESSION_MODE = "shadow" }
+env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", STRATEGY_RUNNER_ENABLED = "true", REGIME_SESSION_MODE = "enforce" }
 restart_policy = "always"
 max_restarts = 20
 crash_restart_limit = 3
@@ -46,7 +46,7 @@ health_max_failures = 3
 name = "research-analyst-orchestrator"
 command = "/home/ubuntu/research-analyst/venv/bin/python src/research_analyst/orchestrator.py"
 cwd = "/home/ubuntu/research-analyst"
-env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", STRATEGY_RUNNER_ENABLED = "true", REGIME_SESSION_MODE = "shadow" }
+env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", STRATEGY_RUNNER_ENABLED = "true", REGIME_SESSION_MODE = "enforce" }
 restart_policy = "always"
 max_restarts = 20
 crash_restart_limit = 3
@@ -60,7 +60,7 @@ health_max_failures = 3
 name = "research-analyst-regime-session"
 command = "/home/ubuntu/research-analyst/venv/bin/python src/research_analyst/regime_session.py"
 cwd = "/home/ubuntu/research-analyst"
-env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", REGIME_SESSION_MODE = "shadow" }
+env = { PYTHONPATH = "/home/ubuntu/research-analyst/src/research_analyst", PYTHONUNBUFFERED = "1", REGIME_SESSION_MODE = "enforce" }
 restart_policy = "always"
 max_restarts = 20
 crash_restart_limit = 3

@@ -84,7 +84,10 @@ def test_invalid_reward_risk_remains_diagnostic_only():
     assert result["hard_gate"] == "not_applicable"
 
 
-def test_legacy_admission_components_contribute_to_the_score():
+def test_legacy_admission_components_contribute_to_the_score(monkeypatch):
+    # Legacy admission ordering only drives the operational score while the
+    # reaction scorer is not enforcing; pin the mode this test is about.
+    monkeypatch.setattr(config, "REACTION_SCORER_MODE", "shadow")
     valid = score_candidate(_candidate(), structural_context=_structure(), regime_mode="off")
     weak = _candidate()
     weak["targets"] = [101.0]
