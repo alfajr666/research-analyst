@@ -210,6 +210,14 @@ def parse_model_output(raw: Any) -> dict:
         raw = raw.decode("utf-8", errors="replace")
     if not isinstance(raw, str):
         raise ValueError("model output must be a JSON string")
+    # Tolerate markdown-fenced responses: some OpenAI-compatible models wrap
+    # JSON in ```json fences or leading prose despite prompt instructions.
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw[3:]
+        if raw.lower().startswith("json"):
+            raw = raw[4:]
+        raw = raw.rsplit("```", 1)[0].strip()
     try:
         payload = json.loads(raw)
     except (json.JSONDecodeError, ValueError) as exc:

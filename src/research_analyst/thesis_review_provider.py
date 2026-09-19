@@ -45,6 +45,9 @@ class ZaiThesisReviewer:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
             "thinking": {"type": "disabled"},
+            # Some OpenAI-compatible proxies default to SSE streaming when the
+            # key is absent; the adapter parses a single JSON document.
+            "stream": False,
         }
         with httpx.Client(timeout=timeout_seconds, transport=self._transport) as client:
             response = client.post(url, headers=headers, json=body)

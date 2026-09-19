@@ -61,7 +61,7 @@ if LLM_THESIS_REVIEW_MODE not in {"off", "shadow", "enforce"}:
     raise ValueError("LLM_THESIS_REVIEW_MODE must be off, shadow, or enforce")
 # Versioned policy constants (spec 3, 9). Not runtime tuning settings.
 THESIS_REVIEW_PASS_THRESHOLD = 70
-THESIS_REVIEW_TIMEOUT_SECONDS = 3.0
+THESIS_REVIEW_TIMEOUT_SECONDS = float(os.getenv("THESIS_REVIEW_TIMEOUT_SECONDS", "3.0"))
 THESIS_REVIEW_CIRCUIT_FAILURES = 3
 THESIS_REVIEW_CIRCUIT_OPEN_SECONDS = 15 * 60
 THESIS_REVIEW_PROMPT_VERSION = "thesis-review-v1"
