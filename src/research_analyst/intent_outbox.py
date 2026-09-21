@@ -157,11 +157,13 @@ def build_trade_intent(event: dict, *, source=None, exchange_id=None,
             targets = [{"price": take_profit, "fraction": None}]
 
     quality_score = admission.get("quality_score") if isinstance(admission, dict) else None
-    # Sizing is executor-owned: the analyst never dictates quantity/risk_amount.
-    # Pass through any non-sizing metadata the strategy attached; the executor
-    # sizes from its account profile when no quantity/risk_amount is present.
+    # Sizing is executor-owned: the analyst never dictates quantity/amount/
+    # risk_amount/qty/size. Pass through any non-sizing metadata the strategy
+    # attached; the executor sizes from its account profile when no sizing
+    # hint is present. Key set matches bus assert_no_sizing_hints + RAHL
+    # _has_sizing_hint.
     meta = {k: v for k, v in (event.get("metadata") or {}).items()
-            if k not in ("quantity", "amount", "risk_amount")}
+            if k not in ("quantity", "amount", "risk_amount", "qty", "size")}
     if event.get("strategy_id"):
         meta.setdefault("strategy_id", event["strategy_id"])
     meta.setdefault("candidate_id", admission.get("candidate_id") if admission else None)
