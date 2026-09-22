@@ -1,6 +1,6 @@
 # Research Analyst
 
-**Last reviewed:** 2026-09-19
+**Last reviewed:** 2026-09-22
 
 Research Analyst is a read-and-decide market research service. It consumes
 public market data, evaluates versioned strategy plugins, records auditable
@@ -245,7 +245,8 @@ immediately before shared-bus publication. `LLM_THESIS_REVIEW_MODE` controls it:
 
 - `off` (default) keeps the no-LLM runtime;
 - `shadow` runs the review and records the result without changing publication;
-- `enforce` blocks publication when the review vetoes (`thesis_score < 70`).
+- `enforce` publishes only `pass` decisions: vetoes, review errors, missing
+  review metadata, and any non-`pass` outcome suppress the candidate.
 
 The reviewer is blinded: its input carries point-in-time evidence and the
 repository-owned strategy thesis, never the deterministic verdict, score, clash
@@ -269,9 +270,10 @@ The HTTP provider is configured by `THESIS_REVIEW_PROVIDER` (default `zai`),
 ## Live Strategy Set
 
 The default production allowlist contains the 7 vectorbt engine-handoff ports
-(`specs/strategy-vectorbt-ports-v1.md`). Each port is a self-contained plugin
-built on the repository's native indicator engines — no shared port module and
-no vectorbt, pandas, or numpy dependency:
+(`specs/strategy-vectorbt-ports-v1.md`) plus the UTC-session MR retiree.
+Each port is a self-contained plugin built on the repository's native
+indicator engines — no shared port module and no vectorbt, pandas, or numpy
+dependency:
 
 | Strategy | Cadence | Family | Execution |
 | --- | --- | --- | --- |
@@ -280,8 +282,14 @@ no vectorbt, pandas, or numpy dependency:
 | `kama-trend-following-v1` | 5m cutoff, 30m frame | trend | Bybit executor |
 | `macd-ema-v1` | 5m cutoff, 1h frame | trend | Bybit executor |
 | `mr-vwap-locked-v1` | 5m cutoff, 15m frame | mean_reversion | Bybit executor |
+| `mr-vwap-utc-session-v3` | 5m cutoff, 15m frame | mean_reversion | Bybit executor |
 | `trend-pullback-vwap-v1` | 5m cutoff, 15m frame | trend | Bybit executor |
 | `trend-wall-v5` | 5m cutoff, 30m frame | trend | Bybit executor |
+
+`mr-vwap-utc-session-v3` (active since 2026-09-22, fundamo-routed like its
+siblings) shares its strategy ID with the RAHL producer: UTC-midnight-session
+VWAP mean reversion with a 1.5-ATR stop. It coexists with `mr-vwap-locked-v1`
+(distinct anchor); same-direction clashes resolve deterministically.
 
 All ported plugins evaluate on completed `5m` cutoffs; the `15m`, `30m`, and
 `1h` signal frames are derived causally from completed bars and never merge
@@ -340,6 +348,20 @@ that later fail. Hard admission checks:
 - required strategy-local data;
 - symbol-account policy;
 - admission-owned HTF structure and per-symbol ATR proximity.
+
+### Engine-owned venue TP (mechanical exit fallback)
+
+Strategies own exit levels (`mechanical_ta` or `level`: TP1, TP2, …); the
+engine owns venue placement. Before any gate, admission converts every
+candidate to the N-R venue TP (`INTENT_MECHANICAL_EXIT_FALLBACK_R`, default
+2.0): the envelope `take_profit`/`targets` are always entry ± N×risk, with
+`target_source=engine_fallback_2r` and the natives preserved in
+`metadata.exit_rule` (`{kind, native_levels}`) for the standalone PM. Gates —
+geometry, reward/risk, fingerprint — evaluate placed values; the admission
+fingerprint binds `exit_rule` natives so pipeline and handoff proofs match.
+`take_profit_mode` keeps naming the native rule (`vwap_target`,
+`bracket_tp1_tp2_race`, `symmetric_atr_bracket`, default `fixed_full_close`).
+Normative contract: `specs/mechanical-exit-fallback-v1.pointer.md`.
 
 Structural admission reads completed direct regime-owned `1h`/`4h` bars only for
 assets that emitted candidates. It calculates one reusable Wilder ATR14 context
@@ -429,9 +451,10 @@ take-profit execution, and receipts. Research Analyst never claims execution
 state.
 
 The alpha outbox stores admitted targets in the top-level `targets` field.
-Publisher compatibility handling can reconstruct that field from
-`_admission_result.selected_take_profit` for legacy events; events without a
-recoverable target remain invalid and are not delivered.
+Since the engine fallback, those are the placed N-R targets; strategy natives
+travel in `metadata.exit_rule`. Publisher compatibility handling can recover
+that field from `_admission_result.selected_take_profit` for legacy events;
+events without a recoverable target remain invalid and are not delivered.
 
 The intent-bus publisher converts nested Python `datetime` values to UTC
 ISO-8601 strings before handing an envelope to the JSON-only shared bus. This

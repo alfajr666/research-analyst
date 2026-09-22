@@ -217,6 +217,8 @@ FUNDAMO_STRATEGY_IDS = frozenset((
     "ema20-pullback-h4-trend-v1", "ema-stack-15m-adx-stochrsi-5m-v1",
     "gold-trend-ema-bb-stoch-v1", "mtf-exhaustion-reversal-v1", "trend-wall-v1",
     "ema99-double-touch-stochrsi-state-v1", "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
+    # v3 UTC-session retire: full-universe fundamo route mirroring locked-v1.
+    "mr-vwap-utc-session-v3",
 )) | PORTED_STRATEGY_IDS
 DUAL_ZONE_V3_EXIT_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_EXIT_EMA_LENGTH", "7"))
 DUAL_ZONE_V3_ANCHOR_EMA_LENGTH = int(os.getenv("DUAL_ZONE_V3_ANCHOR_EMA_LENGTH", "26"))
@@ -409,6 +411,15 @@ MR_VWAP_TARGET_R_CAP = float(os.getenv("MR_VWAP_TARGET_R_CAP", "2.0"))
 MR_VWAP_CONFIRMATION_WINDOW_BARS = int(os.getenv("MR_VWAP_CONFIRMATION_WINDOW_BARS", "3"))
 MR_VWAP_ANCHOR_SEED_HOURS = int(os.getenv("MR_VWAP_ANCHOR_SEED_HOURS", "72"))
 MR_VWAP_ENTRY_VALIDITY_MINUTES = int(os.getenv("MR_VWAP_ENTRY_VALIDITY_MINUTES", "5"))
+# UTC-session v3 retire (active): same signal semantics, 1.5-ATR stop.
+# Registered but absent from enabled/active defaults until explicit opt-in.
+MR_VWAP_UTC_V3_ATR_BUFFER = float(os.getenv("MR_VWAP_UTC_V3_ATR_BUFFER", "1.5"))
+MR_VWAP_UTC_V3_RANGE_SLOPE = float(os.getenv("MR_VWAP_UTC_V3_RANGE_SLOPE", "0.25"))
+MR_VWAP_UTC_V3_MINIMUM_RR = float(os.getenv("MR_VWAP_UTC_V3_MINIMUM_RR", "1.2"))
+MR_VWAP_UTC_V3_RSI_LOWER = float(os.getenv("MR_VWAP_UTC_V3_RSI_LOWER", "40.0"))
+MR_VWAP_UTC_V3_RSI_UPPER = float(os.getenv("MR_VWAP_UTC_V3_RSI_UPPER", "60.0"))
+MR_VWAP_UTC_V3_TARGET_R_CAP = float(os.getenv("MR_VWAP_UTC_V3_TARGET_R_CAP", "2.0"))
+MR_VWAP_UTC_V3_ENTRY_VALIDITY_MINUTES = int(os.getenv("MR_VWAP_UTC_V3_ENTRY_VALIDITY_MINUTES", "5"))
 TREND_PULLBACK_STRATEGY_ID = "trend-pullback-vwap-v1"
 TREND_PULLBACK_TREND_SLOPE = float(os.getenv("TREND_PULLBACK_TREND_SLOPE", "0.5"))
 TREND_PULLBACK_ATR_BUFFER = float(os.getenv("TREND_PULLBACK_ATR_BUFFER", "0.5"))
@@ -458,7 +469,7 @@ STRATEGY_ENABLED_IDS = tuple(
     s.strip() for s in os.getenv(
         "STRATEGY_ENABLED_IDS",
         "bb-tp-race-locked-v1,bb-squeeze-trend-v1,kama-trend-following-v1,"
-        "macd-ema-v1,mr-vwap-locked-v1,trend-pullback-vwap-v1,trend-wall-v5"
+        "macd-ema-v1,mr-vwap-locked-v1,mr-vwap-utc-session-v3,trend-pullback-vwap-v1,trend-wall-v5"
     ).split(",") if s.strip()
 )
 
@@ -523,6 +534,13 @@ INTENT_ACCOUNT_ID = os.getenv("INTENT_ACCOUNT_ID", "hyro")
 INTENT_TAKE_PROFIT_MODE = os.getenv("INTENT_TAKE_PROFIT_MODE", "fixed_full_close")
 INTENT_VALIDITY_MINUTES = int(os.getenv("INTENT_VALIDITY_MINUTES", "5"))
 INTENT_MIN_RR = float(os.getenv("INTENT_MIN_RR", "2.0"))
+# Mechanical/level exit fallback (spec mechanical-exit-fallback-v1.md §3):
+# the engine-owned venue-TP multiple. Strategies never read this; admission
+# and scoring apply it uniformly (no carve-outs). Must clear INTENT_MIN_RR
+# or admission fails closed (loudly, by design — no clamping).
+INTENT_MECHANICAL_EXIT_FALLBACK_R = float(os.getenv("INTENT_MECHANICAL_EXIT_FALLBACK_R", "2.0"))
+if not (math.isfinite(INTENT_MECHANICAL_EXIT_FALLBACK_R) and INTENT_MECHANICAL_EXIT_FALLBACK_R > 0):
+    raise ValueError("INTENT_MECHANICAL_EXIT_FALLBACK_R must be finite and positive")
 # Staged native exits (spec staged-native-exits-v1.md). Native multi-level
 # targets keep their full array through admission; the venue TP is the furthest
 # admitted level. Strategies whose edge is a sub-minimum native TP1 are exempt
@@ -540,6 +558,8 @@ if not 0 < NATIVE_TARGET_DEFAULT_FRACTION <= 1:
 STRATEGY_TAKE_PROFIT_MODES = {
     "bb-tp-race-locked-v1": "bracket_tp1_tp2_race",
     "mr-vwap-locked-v1": "vwap_target",
+    # v3 shares the vwap_target exit mode (active).
+    "mr-vwap-utc-session-v3": "vwap_target",
     "kama-trend-following-v1": "symmetric_atr_bracket",
 }
 INTENT_MIN_STOP_DISTANCE_PCT = float(os.getenv("INTENT_MIN_STOP_DISTANCE_PCT", "0.001"))

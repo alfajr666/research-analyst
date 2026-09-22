@@ -39,7 +39,9 @@ class PortedStrategyRegistryTests(unittest.TestCase):
             self.assertEqual(_REGISTRY[strategy_id].cadence, "5m", strategy_id)
 
     def test_default_allowlist_is_ports_only(self):
-        self.assertEqual(set(config.STRATEGY_ENABLED_IDS), set(PORTED_IDS))
+        # Seven vectorbt ports plus the UTC-session v3 retiree (not a port,
+        # so PORTED_IDS itself stays at seven).
+        self.assertEqual(set(config.STRATEGY_ENABLED_IDS), set(PORTED_IDS) | {"mr-vwap-utc-session-v3"})
         self.assertTrue(config.LEGACY_PRODUCTION_STRATEGY_IDS.isdisjoint(config.STRATEGY_ENABLED_IDS))
 
     def test_legacy_strategies_still_registered(self):

@@ -571,6 +571,10 @@ def validate_review_metadata(
 ) -> tuple[bool, str]:
     """Bus-handoff validation for nested ``metadata.thesis_review`` (spec 12)."""
     if metadata is None:
+        # Enforce mode requires a recorded review before publication; an
+        # intent with no review metadata must not publish (fail-closed).
+        if config.LLM_THESIS_REVIEW_MODE == "enforce":
+            return False, "enforce-mode requires thesis review metadata"
         return True, ""
     if not isinstance(metadata, dict) or metadata.get("schema_version") != 1:
         return False, "thesis review metadata schema is invalid"

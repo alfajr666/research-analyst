@@ -1,6 +1,6 @@
 # Research Analyst Agent Guide
 
-**Last reviewed:** 2026-09-19
+**Last reviewed:** 2026-09-22
 
 This repository is a read-and-decide market research service. It produces
 auditable candidates and validated trade intents. It does not hold exchange
@@ -172,7 +172,8 @@ bar IDs/versions, availability, source mode, and readiness.
 
 The default production allowlist currently contains the 7 vectorbt
 engine-handoff ports (`specs/strategy-vectorbt-ports-v1.md`; source authority
-in the engine-handoff documents of the source repository):
+in the engine-handoff documents of the source repository) plus the UTC-session
+MR retiree (same ID as the RAHL producer):
 
 | Strategy | Cadence | Family | Execution |
 | --- | --- | --- | --- |
@@ -181,8 +182,15 @@ in the engine-handoff documents of the source repository):
 | `kama-trend-following-v1` | 5m cutoff, 30m frame | trend | Bybit executor |
 | `macd-ema-v1` | 5m cutoff, 1h frame | trend | Bybit executor |
 | `mr-vwap-locked-v1` | 5m cutoff, 15m frame | mean_reversion | Bybit executor |
+| `mr-vwap-utc-session-v3` | 5m cutoff, 15m frame | mean_reversion | Bybit executor |
 | `trend-pullback-vwap-v1` | 5m cutoff, 15m frame | trend | Bybit executor |
 | `trend-wall-v5` | 5m cutoff, 30m frame | trend | Bybit executor |
+
+`mr-vwap-utc-session-v3` (active since 2026-09-22, fundamo-routed) is the
+UTC-midnight-session VWAP variant with a 1.5-ATR stop. It coexists with
+`mr-vwap-locked-v1`; same-direction clashes resolve deterministically.
+`plugin_states` overrides env defaults for previously-seeded rows — flipping a
+strategy on requires `set_plugin_state`, not just the env list.
 
 The legacy 12-plugin production set remains registered and is disabled by
 default; enable it explicitly through `STRATEGY_ENABLED_IDS`:
@@ -264,8 +272,12 @@ admission/scoring/clash and outside the publisher, gated by
 scorer and clash conclusions: its input is the blinding-contract
 `ThesisReviewInputV1` (point-in-time evidence plus repository-owned strategy
 thesis only). Application code derives binary pass/veto at thesis score 70.
-Unavailable review fails open to publication (`unavailable`, never a veto); a
-veto can never be rescued; one review attempt per candidate with a 3s deadline;
+Provider-unavailable review fails open to publication (`unavailable`, never a
+veto); review exceptions fail closed in enforce (candidate skipped, never
+published); in enforce only `pass` decisions publish — vetoes, missing review
+metadata, and any non-`pass` outcome suppress the candidate, and the bus
+handoff rejects intents without resolvable `metadata.thesis_review`. A veto
+can never be rescued; one review attempt per candidate with a 3s deadline;
 repeated failures open a 15-minute circuit breaker. Every attempt is persisted
 as a compact `thesis_reviews` row (120-day bounded retention in
 `db_maintenance`). Passing provenance crosses the bus only as versioned
@@ -290,7 +302,12 @@ rescued by a soft context score. Clash resolution is deterministic and
 unresolved opposing signals produce no intent.
 
 The proposed strategy stop remains authoritative and is never mutated. The
-admission result records the selected zone, entry/SL buffers, ATR method and
+venue TP, however, is engine-owned: admission converts every candidate to the
+N-R fallback (`INTENT_MECHANICAL_EXIT_FALLBACK_R`, default 2.0) before any
+gate, preserving natives in `exit_rule` for the standalone PM and binding
+them in the admission fingerprint (spec
+`specs/mechanical-exit-fallback-v1.pointer.md`). The admission result records
+the selected zone, entry/SL buffers, ATR method and
 period, exact cutoff, and source bar IDs for auditability. The global
 `INTENT_MAX_STOP_DISTANCE_PCT` cap is removed; the structural 3.0 ATR maximum
 is the maximum zone-to-entry and zone-to-SL distance policy.

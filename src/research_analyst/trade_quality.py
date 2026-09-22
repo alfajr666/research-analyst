@@ -167,8 +167,24 @@ def score_candidate(
         result["reaction_observations"] = reaction_result["observations"]
         result["reaction_profile"] = reaction_result["profile"]
         result["reaction_scorer_version"] = reaction_result["scorer_version"]
-    from trade_admission import candidate_admission_fingerprint
-    result["candidate_fingerprint"] = candidate_admission_fingerprint(candidate)
+    from trade_admission import apply_engine_fallback, candidate_admission_fingerprint
+    placed_candidate, fallback_error = apply_engine_fallback(candidate)
+    if fallback_error is None:
+        result["candidate_fingerprint"] = candidate_admission_fingerprint(placed_candidate)
+        # Engine-owned placement proof (spec §2+§5): the envelope TP is N-R;
+        # natives ride to the PM via exit_rule. Gates downstream see placed
+        # values; quality scoring above ran on the raw candidate (unchanged).
+        placed_levels = placed_candidate.get("targets") or []
+        venue = placed_levels[-1].get("price") if placed_levels and isinstance(placed_levels[-1], dict) else None
+        result["placed_targets"] = [dict(level) for level in placed_levels]
+        result["selected_take_profit"] = venue
+        result["selected_take_profit_source"] = "engine_fallback_2r"
+        result["native_targets"] = [dict(level) for level in (placed_candidate.get("exit_rule") or {}).get("native_levels", [])]
+        result["exit_rule"] = placed_candidate.get("exit_rule")
+        result["target_source"] = "engine_fallback_2r"
+    else:
+        result["candidate_fingerprint"] = candidate_admission_fingerprint(candidate)
+        result["engine_fallback_error"] = fallback_error
     # Keep the immutable structural proof at the result top level for the
     # existing intent and audit contracts. The scorer still owns the gate.
     for item in observations:

@@ -232,6 +232,111 @@ def derive_2r_target(direction, entry, stop):
     return None
 
 
+def engine_fallback_multiple() -> float:
+    """Engine-owned venue-TP multiple (spec mechanical-exit-fallback-v1.md §3).
+
+    Strategies never read this; admission and scoring apply it uniformly.
+    """
+    return float(getattr(config, "INTENT_MECHANICAL_EXIT_FALLBACK_R", 2.0))
+
+
+def derive_fallback_target(direction, entry, stop):
+    """Return the engine-owned N-R venue TP (generalizes derive_2r_target)."""
+    multiple = engine_fallback_multiple()
+    if not (_number(entry) and entry > 0 and _number(stop) and stop > 0):
+        return None
+    if not (_number(multiple) and multiple > 0):
+        return None
+    direction = str(direction or "").lower()
+    if direction == "long" and stop < entry:
+        return entry + multiple * abs(entry - stop)
+    if direction == "short" and stop > entry:
+        return entry - multiple * abs(entry - stop)
+    return None
+
+
+def normalize_exit_rule(value: object) -> dict | None:
+    """Canonicalize an exit_rule to {kind, native_levels} or None.
+
+    Shared by conversion and fingerprinting so pipeline and handoff-verified
+    proofs bind byte-identical material.
+    """
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("kind")
+    if not isinstance(kind, str) or not kind.strip():
+        return None
+    raw_levels = value.get("native_levels")
+    if raw_levels is None:
+        raw_levels = []
+    if not isinstance(raw_levels, (list, tuple)):
+        return None
+    levels: list[dict] = []
+    for item in raw_levels:
+        parsed = _parse_target_level(item)
+        if parsed is None:
+            return None
+        levels.append({"price": float(parsed["price"]), "fraction": parsed["fraction"]})
+    return {"kind": kind.strip(), "native_levels": levels}
+
+
+def apply_engine_fallback(candidate: dict) -> tuple[dict, str | None]:
+    """Apply the uniform engine-owned N-R venue TP (spec §2+§5).
+
+    Returns (converted_candidate, error). The converted candidate carries
+    placed ``targets`` ([{N-R}]), ``take_profit`` (N-R when the input had a
+    native single), ``exit_rule`` {kind, native_levels}, ``target_source``
+    and the ``_engine_fallback_applied`` marker. Native levels equal to the
+    placed TP (within tolerance) collapse to [] so already-2R strategies
+    stay economics-identical. Already-converted input returns as-is
+    (idempotent for handoff re-verification).
+    """
+    if candidate.get("_engine_fallback_applied") and isinstance(candidate.get("exit_rule"), dict):
+        return candidate, None
+    direction = str(candidate.get("direction", "")).lower()
+    entry = candidate.get("entry_price")
+    if entry is None:
+        entry = (candidate.get("entry_condition") or {}).get("price")
+    stop = candidate.get("invalidation_price", candidate.get("stop_loss"))
+    if direction not in {"long", "short"}:
+        return candidate, "direction is invalid"
+    if not (_number(entry) and entry > 0 and _number(stop) and stop > 0):
+        return candidate, "prices must be finite and positive"
+    raw = candidate.get("targets") or []
+    if not raw:
+        single = candidate.get("take_profit")
+        raw = [single] if single is not None else []
+    native_levels, levels_error = _native_target_levels(
+        {"targets": raw}, direction, float(entry), float(stop))
+    if levels_error:
+        # No native declaration at all is fine (engine-derived case);
+        # a present-but-malformed declaration fails closed.
+        if raw:
+            return candidate, levels_error
+        native_levels = []
+    venue = derive_fallback_target(direction, entry, stop)
+    if venue is None:
+        return candidate, "directional SL/TP geometry is invalid"
+    if direction == "long" and not (stop < entry < venue):
+        return candidate, "directional SL/TP geometry is invalid"
+    if direction == "short" and not (venue < entry < stop):
+        return candidate, "directional SL/TP geometry is invalid"
+    kind = str((getattr(config, "STRATEGY_TAKE_PROFIT_MODES", {}) or {}).get(
+        str(candidate.get("strategy_id") or "")) or getattr(config, "INTENT_TAKE_PROFIT_MODE", "fixed_full_close"))
+    if len(native_levels) == 1 and abs(native_levels[0]["price"] - venue) <= max(1e-12, abs(venue) * 1e-9):
+        carried: list[dict] = []
+    else:
+        carried = [dict(level) for level in native_levels]
+    converted = dict(candidate)
+    converted["targets"] = [{"price": float(venue), "fraction": None}]
+    if "take_profit" in candidate:
+        converted["take_profit"] = float(venue)
+    converted["exit_rule"] = {"kind": kind, "native_levels": carried}
+    converted["target_source"] = "engine_fallback_2r"
+    converted["_engine_fallback_applied"] = True
+    return converted, None
+
+
 def _time(value):
     if isinstance(value, datetime):
         result = value
@@ -246,12 +351,22 @@ def candidate_admission_fingerprint(candidate: dict) -> str:
     if entry is None:
         entry = (candidate.get("entry_condition") or {}).get("price")
     stop = candidate.get("invalidation_price", candidate.get("stop_loss"))
-    raw_targets = candidate.get("targets") or []
-    first_level = raw_targets[0] if raw_targets else None
-    if first_level is None:
-        target = candidate.get("take_profit")
+    # Converted candidates bind their exit_rule natives (spec §5): the
+    # pipeline proof and the handoff-rebuilt proof must hash identically.
+    # Unconverted candidates bind raw targets exactly as before.
+    rule = normalize_exit_rule(candidate.get("exit_rule")) \
+        if candidate.get("_engine_fallback_applied") else None
+    if rule and rule["native_levels"]:
+        first_level = rule["native_levels"][0]
+        target = first_level.get("price")
+        raw_targets: list = []
     else:
-        target = first_level.get("price") if isinstance(first_level, dict) else first_level
+        raw_targets = candidate.get("targets") or []
+        first_level = raw_targets[0] if raw_targets else None
+        if first_level is None:
+            target = candidate.get("take_profit")
+        else:
+            target = first_level.get("price") if isinstance(first_level, dict) else first_level
     # Canonicalize ints to floats so int/float spellings of one price share
     # a fingerprint (envelope levels always carry floats).
     entry = float(entry) if isinstance(entry, (int, float)) and not isinstance(entry, bool) else entry
@@ -284,18 +399,22 @@ def candidate_admission_fingerprint(candidate: dict) -> str:
         "valid_until": valid_until,
     }
     native_prices: list[float] = []
-    for item in candidate.get("targets") or []:
-        price = item.get("price") if isinstance(item, dict) else item
-        try:
-            price = float(price)
-        except (TypeError, ValueError):
-            native_prices = []
-            break
-        if not math.isfinite(price):
-            native_prices = []
-            break
-        native_prices.append(price)
-    if len(native_prices) > 1:
+    if rule and rule["native_levels"]:
+        native_prices = [float(level["price"]) for level in rule["native_levels"]]
+        material["exit_rule"] = rule
+    else:
+        for item in candidate.get("targets") or []:
+            price = item.get("price") if isinstance(item, dict) else item
+            try:
+                price = float(price)
+            except (TypeError, ValueError):
+                native_prices = []
+                break
+            if not math.isfinite(price):
+                native_prices = []
+                break
+            native_prices.append(price)
+    if len(native_prices) > 1 and "exit_rule" not in material:
         # Multi-level native exits change admitted economics (venue TP is the
         # furthest level); bind the array. Single-level fingerprints stay
         # byte-identical.
@@ -339,30 +458,33 @@ def admit(
     reasons = []
     if symbol_policy["symbol_account_gate"] != "pass":
         reasons.append(f"symbol-account policy: {format_symbol_account_rejection(symbol_policy)}")
-    entry = candidate.get("entry_price")
+    # Engine-owned N-R fallback BEFORE all price gates (spec §2+§5): gates
+    # evaluate placed values; natives ride to the PM via exit_rule.
+    converted, fallback_error = apply_engine_fallback(candidate)
+    if fallback_error is not None:
+        reasons.append(fallback_error)
+    if isinstance(converted.get("_engine_fallback_applied"), bool) and converted.get("_engine_fallback_applied"):
+        fingerprint_candidate = dict(converted)
+        if account_id is not None and str(candidate.get("strategy_id") or "") in COMPACT_STRATEGIES:
+            fingerprint_candidate["_execution_account"] = account_id
+    entry = converted.get("entry_price")
     if entry is None:
-        entry = (candidate.get("entry_condition") or {}).get("price")
-    targets = candidate.get("targets") or []
+        entry = (converted.get("entry_condition") or {}).get("price")
+    exit_rule = converted.get("exit_rule")
+    if not isinstance(exit_rule, dict):
+        exit_rule = None
+    native_levels = list(exit_rule.get("native_levels", [])) if exit_rule else []
+    placed_targets = converted.get("targets") or []
     target = None
-    if targets:
-        first = targets[0]
-        target = first.get("price") if isinstance(first, dict) else first
-    if target is None:
-        target = candidate.get("take_profit")
-    stop = candidate.get("invalidation_price", candidate.get("stop_loss"))
-    if target is None and not targets:
-        target = derive_2r_target(candidate.get("direction"), entry, stop)
+    if placed_targets:
+        last = placed_targets[-1]
+        target = last.get("price") if isinstance(last, dict) else last
+    stop = converted.get("invalidation_price", converted.get("stop_loss"))
     if not all(_number(v) and v > 0 for v in (entry, stop, target)):
         reasons.append("prices must be finite and positive")
-    direction = str(candidate.get("direction", "")).lower()
+    direction = str(converted.get("direction", "")).lower()
     if direction not in {"long", "short"}:
         reasons.append("direction is invalid")
-    native_levels: list[dict] = []
-    if direction in {"long", "short"} and _number(entry) and _number(stop) and entry > 0 and stop > 0:
-        native_levels, levels_error = _native_target_levels(candidate, direction, entry, stop)
-        if levels_error:
-            reasons.append(levels_error)
-            native_levels = []
     if _number(entry) and _number(stop) and _number(target):
         geometry = stop < entry < target if direction == "long" else target < entry < stop
         if not geometry:
@@ -371,9 +493,16 @@ def admit(
         reward = abs(target - entry)
         rr = reward / risk if risk else 0.0
         distance = risk / entry
+        native_rr1 = None
+        if native_levels:
+            try:
+                native_rr1 = abs(float(native_levels[0]["price"]) - entry) / risk if risk else 0.0
+            except (TypeError, ValueError):
+                native_rr1 = None
         min_rr_exempt_native = (
             bool(native_levels)
-            and rr < float(getattr(config, "INTENT_MIN_RR", 2.0))
+            and native_rr1 is not None
+            and native_rr1 < float(getattr(config, "INTENT_MIN_RR", 2.0))
             and str(candidate.get("strategy_id") or "") in getattr(config, "NATIVE_TP_MIN_RR_EXEMPT_IDS", frozenset())
         )
         if rr < float(getattr(config, "INTENT_MIN_RR", 2.0)) and not min_rr_exempt_native:
@@ -417,19 +546,11 @@ def admit(
     if structural["structural_stop_gate"] != "pass":
         reasons.extend(f"structural stop: {reason}" for reason in structural["structural_stop_reasons"])
     atr_pct = float(atr14_4h) / entry if _number(atr14_4h) and _number(entry) and entry > 0 else None
-    # Venue TP is the furthest admitted native level (a venue order inside
-    # PM-managed levels would cut the runner before the PM poll can act),
-    # else the TP1/fallback target above.
-    if native_levels:
-        venue_target = native_levels[-1]["price"]
-        venue_source = "native_furthest"
-    else:
-        venue_target = target
-        venue_source = (
-            "producer_derived_2r"
-            if target is not None and not (candidate.get("targets") or candidate.get("take_profit"))
-            else "strategy_target"
-        )
+    # Uniform engine-owned venue TP (spec §2): the placed N-R backstop. Native
+    # levels ride to the PM via exit_rule; the venue never sees them.
+    venue_target = target
+    venue_source = "engine_fallback_2r"
+    placed_list = [{"price": float(venue_target), "fraction": None}] if _number(venue_target) and venue_target > 0 else []
     return {"hard_gate": "pass" if not reasons else "fail", "hard_gate_reasons": reasons,
              "candidate_id": identity,
              "candidate_fingerprint": candidate_admission_fingerprint(fingerprint_candidate),
@@ -437,6 +558,9 @@ def admit(
             "rr": rr, "stop_distance_pct": distance, "selected_take_profit": venue_target,
             "selected_take_profit_source": venue_source,
             "native_targets": native_levels,
+            "placed_targets": placed_list,
+            "exit_rule": exit_rule,
+            "target_source": venue_source,
             "min_rr_exempt_native": bool(min_rr_exempt_native),
             "atr14_4h": atr14_4h, "stop_atr_multiple": distance / atr_pct if distance is not None and atr_pct else None,
             "effective_min_stop_distance_pct": max(absolute_floor, atr_floor),

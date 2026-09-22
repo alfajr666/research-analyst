@@ -201,15 +201,24 @@ def _multi_candidate(targets, strategy_id="bb-tp-race-locked-v1"):
     return event
 
 
-def test_multi_level_native_targets_select_furthest_venue_tp():
+def test_engine_fallback_places_2r_venue_tp_preserving_natives():
+    # Spec mechanical-exit-fallback-v1.md §2+§5: uniform N-R venue TP;
+    # natives ride to the PM via exit_rule (bb-race TP1/TP2 here).
     result = admit(_multi_candidate([110.0, 115.0]), now=datetime(2026, 1, 1, tzinfo=timezone.utc))
     assert result["hard_gate"] == "pass"
-    assert result["selected_take_profit"] == 115.0
-    assert result["selected_take_profit_source"] == "native_furthest"
+    assert result["selected_take_profit"] == 110.0
+    assert result["selected_take_profit_source"] == "engine_fallback_2r"
     assert result["native_targets"] == [
         {"price": 110.0, "fraction": 0.5},
         {"price": 115.0, "fraction": None},
     ]
+    assert result["exit_rule"] == {
+        "kind": "bracket_tp1_tp2_race",
+        "native_levels": [
+            {"price": 110.0, "fraction": 0.5},
+            {"price": 115.0, "fraction": None},
+        ],
+    }
     assert result["rr"] == 2.0
 
 
@@ -219,13 +228,17 @@ def test_non_monotonic_native_targets_fail():
     assert "monotonic" in "; ".join(result["hard_gate_reasons"])
 
 
-def test_native_tp1_below_min_rr_fails_without_exemption():
+def test_sub_minimum_native_tp1_passes_on_placed_2r():
+    # Gates evaluate placed values (spec §5): native TP1 RR 0.2 no longer
+    # fails the candidate; the venue TP is 2R and the native rides exit_rule.
     result = admit(
         _multi_candidate([101.0], strategy_id="impulse-ignition-v1"),
         now=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
-    assert result["hard_gate"] == "fail"
-    assert "reward/risk below minimum" in result["hard_gate_reasons"]
+    assert result["hard_gate"] == "pass"
+    assert result["selected_take_profit"] == 110.0
+    assert result["selected_take_profit_source"] == "engine_fallback_2r"
+    assert result["exit_rule"]["native_levels"] == [{"price": 101.0, "fraction": None}]
     assert result["min_rr_exempt_native"] is False
 
 
@@ -236,8 +249,8 @@ def test_exempt_native_tp1_passes_with_recorded_exemption():
     )
     assert result["hard_gate"] == "pass"
     assert result["min_rr_exempt_native"] is True
-    assert result["selected_take_profit"] == 101.0
-    assert result["selected_take_profit_source"] == "native_furthest"
+    assert result["selected_take_profit"] == 110.0
+    assert result["selected_take_profit_source"] == "engine_fallback_2r"
 
 
 def test_fingerprint_binds_multi_level_array_across_spellings():

@@ -131,8 +131,17 @@ def build_trade_intent(event: dict, *, source=None, exchange_id=None,
     stop_loss = event.get("invalidation_price", event.get("stop_loss"))
     admission = admission or event.get("_score_result") or event.get("_admission_result")
     admitted_levels = (admission.get("native_targets") if isinstance(admission, dict) else None) or []
+    placed_levels = (admission.get("placed_targets") if isinstance(admission, dict) else None) or []
     raw_targets = event.get("targets") or []
-    if admitted_levels:
+    if placed_levels:
+        # Engine-owned N-R venue TP (spec §2+§5); natives ride via exit_rule.
+        targets = [dict(level) for level in placed_levels]
+        take_profit = (admission.get("selected_take_profit")
+                       if isinstance(admission, dict) else None)
+        target_source = ((admission.get("selected_take_profit_source")
+                          if isinstance(admission, dict) else None)
+                         or "engine_fallback_2r")
+    elif admitted_levels:
         # Admitted multi-level array; the venue TP is the furthest level.
         targets = [dict(level) for level in admitted_levels]
         take_profit = (admission.get("selected_take_profit")
@@ -173,6 +182,9 @@ def build_trade_intent(event: dict, *, source=None, exchange_id=None,
         meta["structural_context"] = event["structural_context"]
     if target_source:
         meta.setdefault("target_source", target_source)
+    if isinstance(admission, dict) and isinstance(admission.get("exit_rule"), dict):
+        # PM handoff (spec §6): native rule kind + levels; venue TP stays N-R.
+        meta["exit_rule"] = admission["exit_rule"]
     if admission is not None:
         meta["admission_result"] = admission
     if isinstance(quality_score, (int, float)):
@@ -245,6 +257,10 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
             "targets": intent.get("targets"),
             "observed_at": intent.get("observed_at"),
             "valid_until": intent.get("entry_valid_until"),
+            # Engine-fallback round-trip (spec §5): the pipeline proof binds
+            # exit_rule natives; the rebuilt candidate must bind the same.
+            "exit_rule": metadata.get("exit_rule"),
+            "_engine_fallback_applied": bool(isinstance(metadata.get("exit_rule"), dict)),
         }
         if (
             metadata.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ())
@@ -300,6 +316,9 @@ def verify_intent_admission(intent: dict, admission: dict | None = None, *, now:
         "data_freshness_seconds": proof.get("data_freshness_seconds"),
         "effective_universe_assets": proof.get("effective_universe_assets"),
         "effective_universe_version": proof.get("effective_universe_version"),
+        # Engine-fallback round-trip (spec §5): see the v2 path above.
+        "exit_rule": metadata.get("exit_rule"),
+        "_engine_fallback_applied": bool(isinstance(metadata.get("exit_rule"), dict)),
     }
     if (
         metadata.get("strategy_id") in getattr(config, "COMPACT_STRATEGY_IDS", ())

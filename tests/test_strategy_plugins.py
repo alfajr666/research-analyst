@@ -36,7 +36,7 @@ class StrategyPluginRegistryTests(unittest.TestCase):
         self.assertTrue(retired.isdisjoint(config.STRATEGY_ENABLED_IDS))
         self.assertTrue(enabled <= config.LEGACY_PRODUCTION_STRATEGY_IDS)
         self.assertTrue(enabled.isdisjoint(config.STRATEGY_ENABLED_IDS))
-        self.assertTrue(config.PORTED_STRATEGY_IDS == set(config.STRATEGY_ENABLED_IDS))
+        self.assertTrue(config.PORTED_STRATEGY_IDS == set(config.STRATEGY_ENABLED_IDS) - {"mr-vwap-utc-session-v3"})
         self.assertIn("ema9-adx-stochrsi-state-v1", config.COMPACT_STRATEGY_IDS)
         self.assertTrue(retired.isdisjoint(config.LEGACY_PRODUCTION_STRATEGY_IDS))
         self.assertTrue(

@@ -338,6 +338,15 @@ def test_metadata_validation_rejects_inconsistency(tmp_path):
     vetoed_fallback = dict(fallback, decision="veto")
     ok, reason = validate_review_metadata(vetoed_fallback, candidate_id="cand-9", review=result, db_path=db)
     assert not ok and ("enforce-mode" in reason or "fail-open" in reason)
+
+
+def test_enforce_requires_review_metadata_presence(monkeypatch):
+    monkeypatch.setattr(thesis_review.config, "LLM_THESIS_REVIEW_MODE", "enforce")
+    ok, reason = validate_review_metadata(None, candidate_id="cand-9")
+    assert not ok and "enforce-mode" in reason
+    monkeypatch.setattr(thesis_review.config, "LLM_THESIS_REVIEW_MODE", "off")
+    ok, _ = validate_review_metadata(None, candidate_id="cand-9")
+    assert ok
 def test_review_metadata_never_changes_geometry():
     result = {
         "schema_version": 1, "review_id": "rev-3", "candidate_id": "cand-3",

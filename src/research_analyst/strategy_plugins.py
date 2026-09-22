@@ -65,6 +65,13 @@ STRATEGY_THESSES: dict[str, str] = {
         "snaps back toward the session VWAP anchor; a persistent regime "
         "slope invalidates reversion and favors continuation."
     ),
+    # v3 retire: same thesis with a wider 1.5-ATR stop (active).
+    "mr-vwap-utc-session-v3": (
+        "In a flat UTC-session VWAP regime, price stretching beyond two VWAP "
+        "sigmas snaps back toward the session VWAP anchor with a wider 1.5-ATR "
+        "stop; a persistent regime slope invalidates reversion and favors "
+        "continuation."
+    ),
     "trend-pullback-vwap-v1": (
         "A trend regime pulls back into the rolling-VWAP value zone and "
         "reclaims momentum in the trend direction; failure of the reclaim "
@@ -138,7 +145,10 @@ ADMISSION_STRATEGY_IDS = {"failed-break-v3", "bb-rsi-meanrev-v1",
                               "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
                               "bb-tp-race-locked-v1", "bb-squeeze-trend-v1",
                               "kama-trend-following-v1", "macd-ema-v1",
-                              "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5"}
+                               "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5",
+                               # v3 UTC-session retire: registered for replay,
+                               # never enabled without explicit opt-in.
+                               "mr-vwap-utc-session-v3"}
 
 
 def _context_rows(frame: Any) -> list[dict[str, Any]]:
@@ -204,6 +214,8 @@ KNOWN_STRATEGIES = {
     "ema7-26-cross-hammer-shooting-star-1h-adx-v1",
     "bb-tp-race-locked-v1", "bb-squeeze-trend-v1", "kama-trend-following-v1",
     "macd-ema-v1", "mr-vwap-locked-v1", "trend-pullback-vwap-v1", "trend-wall-v5",
+    # v3 UTC-session retire: known + active.
+    "mr-vwap-utc-session-v3",
 }
 
 @dataclass
@@ -256,6 +268,11 @@ def _load_builtin_plugins():
     from strategies.v2.kama_trend_following_v1 import run_plugin as kama_trend_run
     from strategies.v2.macd_ema_v1 import run_plugin as macd_ema_run
     from strategies.v2.mr_vwap_locked_v1 import run_plugin as mr_vwap_run
+    # v3 UTC-session retire: active plugin.
+    from strategies.v2.mr_vwap_utc_session_v3 import (
+        STRATEGY_ID as MR_VWAP_UTC_V3_ID,
+    )
+    from strategies.v2.mr_vwap_utc_session_v3 import run_plugin as mr_vwap_utc_v3_run
     from strategies.v2.trend_pullback_vwap_v1 import run_plugin as trend_pullback_run
     from strategies.v2.trend_wall_v5 import run_plugin as trend_wall_v5_run
 
@@ -291,6 +308,9 @@ def _load_builtin_plugins():
     register(StrategyPlugin("macd-ema-v1", "v1", ("bars_5m",), (), macd_ema_run, "5m", "trend",
                             required_intervals=("5m", "1h"), lookback_days=20))
     register(StrategyPlugin("mr-vwap-locked-v1", "v1", ("bars_5m",), (), mr_vwap_run, "5m", "mean_reversion",
+                            required_intervals=("5m", "1h"), lookback_days=20, stateful=True))
+    # v3 UTC-session retire: active alongside locked-v1 (distinct anchor).
+    register(StrategyPlugin(MR_VWAP_UTC_V3_ID, "v3", ("bars_5m",), (), mr_vwap_utc_v3_run, "5m", "mean_reversion",
                             required_intervals=("5m", "1h"), lookback_days=20, stateful=True))
     register(StrategyPlugin("trend-pullback-vwap-v1", "v1", ("bars_5m",), (), trend_pullback_run, "5m", "trend",
                             required_intervals=("5m", "1h"), lookback_days=20, stateful=True))
@@ -1136,10 +1156,10 @@ def _run_plugins_for_cutoff(db_path: str | Path, cutoff_id: str, now: datetime |
         if review_result is not None:
             if (
                 config.LLM_THESIS_REVIEW_MODE == "enforce"
-                and review_result.get("decision") == "veto"
+                and review_result.get("decision") != "pass"
             ):
                 print(
-                    f"thesis review veto suppressed candidate {cid} "
+                    f"thesis review non-pass suppressed candidate {cid} "
                     f"(enforce mode); no TradeIntent published"
                 )
                 continue
