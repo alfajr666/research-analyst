@@ -245,16 +245,17 @@ immediately before shared-bus publication. `LLM_THESIS_REVIEW_MODE` controls it:
 
 - `off` (default) keeps the no-LLM runtime;
 - `shadow` runs the review and records the result without changing publication;
-- `enforce` publishes only `pass` decisions: vetoes, review errors, missing
-  review metadata, and any non-`pass` outcome suppress the candidate.
+- `enforce` blocks only an explicit `veto`; provider-unavailable results are
+  recorded as `mode=shadow`, `score_status=unavailable`, `enforced=false`, and
+  publish as bypass passes. Review/code errors still suppress the candidate.
 
 The reviewer is blinded: its input carries point-in-time evidence and the
 repository-owned strategy thesis, never the deterministic verdict, score, clash
 conclusion, or publisher state. Application code — never the model — derives
 pass/veto at thesis score 70. Any provider failure (timeout past the 3s
 deadline, invalid output, provider outage) fails open to publication and is
-recorded as `unavailable`; a veto can never be rescued and unavailable never
-becomes a veto. Repeated failures open a 15-minute circuit breaker that
+recorded as shadow/unavailable metadata; a veto can never be rescued and
+unavailable never becomes a veto. Repeated failures open a 15-minute circuit breaker that
 fast-fails subsequent reviews until the cooldown expires. Every attempt is
 persisted as a compact `thesis_reviews` row with a 120-day bounded retention;
 passing provenance travels on the intent as versioned `metadata.thesis_review`

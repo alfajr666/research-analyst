@@ -320,13 +320,20 @@ def review_thesis(review_input: Mapping[str, Any], reviewer, *, circuit: ThesisR
 
 def _finalize(review_input: Mapping[str, Any], result: dict, digest: str, started: float) -> dict:
     latency_ms = int((time.monotonic() - started) * 1000)
+    # Provider unavailability bypasses the gate and is carried downstream as
+    # an explicit shadow/unavailable result, even when enforce is configured.
+    mode = (
+        "shadow"
+        if result["score_status"] == "unavailable"
+        else config.LLM_THESIS_REVIEW_MODE
+    )
     return {
         "schema_version": 1,
         "review_id": _review_id(review_input, digest),
         "candidate_id": review_input["candidate_id"],
         "candidate_fingerprint": review_input["candidate_fingerprint"],
         "evaluation_cutoff": review_input["evaluation_cutoff"],
-        "mode": config.LLM_THESIS_REVIEW_MODE,
+        "mode": mode,
         "decision": result["decision"],
         "thesis_score": result["thesis_score"],
         "score_status": result["score_status"],

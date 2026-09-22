@@ -18,10 +18,10 @@ def temp_bus_db(monkeypatch):
     monkeypatch.setattr("config.INTENT_BUS_DB", path)
     monkeypatch.setattr("config.INTENT_BUS_BYBIT_ENABLED", True)
     monkeypatch.setattr("config.INTENT_BUS_PROPR_ENABLED", True)
-    # These tests cover bus wiring, not the thesis gate: run them in shadow
-    # so review-less legacy v1 fixtures still publish. Enforce-mode review
-    # presence is covered in tests/test_thesis_review.py.
-    monkeypatch.setattr("config.LLM_THESIS_REVIEW_MODE", "shadow")
+    # These tests cover bus wiring, not thesis review. The fixture intentionally
+    # represents the review feature being off; enforce behavior is tested in
+    # tests/test_thesis_review.py.
+    monkeypatch.setattr("config.LLM_THESIS_REVIEW_MODE", "off")
     yield path
     for ext in ("", "-wal", "-shm"):
         p = path + ext

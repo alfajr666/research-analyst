@@ -25,7 +25,7 @@ strategy candidates
   -> independent LLM thesis review
        thesis_score >= 70 -> pass
        thesis_score <  70 -> veto
-       unavailable         -> fail-open pass
+       unavailable         -> shadow/unavailable pass
   -> shared SQLite intent bus
 ```
 
@@ -69,7 +69,7 @@ No legacy alias or component-specific enable flag is allowed.
 | --- | --- | --- | --- | --- |
 | `off` | no | no | no | no |
 | `shadow` | yes | yes | no | yes, marked `enforced=false` |
-| `enforce` | yes | yes | veto suppresses | yes, for pass/fail-open only |
+| `enforce` | yes | yes | explicit veto suppresses | yes for pass; unavailable is shadow/unavailable and publishes |
 
 The implementation default must be `off`. The first production observation
 period must explicitly select `shadow`. Technical availability of `enforce`
@@ -252,16 +252,20 @@ Exactly `70` passes.
 
 ## 9. Failure and Availability Contract
 
-The live pipeline is fail-open. Provider unavailability, timeout, rate limit,
-network failure, malformed output, schema failure, serialization failure, an
-open circuit, or an unexpected adapter exception produces this
-application-generated binary pass:
+The live pipeline is fail-open for provider availability. Provider
+unavailability, timeout, rate limit, network failure, malformed output, schema
+failure, serialization failure, or an open circuit produces this
+application-generated binary pass. It is recorded and attached as
+`mode=shadow`, `enforced=false`, and `score_status=unavailable`, even when the
+configured mode is `enforce`:
 
 ```json
 {
   "decision": "pass",
   "thesis_score": null,
   "score_status": "unavailable",
+  "mode": "shadow",
+  "enforced": false,
   "explanation": "LLM review unavailable; fail-open publication applied.",
   "reviewed": false
 }
@@ -352,8 +356,8 @@ review is carried in the existing metadata object under one versioned key:
     "thesis_review": {
       "schema_version": 1,
       "review_id": "...",
-      "mode": "enforce",
-      "enforced": true,
+                        "mode": "shadow",
+                        "enforced": false,
       "decision": "pass",
       "thesis_score": 78,
       "score_status": "uncalibrated",
@@ -476,7 +480,7 @@ the new version returns to shadow independently.
 10. Shadow veto persists but cannot suppress publication.
 11. Enforce veto produces no TradeIntent and does not promote a clash loser.
 12. Timeout, rate limit, provider error, parse error, and open circuit produce a
-    binary fail-open pass with a null score.
+    binary fail-open pass with a null score and shadow/unavailable metadata.
 13. One review failure cannot fail the cutoff or another candidate.
 
 ### Persistence and delivery
@@ -504,8 +508,8 @@ Implementation is complete only when:
 - one review mode controls all behavior with no aliases;
 - the reviewer is demonstrably blind to scorer and clash conclusions;
 - application code, not the model, derives pass/veto at the locked threshold;
-- unavailable review is a recorded fail-open pass and never interrupts the
-  pipeline;
+- unavailable review is a recorded shadow/unavailable pass and never interrupts
+  the pipeline;
 - the publisher remains model-free and retry-idempotent;
 - compact local records are retained and cleaned under the locked policy;
 - passing review provenance crosses the shared bus as nested metadata;

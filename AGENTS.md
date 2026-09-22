@@ -272,12 +272,12 @@ admission/scoring/clash and outside the publisher, gated by
 scorer and clash conclusions: its input is the blinding-contract
 `ThesisReviewInputV1` (point-in-time evidence plus repository-owned strategy
 thesis only). Application code derives binary pass/veto at thesis score 70.
-Provider-unavailable review fails open to publication (`unavailable`, never a
-veto); review exceptions fail closed in enforce (candidate skipped, never
-published); in enforce only `pass` decisions publish — vetoes, missing review
-metadata, and any non-`pass` outcome suppress the candidate, and the bus
-handoff rejects intents without resolvable `metadata.thesis_review`. A veto
-can never be rescued; one review attempt per candidate with a 3s deadline;
+Provider-unavailable review is recorded as `mode=shadow`,
+`score_status=unavailable`, `enforced=false`, and publishes as a bypass pass;
+only an explicit `veto` blocks in enforce. Review/code exceptions still block
+the candidate because they produce no review result; the bus handoff rejects
+intents without resolvable `metadata.thesis_review`. A veto can never be
+rescued; one review attempt per candidate with a 3s deadline;
 repeated failures open a 15-minute circuit breaker. Every attempt is persisted
 as a compact `thesis_reviews` row (120-day bounded retention in
 `db_maintenance`). Passing provenance crosses the bus only as versioned

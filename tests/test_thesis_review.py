@@ -189,6 +189,17 @@ def test_provider_failures_produce_fail_open_pass():
         assert result["fallback_reason"]
 
 
+def test_provider_unavailable_in_enforce_is_shadow_pass(monkeypatch):
+    monkeypatch.setattr(thesis_review.config, "LLM_THESIS_REVIEW_MODE", "enforce")
+    result = review_thesis(_input(), ScriptedReviewer([TimeoutError()]))
+    metadata = review_metadata(result)
+    assert result["decision"] == "pass"
+    assert result["score_status"] == "unavailable"
+    assert result["mode"] == "shadow"
+    assert metadata["mode"] == "shadow"
+    assert metadata["enforced"] is False
+
+
 def test_fallback_never_fabricates_score_70():
     result = fallback_result("timeout")
     assert result["thesis_score"] is None
